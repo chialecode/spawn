@@ -1,0 +1,57 @@
+# Default to text normalization with LF line endings
+* text=auto eol=lf
+
+# Source, configuration, schema, and documentation files (LF)
+*.cs text eol=lf
+*.csx text eol=lf
+*.csproj text eol=lf
+*.slnx text eol=lf
+*.props text eol=lf
+*.targets text eol=lf
+*.xaml text eol=lf
+*.resx text eol=lf
+*.manifest text eol=lf
+*.config text eol=lf
+*.proto text eol=lf
+*.sql text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.py text eol=lf
+*.sh text eol=lf
+*.svg text eol=lf
+.editorconfig text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+
+# Windows scripts and Visual Studio solution files (CRLF)
+*.sln text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.reg text eol=crlf
+
+# Binary assets, packages, archives, and vault containers
+*.ico binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary
+*.ttf binary
+*.otf binary
+*.woff2 binary
+*.zip binary
+*.7z binary
+*.nupkg binary
+*.snupkg binary
+*.dll binary
+*.exe binary
+*.pdb binary
+*.db binary
+*.sqlite binary
+*.sppk binary
+*.pfx binary
+*.p12 binary

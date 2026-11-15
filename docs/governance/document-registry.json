@@ -1,0 +1,594 @@
+{
+  "schemaVersion": 1,
+  "currentStage": "M1",
+  "documents": [
+    {
+      "path": ".github/PULL_REQUEST_TEMPLATE.md",
+      "kind": "template",
+      "status": "active",
+      "owner": "git-github / 维护者",
+      "scope": "Pull Request 阶段变更、门禁证据、未测边界与 DCO 签名模板",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：对齐 Squash PR_BODY 合并策略、DCO 尾注与门禁核查标准"
+    },
+    {
+      "path": ".github/actions-policy.json",
+      "kind": "governance",
+      "status": "active",
+      "owner": "git-github / 维护者",
+      "scope": "GitHub Actions 权限、SHA 固定与允许运行的官方 Action 白名单声明镜像",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：远端 API 实际配置回读镜像（仅允许 actions/checkout@* 与 actions/setup-dotnet@*）"
+    },
+    {
+      "path": ".github/repository-settings.json",
+      "kind": "governance",
+      "status": "active",
+      "owner": "git-github / 维护者",
+      "scope": "GitHub 远端仓库合并策略、入口收敛与安全特性声明镜像",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：远端 API 实际回读镜像（仅允许 Squash 合并、开启私密漏洞报告与 Dependabot/Secret 扫描）"
+    },
+    {
+      "path": ".github/rulesets/main.json",
+      "kind": "governance",
+      "status": "active",
+      "owner": "git-github / 维护者",
+      "scope": "main 分支 main-protection 零豁免保护规则集声明镜像",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：远端 Ruleset ID 27309712 实际生效配置（线性历史、Squash PR、必过 docs 状态检查）"
+    },
+    {
+      "path": "AGENTS.md",
+      "kind": "entry",
+      "status": "active",
+      "owner": "gov-rules / Agent A",
+      "scope": "SPAWN 仓库级 AI Agent 与开发者最高工作指令唯一正本",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：定义启动检查、按变更必读表、A/B + Swarm 并行隔离协议、Clean Host 红线与单阶段 DCO 提交规范"
+    },
+    {
+      "path": "CLAUDE.md",
+      "kind": "entry",
+      "status": "active",
+      "owner": "gov-rules / Agent A",
+      "scope": "@AGENTS.md 唯一正本转发入口",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：保持 AGENTS.md 单一事实正本，避免双套工作规则失步"
+    },
+    {
+      "path": "CONTRIBUTING.md",
+      "kind": "entry",
+      "status": "active",
+      "owner": "gov-rules / Agent A",
+      "scope": "SPAWN 开发环境要求、最小交付闭环、DCO 分支规范与验证门禁指南",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：明确 .NET 10 LTS SDK / Python 3.12+ 门禁要求与 Apache-2.0 贡献协议"
+    },
+    {
+      "path": "DESIGN.md",
+      "kind": "entry",
+      "status": "active",
+      "owner": "gov-rules / Agent A",
+      "scope": "SPAWN 根级视觉与交互设计入口",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：指向 docs/design-rules/DESIGN.md 与交互工作流正本"
+    },
+    {
+      "path": "README.md",
+      "kind": "entry",
+      "status": "active",
+      "owner": "gov-rules / Agent A",
+      "scope": "SPAWN 项目门面：五大核心域、纯原生技术栈定位、物理隔离基座与全局导航",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：建立 S.P.A.W.N. 纯原生 C# WPF 定位、仓库地图与快速门禁入口"
+    },
+    {
+      "path": "REVIEW.md",
+      "kind": "entry",
+      "status": "active",
+      "owner": "gov-rules / Agent A",
+      "scope": "SPAWN 集中技术审查口径（PEReader IAT 门禁、反作弊联锁、WAL/Junction 防丢档与诚实证据）",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：沉淀 15 大工程深坑核查与 A/Verifier 独立审查标准"
+    },
+    {
+      "path": "SECURITY.md",
+      "kind": "entry",
+      "status": "active",
+      "owner": "gov-rules / Agent A",
+      "scope": "SPAWN 安全策略、反作弊零越界承诺、UIAccess 一次性自签私钥即毁策略与凭据隐私声明",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：对接 GitHub 私密漏洞报告与 ADR-0003/0005 安全红线"
+    },
+    {
+      "path": "USER-ACTIONS.md",
+      "kind": "status",
+      "status": "active",
+      "owner": "gov-rules / Agent A",
+      "scope": "全仓唯一用户待办台账（ACT-001 .NET 10 SDK 已就绪、ACT-002 M1 远端授权、ACT-006 Steamrip/GOG 可选配置及实机检查）",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：结合本机环境实测快照与保守远端推进边界建立唯一用户操作台账"
+    },
+    {
+      "path": "docs/README.md",
+      "kind": "index",
+      "status": "active",
+      "owner": "gov-rules / Agent A",
+      "scope": "SPAWN 全局文档总导航地图与最短接手阅读路径",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：统合治理、需求、ADR、系统设计、五大模块规格、工程选型与交付目录"
+    },
+    {
+      "path": "docs/decisions/0001-document-governance-and-collaboration.md",
+      "kind": "decision",
+      "status": "active",
+      "owner": "arch-delivery / Agent A",
+      "scope": "ADR-0001：单一事实正本文档治理、Agent A/B 闭环与 Swarm 隔离协作机制",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：确立文档分层、注册表门禁、单阶段单提交 DCO 与保守远端授权架构决策"
+    },
+    {
+      "path": "docs/decisions/0002-pure-native-wpf-and-nodify-ui-stack.md",
+      "kind": "decision",
+      "status": "active",
+      "owner": "arch-delivery / Agent A",
+      "scope": "ADR-0002：选型纯原生 .NET 10 LTS WPF + WPF-UI + Nodify 并否决 WebView2 与 WinUI 3",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：基于蓝图节点生态、UAC 提权拖拽、透明穿透窗与多屏 DPI 源码级对比裁决"
+    },
+    {
+      "path": "docs/decisions/0003-anti-cheat-guard-and-process-isolation.md",
+      "kind": "decision",
+      "status": "active",
+      "owner": "arch-delivery / Agent A",
+      "scope": "ADR-0003：Clean Host 物理隔离、PEReader IAT 门禁与 Anti-Cheat Guard 四级熔断架构",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：切断敏感 API 污染、Explorer COM 脱钩 PPID 与 15s SGuard64 退出冷却决策"
+    },
+    {
+      "path": "docs/decisions/0004-cas-fastcdc-storage-and-mod-junction-topology.md",
+      "kind": "decision",
+      "status": "active",
+      "owner": "arch-delivery / Agent A",
+      "scope": "ADR-0004：SQLite WAL + FastCDC 去重时间机器 + Hardlink/XxHash3/Junction Mod 快照拓扑",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：弃用 USVFS 钩子注入，确立非侵入硬链接、32MB SPPK Packfile 与 Git 祖先链防覆盖决策"
+    },
+    {
+      "path": "docs/decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md",
+      "kind": "decision",
+      "status": "active",
+      "owner": "arch-delivery / Agent A",
+      "scope": "ADR-0005：二次元外部生态顶层编排、FLiNG 零报毒静音与 ZBID_UIACCESS 高刷 Overlay 决策",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：内嵌 Maa.Framework、MaaFgo/BBC 双端口桥接、WASAPI 静音与 DirectComposition 覆盖层决策"
+    },
+    {
+      "path": "docs/decisions/README.md",
+      "kind": "index",
+      "status": "active",
+      "owner": "arch-delivery / Agent A",
+      "scope": "架构决策记录（ADR）、已确认决策与工程事项台账总索引",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：汇总 ADR-0001~0005、confirmed-decisions 与 open-questions 导航"
+    },
+    {
+      "path": "docs/decisions/confirmed-decisions.md",
+      "kind": "decision",
+      "status": "active",
+      "owner": "arch-delivery / Agent A",
+      "scope": "SPAWN 已确认核心产品与技术决策台账（D-01~D-18）及可逆设计默认值",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：沉淀用户明确拍板的技术栈、安全隔离、修改器/二游策略与协作规范"
+    },
+    {
+      "path": "docs/decisions/open-questions.md",
+      "kind": "decision",
+      "status": "active",
+      "owner": "arch-delivery / Agent A",
+      "scope": "SPAWN 集中工程事项与开源适配跟踪台账（OSS-* / LOOP-*）",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：记录 M2~M6 待实机锁定的非阻塞工程验证项与触发阶段"
+    },
+    {
+      "path": "docs/delivery/m1-stage-cases.json",
+      "kind": "plan",
+      "status": "active",
+      "owner": "arch-delivery / Agent A",
+      "scope": "M1 基础建设阶段可执行检查与验收用例清单",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：定义 M1 文档治理、GitHub 配置同步与追溯完整性验证用例",
+      "retireAfter": "M1"
+    },
+    {
+      "path": "docs/delivery/stage-plan.md",
+      "kind": "plan",
+      "status": "active",
+      "owner": "arch-delivery / Agent A",
+      "scope": "M1 基础建设阶段完整执行计划、工作包拆分与验收标准",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：涵盖 Git 第一提交、GitHub 保护规则、全套治理/架构/模块正本与环境盘点计划",
+      "retireAfter": "M1"
+    },
+    {
+      "path": "docs/delivery/stage-report.md",
+      "kind": "evidence",
+      "status": "active",
+      "owner": "arch-delivery / Agent B & Verifier",
+      "scope": "M1 基础建设阶段执行与门禁验证报告",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：如实记录远端同步事实、check_docs.py 实跑结果、本机 .NET 10 SDK 10.0.404 就绪及 M1 未建 C# 工程 not-run 边界",
+      "retireAfter": "M1"
+    },
+    {
+      "path": "docs/delivery/status.md",
+      "kind": "status",
+      "status": "active",
+      "owner": "arch-delivery / Agent A",
+      "scope": "SPAWN 项目当前里程碑执行状态、分支基点与下一阶段就绪条件",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：记录 M1 本地分支 feat/m1-foundation 就绪待审阅及 M2 启动前置条件"
+    },
+    {
+      "path": "docs/delivery/traceability.json",
+      "kind": "governance",
+      "status": "active",
+      "owner": "arch-delivery / Agent A",
+      "scope": "REQ-*/NFR-* 需求编号 → 设计正本 → 模块规格 → M1~M6 里程碑与 AC-* 验收双向追踪矩阵",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：建立全量功能需求与非功能需求机器可读双向追溯契约"
+    },
+    {
+      "path": "docs/design-rules/DESIGN.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "gov-rules / Agent A",
+      "scope": "SPAWN Fluent + DWM Mica 暗色美学、Nodify 引脚色板、144Hz Overlay 与多屏 DPI 视觉规范",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：定义桌面主界面、蓝图节点画布与游戏内覆盖层的统一视觉与防抢焦点交互约束"
+    },
+    {
+      "path": "docs/design/data-model.md",
+      "kind": "design",
+      "status": "active",
+      "owner": "arch-delivery / Agent A",
+      "scope": "spawn.db SQLite WAL Schema、ER 图、SPAWN_Vault 布局、FastCDC 块存储与 32MB SPPK 格式契约",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：统一五大业务域持久化表结构、内容寻址仓库与云端不可变同步清单模型"
+    },
+    {
+      "path": "docs/design/interaction-and-workflows.md",
+      "kind": "design",
+      "status": "active",
+      "owner": "arch-delivery / Agent A",
+      "scope": "SPAWN 桌面主界面导航、Profile 一键切换、蓝图单步调试、Alt+Z 锁鼠与夜间无人值守交互工作流",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：定义跨子系统端到端用户交互时序与异常状态反馈闭环"
+    },
+    {
+      "path": "docs/design/ipc-and-security-contracts.md",
+      "kind": "design",
+      "status": "active",
+      "owner": "arch-delivery / Agent A",
+      "scope": "Named Pipe gRPC SDDL 契约、MMF 环形帧缓冲、PEReader IAT 黑名单、PPID 脱钩与 15s 冷却状态机",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：固化主从跨完整性级别通信安全协议与 Anti-Cheat Guard 强制执行契约"
+    },
+    {
+      "path": "docs/design/system-architecture.md",
+      "kind": "design",
+      "status": "active",
+      "owner": "arch-delivery / Agent A",
+      "scope": "SPAWN 全景多进程物理隔离拓扑、六大宿主/Worker 职责与四级 AntiCheatTier 全局联锁矩阵",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：提炼沉淀前期总纲架构蓝图与 15 大致命工程深坑全局防御体系"
+    },
+    {
+      "path": "docs/dev-rules/README.md",
+      "kind": "index",
+      "status": "active",
+      "owner": "gov-rules / Agent A",
+      "scope": "SPAWN 开发规则目录导航索引",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：汇总仓库地图、开源准则、数据安全、协作流程、沟通、Git、本地资料与门禁入口"
+    },
+    {
+      "path": "docs/dev-rules/architecture-and-open-source.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "gov-rules / Agent A",
+      "scope": "活跃开源先行查证规则、Apache-2.0 许可证兼容矩阵与进程内/外编排边界",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：明确 MIT/Apache/LGPL/GPL 集成红线与领域核心解耦准则"
+    },
+    {
+      "path": "docs/dev-rules/communication-protocol.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "gov-rules / Agent A",
+      "scope": "Agent 对用户汇报结构、USER-ACTIONS 唯一原则、A/B 交接 Prompt 与 Swarm 消息板唤醒礼仪",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：规范单会话与 Swarm 多智能体消息板 @mention 门铃及 #seq 引用协议"
+    },
+    {
+      "path": "docs/dev-rules/data-and-security.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "gov-rules / Agent A",
+      "scope": "spawn vs spawn-dev 通道隔离、SQLite WAL 禁放网盘、非递归卸载 Junction 与 DPAPI 凭据规则",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：固化存档防误删、硬链接防写污染、DirectStorage 熔断与脱敏日志红线"
+    },
+    {
+      "path": "docs/dev-rules/development-workflow.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "gov-rules / Agent A",
+      "scope": "Agent A/B 阶段闭环、Swarm 多 Agent 子工程独占并行协议、连续执行与 7 天冷却依赖盘点",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：建立单会话与多智能体集群无碰撞并行研发与阶段清理标准"
+    },
+    {
+      "path": "docs/dev-rules/git-workflow.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "gov-rules / Agent A",
+      "scope": "不可变第一提交 SHA、单阶段单提交 amend -s DCO 规范、远端显式授权表与低频 API 准则",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：固化第一提交 ad7454c1ab58bb2019e0f0ba6810c5928f8a335e 锚点与保守远端边界"
+    },
+    {
+      "path": "docs/dev-rules/local-files-and-references.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "gov-rules / Agent A",
+      "scope": ".local/ 忽略工作区规范、SPAWN_REFERENCE_DIR 只读参考发现协议与公开内容零泄露边界",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：隔离本机调试数据、测试报告与外部参考仓库，严禁隐私或兄弟项目名入库"
+    },
+    {
+      "path": "docs/dev-rules/quality-gates.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "gov-rules / Agent A",
+      "scope": "两级质量门禁设计（check_docs.py / quick_gate.py / Stage Gate + IAT 审计）与测试前台静音规范",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：启用文档卫生门禁并定义 M2+ PEReader 导入表审计与零弹窗低优先级测试纪律"
+    },
+    {
+      "path": "docs/dev-rules/repo-map.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "gov-rules / Agent A",
+      "scope": "仓库顶层目录所有权与 Spawn.sln 多工程单向依赖及高敏 NuGet 隔离地图",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：从项目引用图层面锁定 Contracts -> Core -> Modules -> Host/Workers 物理边界"
+    },
+    {
+      "path": "docs/engineering/delivery-plan.md",
+      "kind": "plan",
+      "status": "active",
+      "owner": "arch-delivery / Agent A",
+      "scope": "SPAWN M1~M6 里程碑演进路线图与 AC-* 阶段准出验收门槛定义",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：确立 M2 首发启动器+Steamrip/GOG 成就 Overlay 闭环，接续 M3 存档修改器、M4 Mod 快照、M5 二游 DAG 与 M6 蓝图引擎路线"
+    },
+    {
+      "path": "docs/engineering/technology-selection.md",
+      "kind": "research",
+      "status": "active",
+      "owner": "arch-delivery / Agent A",
+      "scope": "35+ 活跃开源项目核验矩阵、统一 .NET 10 LTS NuGet 清单、CsWin32 API 映射与本机开发环境安装全表",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：汇总全栈开源选型许可证核验及进入 M2 编码前必备/可选开发工具链清单"
+    },
+    {
+      "path": "docs/governance/document-registry.json",
+      "kind": "governance",
+      "status": "active",
+      "owner": "gov-rules / Agent A",
+      "scope": "SPAWN 全仓自有 Markdown 与受管 JSON 文档唯一权威注册表",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：受 scripts/check_docs.py 双向完整性校验保护"
+    },
+    {
+      "path": "docs/governance/documentation-policy.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "gov-rules / Agent A",
+      "scope": "文档分层单一事实正本原则、生命周期状态、ADR 触发条件与阶段四分类清理规则",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：确立 active/draft/reference/superseded 治理契约与去旧阶段标签规范"
+    },
+    {
+      "path": "docs/modules/README.md",
+      "kind": "index",
+      "status": "active",
+      "owner": "module-specs / Agent A",
+      "scope": "S.P.A.W.N. 五大核心业务领域模块规格总览与 Spawn.sln 子工程映射",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：导航五大领域正式实现规格书与跨模块协同边界"
+    },
+    {
+      "path": "docs/modules/achievement-and-overlay.md",
+      "kind": "spec",
+      "status": "active",
+      "owner": "module-specs / Agent A",
+      "scope": "Achievement 全渠道离线/GOG/Steam 成就解析引擎与 ZBID_UIACCESS 144Hz Overlay 模块规格书",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：涵盖 15+ 模拟器字节/INI 规则、Comet 9977、gbe_fork 激活器、隐藏成就补全与 Alt+Z 锁鼠面板"
+    },
+    {
+      "path": "docs/modules/nexus-mods-and-utilities.md",
+      "kind": "spec",
+      "status": "active",
+      "owner": "module-specs / Agent A",
+      "scope": "Nexus 非侵入硬链接 Mod 编排、5 阶段 WAL 多维 Profile 原子切换与 6 大极客工具箱模块规格书",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：涵盖 CAS+Hardlink+XxHash3 回收、四大引擎加载器及便携沙箱/WOF/DLSS4/Sunshine/声卡/急救工具"
+    },
+    {
+      "path": "docs/modules/progress-saves-and-trainer.md",
+      "kind": "spec",
+      "status": "active",
+      "owner": "module-specs / Agent A",
+      "scope": "Progress 存档时间机器、SPPK 云同步与风灵月影零报毒静音管家及二期 .CT 引擎模块规格书",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：涵盖 Ludusavi 规则、FastCDC+BLAKE3+Zstd、Git 祖先链同步、FLiNG A0+A 静音与 CE 逆序指针契约"
+    },
+    {
+      "path": "docs/modules/spawn-launcher.md",
+      "kind": "spec",
+      "status": "active",
+      "owner": "module-specs / Agent A",
+      "scope": "Spawn 启动环境自愈管线、双引擎进程追踪、三态有效时长与三级漏斗离线刮削模块规格书",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：涵盖 JobObject IOCP + 0x1000 破壳追踪、CCD HDR/转区/CPU Sets 自愈与多源元数据融合"
+    },
+    {
+      "path": "docs/modules/workflow-and-blueprint.md",
+      "kind": "spec",
+      "status": "active",
+      "owner": "module-specs / Agent A",
+      "scope": "Workflow 二次元外部生态并发 DAG 编排器与 Nodify 类 UE 蓝图可视化脚本引擎模块规格书",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：涵盖 Maa.Framework 内嵌、MaaFgo/BBC 双端口桥接、主流 CLI 矩阵、睡眠唤醒防黑屏与 Kismet 异步蓝图 VM"
+    },
+    {
+      "path": "docs/product-rules/core-product-principles.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "gov-rules / Agent A",
+      "scope": "SPAWN 五大长期产品原则（跨模块联动、反作弊零污染、非侵入可逆、纯原生高性能、离线自治）",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：确立贯穿全生命周期的五项核心产品不变量"
+    },
+    {
+      "path": "docs/project-baseline.md",
+      "kind": "index",
+      "status": "active",
+      "owner": "gov-rules / Agent A",
+      "scope": "SPAWN 项目关键事实、已拍板技术基线、明确不做边界与跨会话恢复入口",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：浓缩 S.P.A.W.N. 定位、四大技术拍板与 Non-Goals 边界"
+    },
+    {
+      "path": "docs/requirements/product-requirements.md",
+      "kind": "requirements",
+      "status": "active",
+      "owner": "arch-delivery / Agent A",
+      "scope": "SPAWN 结构化功能需求（REQ-SPW/PRG/ACH/WFL/NEX/SEC）与非功能需求（NFR）正本",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：定义全生命周期需求编号、优先级与可验证判据"
+    },
+    {
+      "path": "docs/research/01-ui-architecture-and-blueprint.md",
+      "kind": "research",
+      "status": "reference",
+      "owner": "module-specs / ui-core",
+      "scope": "前期专题调研档案 01：WPF vs WinUI 3 横评、Nodify 类 UE 蓝图虚拟机与反作弊主从物理隔离推导",
+      "reviewed": "2026-11-15",
+      "basis": "M1 规范化归档：保留选型对比论证与底层 Win32 代码草图，现行有效契约以 docs/design/* 与 docs/modules/* 为准"
+    },
+    {
+      "path": "docs/research/02-launcher-process-and-mod-nexus.md",
+      "kind": "research",
+      "status": "reference",
+      "owner": "module-specs / launcher-nexus",
+      "scope": "前期专题调研档案 02：进程追踪、三态时长、环境自愈、非侵入硬链接 Mod 与 6 大极客宝藏推导",
+      "reviewed": "2026-11-15",
+      "basis": "M1 规范化归档：保留开源项目对比与底层 API 查证记录，现行有效契约以 spawn-launcher.md 与 nexus-mods-and-utilities.md 为准"
+    },
+    {
+      "path": "docs/research/03-save-timemachine-and-trainer.md",
+      "kind": "research",
+      "status": "reference",
+      "owner": "module-specs / progress-trainer",
+      "scope": "前期专题调研档案 03：Ludusavi 规则、FastCDC 时间机器、云同步及 FLiNG 静音与 CE .CT 逆向查证",
+      "reviewed": "2026-11-15",
+      "basis": "M1 规范化归档：保留 FLiNG 双代音频机制与 CE MemoryRecordUnit.pas 源码查证证据，现行契约以 progress-saves-and-trainer.md 为准"
+    },
+    {
+      "path": "docs/research/04-achievement-and-ingame-overlay.md",
+      "kind": "research",
+      "status": "reference",
+      "owner": "module-specs / ach-overlay",
+      "scope": "前期专题调研档案 04：15+ 离线模拟器字节格式、GOG 9977 协议与 ZBID_UIACCESS DirectComposition 覆盖层查证",
+      "reviewed": "2026-11-15",
+      "basis": "M1 规范化归档：保留各流派模拟器源码交叉核验与 MPO 零掉帧推导，现行契约以 achievement-and-overlay.md 为准"
+    },
+    {
+      "path": "docs/research/05-gacha-workflow-orchestration.md",
+      "kind": "research",
+      "status": "reference",
+      "owner": "module-specs / gacha-workflow",
+      "scope": "前期专题调研档案 05：MaaFramework 内嵌、MaaFgo+BBChannel 双端口注入桥接与二游无人值守生态查证",
+      "reviewed": "2026-11-15",
+      "basis": "M1 规范化归档：保留 BBChannel _ctypes.pyd 桥接源码审计与各二游 CLI 实证，现行契约以 workflow-and-blueprint.md 为准"
+    },
+    {
+      "path": "docs/research/README.md",
+      "kind": "index",
+      "status": "reference",
+      "owner": "module-specs / Agent A",
+      "scope": "前期源码级深度技术调研档案（01~05）归档说明与正式正本权威关系指引",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：明确 reference 调研档案与 active 设计/模块正本的职责分工，消除双总纲冲突"
+    },
+    {
+      "path": "docs/templates/README.md",
+      "kind": "index",
+      "status": "active",
+      "owner": "gov-rules / Agent A",
+      "scope": "SPAWN 标准工程与治理文档模板索引",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：按变更规模指导选用交接、ADR、变更提案、模块规格与验证报告模板"
+    },
+    {
+      "path": "docs/templates/agent-handoff.md",
+      "kind": "template",
+      "status": "active",
+      "owner": "gov-rules / Agent A",
+      "scope": "Agent A/B 阶段规划、交付、集中审查与远端授权移交模板（含标准可复制 Prompt）",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：对齐单阶段单提交 DCO 与 USER-ACTIONS 授权闭环"
+    },
+    {
+      "path": "docs/templates/change-proposal.md",
+      "kind": "template",
+      "status": "active",
+      "owner": "gov-rules / Agent A",
+      "scope": "跨模块功能与契约变更提案模板",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：强制核对进程隔离域、IAT 影响、Apache-2.0 兼容性与断电回滚策略"
+    },
+    {
+      "path": "docs/templates/decision-record.md",
+      "kind": "template",
+      "status": "active",
+      "owner": "gov-rules / Agent A",
+      "scope": "架构决策记录（ADR）标准模板",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：要求源码级对比证据、自研/复用边界与可逆退出条件"
+    },
+    {
+      "path": "docs/templates/module-spec.md",
+      "kind": "template",
+      "status": "active",
+      "owner": "gov-rules / Agent A",
+      "scope": "SPAWN 业务领域模块规格书标准模板",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：统一进程完整性级别、接口状态机、存储布局、反作弊联锁与门禁测试结构"
+    },
+    {
+      "path": "docs/templates/validation-report.md",
+      "kind": "template",
+      "status": "active",
+      "owner": "gov-rules / Agent A",
+      "scope": "里程碑交付与专项技术验证报告模板",
+      "reviewed": "2026-11-15",
+      "basis": "M1 v1.0：强制区分 passed/failed/blocked/not-run 与实现/技术审查/产品验收三维结论"
+    }
+  ]
+}

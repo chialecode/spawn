@@ -1,0 +1,117 @@
+{
+  "schemaVersion": 1,
+  "project": "SPAWN",
+  "stage": "M1",
+  "planVersion": "1.0",
+  "branch": "feat/m1-foundation",
+  "baseCommit": "ad7454c1ab58bb2019e0f0ba6810c5928f8a335e",
+  "cases": [
+    {
+      "id": "M1-A-01",
+      "kind": "automated",
+      "workItem": "M1-W01",
+      "title": "不可变第一提交锚点与远端 GitHub main-protection 规则集核验",
+      "requirements": [
+        "NFR-07",
+        "NFR-08"
+      ],
+      "acceptance": [
+        "AC-01"
+      ],
+      "verification": "git rev-parse main && gh api repos/chialecode/spawn/rulesets/27309712",
+      "expected": "main 与 origin/main 恒定指向 ad7454c1ab58bb2019e0f0ba6810c5928f8a335e，main-protection 处于 active 且强制线性历史、Squash 合并与必选检查 docs",
+      "status": "verified"
+    },
+    {
+      "id": "M1-A-02",
+      "kind": "automated",
+      "workItem": "M1-W02",
+      "title": "受控文档注册表全覆盖与相对路径链接存活门禁",
+      "requirements": [
+        "NFR-08"
+      ],
+      "acceptance": [
+        "AC-01"
+      ],
+      "verification": "python -B scripts/check_docs.py",
+      "expected": "退出码为 0，全仓受控文档与 document-registry.json 100% 双向对齐，零死链、零引用式 Markdown 链接",
+      "status": "verified"
+    },
+    {
+      "id": "M1-A-03",
+      "kind": "automated",
+      "workItem": "M1-W04",
+      "title": "全仓路径脱敏、跨仓命名零污染与前期调研归档洁净度检查",
+      "requirements": [
+        "NFR-08"
+      ],
+      "acceptance": [
+        "AC-01"
+      ],
+      "verification": "python -B scripts/check_docs.py",
+      "expected": "全仓文档与 JSON 配置零本机盘符绝对路径、零无关外部项目词汇，5 篇专题调研报告已归档至 docs/research/ 且临时总纲已清退",
+      "status": "verified"
+    },
+    {
+      "id": "M1-A-04",
+      "kind": "automated",
+      "workItem": "M1-W03",
+      "title": "47 项产品/非功能需求、.NET 10 LTS 决策、系统设计、模块规格与重排 M2-M6 验收双向追踪闭环",
+      "requirements": [
+        "NFR-07",
+        "NFR-08"
+      ],
+      "acceptance": [
+        "AC-01"
+      ],
+      "verification": "python -B scripts/check_docs.py",
+      "expected": "product-requirements.md 中全部 39 项 REQ-* 与 8 项 NFR-* 在 traceability.json 中 100% 按新 M2-M6 路线映射至有效设计文档、模块规格与 AC-01..AC-24",
+      "status": "verified"
+    },
+    {
+      "id": "M1-A-05",
+      "kind": "automated",
+      "workItem": "M1-W05",
+      "title": "单阶段单提交 DCO 签名、工作区洁净度与本机 .NET 10 SDK 10.0.404 就绪核验",
+      "requirements": [
+        "NFR-08"
+      ],
+      "acceptance": [
+        "AC-01"
+      ],
+      "verification": "dotnet --list-sdks && git diff main..HEAD --check && git log --format=%B -n 1 feat/m1-foundation",
+      "expected": "本机已装妥 .NET 10 SDK 10.0.404，feat/m1-foundation 领先 main 恰好 1 个含合法 Signed-off-by 的原子提交且工作树干净",
+      "status": "verified"
+    },
+    {
+      "id": "M1-A-06",
+      "kind": "automated",
+      "workItem": "M1-W01",
+      "title": "GitHub Actions 工作流最小权限与完整 40 位 Commit SHA 固定校验",
+      "requirements": [
+        "NFR-08"
+      ],
+      "acceptance": [
+        "AC-01"
+      ],
+      "verification": "python -B scripts/check_docs.py",
+      "expected": ".github/workflows/docs.yml 显式声明 permissions: contents: read 且第三方 Action 使用完整 40 位 SHA 固定",
+      "status": "verified"
+    },
+    {
+      "id": "M1-M-01",
+      "kind": "manual",
+      "workItem": "M1-W05",
+      "title": "仓库所有者审阅确认 M1 基线并按 ACT-002 授权远端推送与创建 PR #1",
+      "requirements": [
+        "NFR-08"
+      ],
+      "acceptance": [
+        "AC-01"
+      ],
+      "verification": "人工审阅 USER-ACTIONS.md 中 ACT-002 并明确回复远端推送与 PR 合并授权",
+      "expected": "用户确认 M1 (.NET 10 LTS 与 M2 单机成就闭环路线) 架构契约无误后授权推送 PR 合入 main，随即开启 M2 编码",
+      "status": "pending_user"
+    }
+  ]
+}

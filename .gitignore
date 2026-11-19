@@ -1,0 +1,62 @@
+# Build outputs and intermediate artifacts (.NET 10 / C# / Visual Studio)
+[Bb]in/
+[Oo]bj/
+[Pp]ublish/
+[Aa]rtifacts/
+[Oo]ut/
+dist/
+build/
+.vs/
+TestResults/
+[Bb]enchmarkDotNet.Artifacts/
+*.user
+*.userosscache
+*.suo
+*.sln.docstates
+project.lock.json
+project.fragment.lock.json
+*.nupkg
+*.snupkg
+
+# Python tooling and gate caches
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local workspace, runtime databases, and content-addressed vault
+.local/
+SPAWN_Vault/
+*.db
+*.db-*
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-*
+*.sppk
+
+# Secrets, environment overrides, and code-signing keys / certificates
+.env
+.env.*
+!.env.example
+*.pfx
+*.p12
+*.key
+*.pem
+*.snk
+
+# Crash dumps and transient logs
+*.dmp
+*.hdmp
+*.log
+
+# Editor and OS metadata
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini

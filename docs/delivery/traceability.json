@@ -1,0 +1,1007 @@
+{
+  "schemaVersion": 1,
+  "project": "SPAWN",
+  "updatedAt": "2026-11-15",
+  "requirements": [
+    {
+      "id": "REQ-SPW-01",
+      "priority": "P0",
+      "title": "无损双通道进程树生命周期追踪",
+      "stage": "M2",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0003-anti-cheat-guard-and-process-isolation.md"
+      ],
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/ipc-and-security-contracts.md"
+      ],
+      "modules": [
+        "docs/modules/spawn-launcher.md"
+      ],
+      "acceptance": [
+        "AC-04"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-SPW-02",
+      "priority": "P0",
+      "title": "三态精准游玩时长统计引擎",
+      "stage": "M2",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0002-pure-native-wpf-and-nodify-ui-stack.md"
+      ],
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/data-model.md"
+      ],
+      "modules": [
+        "docs/modules/spawn-launcher.md"
+      ],
+      "acceptance": [
+        "AC-04"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-SPW-03",
+      "priority": "P1",
+      "title": "断电自愈的游戏启停环境接管管线",
+      "stage": "M4",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/confirmed-decisions.md"
+      ],
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/data-model.md"
+      ],
+      "modules": [
+        "docs/modules/spawn-launcher.md"
+      ],
+      "acceptance": [
+        "AC-15"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-SPW-04",
+      "priority": "P1",
+      "title": "双架构区域转码与混合架构 CPU 调度优化",
+      "stage": "M4",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/confirmed-decisions.md"
+      ],
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/data-model.md"
+      ],
+      "modules": [
+        "docs/modules/spawn-launcher.md"
+      ],
+      "acceptance": [
+        "AC-15"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-SPW-05",
+      "priority": "P1",
+      "title": "桌面伴生工具协同编排",
+      "stage": "M4",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/confirmed-decisions.md"
+      ],
+      "design": [
+        "docs/design/system-architecture.md"
+      ],
+      "modules": [
+        "docs/modules/spawn-launcher.md"
+      ],
+      "acceptance": [
+        "AC-15"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-SPW-06",
+      "priority": "P1",
+      "title": "三级瀑布流离线与多源元数据刮削",
+      "stage": "M2",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/confirmed-decisions.md"
+      ],
+      "design": [
+        "docs/design/data-model.md",
+        "docs/design/interaction-and-workflows.md"
+      ],
+      "modules": [
+        "docs/modules/spawn-launcher.md"
+      ],
+      "acceptance": [
+        "AC-05"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-PRG-01",
+      "priority": "P0",
+      "title": "原生 ludusavi-manifest 存档探测与配置剥离",
+      "stage": "M3",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0004-cas-fastcdc-storage-and-mod-junction-topology.md"
+      ],
+      "design": [
+        "docs/design/data-model.md"
+      ],
+      "modules": [
+        "docs/modules/progress-saves-and-trainer.md"
+      ],
+      "acceptance": [
+        "AC-09"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-PRG-02",
+      "priority": "P0",
+      "title": "基于 FastCDC 的存档时间机器与防撕裂原子回滚",
+      "stage": "M3",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0004-cas-fastcdc-storage-and-mod-junction-topology.md"
+      ],
+      "design": [
+        "docs/design/data-model.md",
+        "docs/design/interaction-and-workflows.md"
+      ],
+      "modules": [
+        "docs/modules/progress-saves-and-trainer.md"
+      ],
+      "acceptance": [
+        "AC-10"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-PRG-03",
+      "priority": "P1",
+      "title": "32MB SPPK Packfile 自建云同步与血缘合并",
+      "stage": "M3",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0004-cas-fastcdc-storage-and-mod-junction-topology.md"
+      ],
+      "design": [
+        "docs/design/data-model.md",
+        "docs/design/interaction-and-workflows.md"
+      ],
+      "modules": [
+        "docs/modules/progress-saves-and-trainer.md"
+      ],
+      "acceptance": [
+        "AC-11"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-PRG-04",
+      "priority": "P1",
+      "title": "FLiNG 外部修改器确定性检索与双语热键解析",
+      "stage": "M3",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md"
+      ],
+      "design": [
+        "docs/design/data-model.md"
+      ],
+      "modules": [
+        "docs/modules/progress-saves-and-trainer.md"
+      ],
+      "acceptance": [
+        "AC-12"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-PRG-05",
+      "priority": "P0",
+      "title": "零杀软误报修改器启动静音与独立音效控制",
+      "stage": "M3",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md"
+      ],
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/interaction-and-workflows.md"
+      ],
+      "modules": [
+        "docs/modules/progress-saves-and-trainer.md"
+      ],
+      "acceptance": [
+        "AC-12"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-PRG-06",
+      "priority": "P0",
+      "title": "High IL TrainerWorker 沙箱执行与硬件扫描码热键代理",
+      "stage": "M3",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0003-anti-cheat-guard-and-process-isolation.md",
+        "docs/decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md"
+      ],
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/ipc-and-security-contracts.md"
+      ],
+      "modules": [
+        "docs/modules/progress-saves-and-trainer.md"
+      ],
+      "acceptance": [
+        "AC-12"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-PRG-07",
+      "priority": "P2",
+      "title": "二期原生 .CT 内存修改引擎扩展契约",
+      "stage": "M6",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md"
+      ],
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/ipc-and-security-contracts.md"
+      ],
+      "modules": [
+        "docs/modules/progress-saves-and-trainer.md"
+      ],
+      "acceptance": [
+        "AC-24"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-ACH-01",
+      "priority": "P0",
+      "title": "15+ 离线模拟器、GOG 本地安装版与正版 Steam 全栈解析矩阵",
+      "stage": "M2",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md"
+      ],
+      "design": [
+        "docs/design/data-model.md"
+      ],
+      "modules": [
+        "docs/modules/achievement-and-overlay.md"
+      ],
+      "acceptance": [
+        "AC-06"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-ACH-02",
+      "priority": "P0",
+      "title": "四层防漏监听管线与首次入库静默对齐",
+      "stage": "M2",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md"
+      ],
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/data-model.md"
+      ],
+      "modules": [
+        "docs/modules/achievement-and-overlay.md"
+      ],
+      "acceptance": [
+        "AC-06"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-ACH-03",
+      "priority": "P1",
+      "title": "无成就桩老旧发行版一键无损赋能",
+      "stage": "M2",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md"
+      ],
+      "design": [
+        "docs/design/data-model.md"
+      ],
+      "modules": [
+        "docs/modules/achievement-and-overlay.md"
+      ],
+      "acceptance": [
+        "AC-07"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-ACH-04",
+      "priority": "P1",
+      "title": "零配置中文成就 Schema 瀑布流与剧透保护灰阶图标合成",
+      "stage": "M2",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md"
+      ],
+      "design": [
+        "docs/design/data-model.md",
+        "docs/design/interaction-and-workflows.md"
+      ],
+      "modules": [
+        "docs/modules/achievement-and-overlay.md"
+      ],
+      "acceptance": [
+        "AC-07"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-ACH-05",
+      "priority": "P0",
+      "title": "144Hz 零掉帧独立合成弹窗宿主",
+      "stage": "M2",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0003-anti-cheat-guard-and-process-isolation.md",
+        "docs/decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md"
+      ],
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/ipc-and-security-contracts.md"
+      ],
+      "modules": [
+        "docs/modules/achievement-and-overlay.md"
+      ],
+      "acceptance": [
+        "AC-08"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-ACH-06",
+      "priority": "P1",
+      "title": "Alt+Z 与手柄组合键游戏内交互式面板",
+      "stage": "M4",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md"
+      ],
+      "design": [
+        "docs/design/ipc-and-security-contracts.md",
+        "docs/design/interaction-and-workflows.md"
+      ],
+      "modules": [
+        "docs/modules/achievement-and-overlay.md"
+      ],
+      "acceptance": [
+        "AC-16"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-WFL-01",
+      "priority": "P0",
+      "title": "明日方舟 MAA 无自重启配置预写与双轨集成",
+      "stage": "M5",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md"
+      ],
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/interaction-and-workflows.md"
+      ],
+      "modules": [
+        "docs/modules/workflow-and-blueprint.md"
+      ],
+      "acceptance": [
+        "AC-17"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-WFL-02",
+      "priority": "P0",
+      "title": "MaaFramework 生态宿主级 C# 原生内嵌与 CLI 降级",
+      "stage": "M5",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md"
+      ],
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/data-model.md"
+      ],
+      "modules": [
+        "docs/modules/workflow-and-blueprint.md"
+      ],
+      "acceptance": [
+        "AC-17"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-WFL-03",
+      "priority": "P1",
+      "title": "FGO MaaFgo + 闭源 BBChannel 双端口协议桥接与防卡死看门狗",
+      "stage": "M5",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md"
+      ],
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/interaction-and-workflows.md"
+      ],
+      "modules": [
+        "docs/modules/workflow-and-blueprint.md"
+      ],
+      "acceptance": [
+        "AC-18"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-WFL-04",
+      "priority": "P1",
+      "title": "主流 PC 原生二次元助手标准化 CLI 适配器与预更新",
+      "stage": "M5",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md"
+      ],
+      "design": [
+        "docs/design/data-model.md",
+        "docs/design/interaction-and-workflows.md"
+      ],
+      "modules": [
+        "docs/modules/workflow-and-blueprint.md"
+      ],
+      "acceptance": [
+        "AC-19"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-WFL-05",
+      "priority": "P0",
+      "title": "四维资源锁感知的并发 DAG 编排器",
+      "stage": "M5",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md"
+      ],
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/data-model.md",
+        "docs/design/interaction-and-workflows.md"
+      ],
+      "modules": [
+        "docs/modules/workflow-and-blueprint.md"
+      ],
+      "acceptance": [
+        "AC-19"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-WFL-06",
+      "priority": "P1",
+      "title": "夜间无人值守闭环：RTC 唤醒、防烧屏黑屏幕布、战报推送与安全睡眠",
+      "stage": "M5",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md"
+      ],
+      "design": [
+        "docs/design/data-model.md",
+        "docs/design/interaction-and-workflows.md"
+      ],
+      "modules": [
+        "docs/modules/workflow-and-blueprint.md"
+      ],
+      "acceptance": [
+        "AC-20"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-WFL-07",
+      "priority": "P1",
+      "title": "全程可视化类 UE 蓝图引擎与发光单步调试虚拟机",
+      "stage": "M6",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0002-pure-native-wpf-and-nodify-ui-stack.md",
+        "docs/decisions/0003-anti-cheat-guard-and-process-isolation.md"
+      ],
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/ipc-and-security-contracts.md",
+        "docs/design/interaction-and-workflows.md"
+      ],
+      "modules": [
+        "docs/modules/workflow-and-blueprint.md"
+      ],
+      "acceptance": [
+        "AC-21",
+        "AC-22"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-NEX-01",
+      "priority": "P0",
+      "title": "CAS 硬链接 Mod 仓库、原版文件保护与可变配置增量回收",
+      "stage": "M4",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0004-cas-fastcdc-storage-and-mod-junction-topology.md"
+      ],
+      "design": [
+        "docs/design/data-model.md"
+      ],
+      "modules": [
+        "docs/modules/nexus-mods-and-utilities.md"
+      ],
+      "acceptance": [
+        "AC-13"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-NEX-02",
+      "priority": "P1",
+      "title": "跨游戏引擎语义化加载器编排",
+      "stage": "M4",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0004-cas-fastcdc-storage-and-mod-junction-topology.md"
+      ],
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/data-model.md"
+      ],
+      "modules": [
+        "docs/modules/nexus-mods-and-utilities.md"
+      ],
+      "acceptance": [
+        "AC-14"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-NEX-03",
+      "priority": "P0",
+      "title": "五位一体多维 Profile <100ms 原子切换与 WAL 自愈",
+      "stage": "M4",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0004-cas-fastcdc-storage-and-mod-junction-topology.md"
+      ],
+      "design": [
+        "docs/design/data-model.md",
+        "docs/design/interaction-and-workflows.md"
+      ],
+      "modules": [
+        "docs/modules/nexus-mods-and-utilities.md"
+      ],
+      "acceptance": [
+        "AC-14"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-NEX-04",
+      "priority": "P1",
+      "title": "绿色便携沙箱化与智能熵值感知透明压缩",
+      "stage": "M6",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/confirmed-decisions.md"
+      ],
+      "design": [
+        "docs/design/system-architecture.md"
+      ],
+      "modules": [
+        "docs/modules/nexus-mods-and-utilities.md"
+      ],
+      "acceptance": [
+        "AC-23"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-NEX-05",
+      "priority": "P2",
+      "title": "超分 DLL 官方签名热替换与 Sunshine 串流动态虚拟屏协同",
+      "stage": "M6",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/confirmed-decisions.md"
+      ],
+      "design": [
+        "docs/design/system-architecture.md"
+      ],
+      "modules": [
+        "docs/modules/nexus-mods-and-utilities.md"
+      ],
+      "acceptance": [
+        "AC-23"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-NEX-06",
+      "priority": "P2",
+      "title": "进程级独立音频路由与战术应急工具箱",
+      "stage": "M6",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0003-anti-cheat-guard-and-process-isolation.md"
+      ],
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/ipc-and-security-contracts.md"
+      ],
+      "modules": [
+        "docs/modules/nexus-mods-and-utilities.md"
+      ],
+      "acceptance": [
+        "AC-23"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-NEX-07",
+      "priority": "P1",
+      "title": "跨模块 Profile 与存档联动防坏档护栏",
+      "stage": "M4",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0004-cas-fastcdc-storage-and-mod-junction-topology.md"
+      ],
+      "design": [
+        "docs/design/data-model.md",
+        "docs/design/interaction-and-workflows.md"
+      ],
+      "modules": [
+        "docs/modules/nexus-mods-and-utilities.md",
+        "docs/modules/progress-saves-and-trainer.md"
+      ],
+      "acceptance": [
+        "AC-14"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-SEC-01",
+      "priority": "P0",
+      "title": "Clean Host 绝对纯净导入表与 CI 静态 PE 门禁",
+      "stage": "M2",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0003-anti-cheat-guard-and-process-isolation.md"
+      ],
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/ipc-and-security-contracts.md"
+      ],
+      "modules": [
+        "docs/modules/spawn-launcher.md"
+      ],
+      "acceptance": [
+        "AC-02"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-SEC-02",
+      "priority": "P0",
+      "title": "全域 0x1000 最低权限进程探测铁律",
+      "stage": "M2",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0003-anti-cheat-guard-and-process-isolation.md"
+      ],
+      "design": [
+        "docs/design/ipc-and-security-contracts.md"
+      ],
+      "modules": [
+        "docs/modules/spawn-launcher.md"
+      ],
+      "acceptance": [
+        "AC-02"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-SEC-03",
+      "priority": "P0",
+      "title": "四级 AntiCheatTier 全局联锁矩阵与启动前高危环境清场",
+      "stage": "M2",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0003-anti-cheat-guard-and-process-isolation.md"
+      ],
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/ipc-and-security-contracts.md"
+      ],
+      "modules": [
+        "docs/modules/spawn-launcher.md"
+      ],
+      "acceptance": [
+        "AC-03"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-SEC-04",
+      "priority": "P0",
+      "title": "Explorer Shell COM 进程血缘脱钩启动",
+      "stage": "M2",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0003-anti-cheat-guard-and-process-isolation.md"
+      ],
+      "design": [
+        "docs/design/ipc-and-security-contracts.md"
+      ],
+      "modules": [
+        "docs/modules/spawn-launcher.md"
+      ],
+      "acceptance": [
+        "AC-03"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-SEC-05",
+      "priority": "P0",
+      "title": "内核反作弊残影 15 秒强制静默冷却期状态机",
+      "stage": "M2",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0003-anti-cheat-guard-and-process-isolation.md"
+      ],
+      "design": [
+        "docs/design/ipc-and-security-contracts.md",
+        "docs/design/interaction-and-workflows.md"
+      ],
+      "modules": [
+        "docs/modules/spawn-launcher.md"
+      ],
+      "acceptance": [
+        "AC-03"
+      ],
+      "cases": []
+    },
+    {
+      "id": "REQ-SEC-06",
+      "priority": "P0",
+      "title": "跨完整性级别命名管道 SDDL 授权与本地文件 DPAPI 凭据保护",
+      "stage": "M2",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0003-anti-cheat-guard-and-process-isolation.md"
+      ],
+      "design": [
+        "docs/design/data-model.md",
+        "docs/design/ipc-and-security-contracts.md"
+      ],
+      "modules": [
+        "docs/modules/spawn-launcher.md",
+        "docs/modules/progress-saves-and-trainer.md"
+      ],
+      "acceptance": [
+        "AC-02"
+      ],
+      "cases": []
+    },
+    {
+      "id": "NFR-01",
+      "priority": "P0",
+      "title": "原生桌面性能与低资源驻留",
+      "stage": "M2",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0002-pure-native-wpf-and-nodify-ui-stack.md"
+      ],
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/interaction-and-workflows.md"
+      ],
+      "modules": [
+        "docs/modules/spawn-launcher.md",
+        "docs/modules/workflow-and-blueprint.md"
+      ],
+      "acceptance": [
+        "AC-02",
+        "AC-21"
+      ],
+      "cases": []
+    },
+    {
+      "id": "NFR-02",
+      "priority": "P0",
+      "title": "游戏内高刷零帧率损耗",
+      "stage": "M2",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md"
+      ],
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/ipc-and-security-contracts.md"
+      ],
+      "modules": [
+        "docs/modules/achievement-and-overlay.md"
+      ],
+      "acceptance": [
+        "AC-08"
+      ],
+      "cases": []
+    },
+    {
+      "id": "NFR-03",
+      "priority": "P0",
+      "title": "崩溃与断电幂等自愈",
+      "stage": "M3",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0004-cas-fastcdc-storage-and-mod-junction-topology.md"
+      ],
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/data-model.md"
+      ],
+      "modules": [
+        "docs/modules/spawn-launcher.md",
+        "docs/modules/nexus-mods-and-utilities.md",
+        "docs/modules/progress-saves-and-trainer.md"
+      ],
+      "acceptance": [
+        "AC-10",
+        "AC-14",
+        "AC-15"
+      ],
+      "cases": []
+    },
+    {
+      "id": "NFR-04",
+      "priority": "P0",
+      "title": "自动化测试全程静默与零抢焦点",
+      "stage": "M2",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0001-document-governance-and-collaboration.md"
+      ],
+      "design": [
+        "docs/design/system-architecture.md"
+      ],
+      "modules": [
+        "docs/modules/spawn-launcher.md"
+      ],
+      "acceptance": [
+        "AC-02"
+      ],
+      "cases": []
+    },
+    {
+      "id": "NFR-05",
+      "priority": "P0",
+      "title": "正式版与开发版双通道物理隔离",
+      "stage": "M2",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/0001-document-governance-and-collaboration.md"
+      ],
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/data-model.md"
+      ],
+      "modules": [
+        "docs/modules/spawn-launcher.md"
+      ],
+      "acceptance": [
+        "AC-02"
+      ],
+      "cases": []
+    },
+    {
+      "id": "NFR-06",
+      "priority": "P1",
+      "title": "离线自治与隐私零遥测",
+      "stage": "M2",
+      "status": "planned",
+      "decisions": [
+        "docs/decisions/confirmed-decisions.md"
+      ],
+      "design": [
+        "docs/design/system-architecture.md"
+      ],
+      "modules": [
+        "docs/modules/spawn-launcher.md",
+        "docs/modules/achievement-and-overlay.md"
+      ],
+      "acceptance": [
+        "AC-05"
+      ],
+      "cases": []
+    },
+    {
+      "id": "NFR-07",
+      "priority": "P0",
+      "title": "开源合规与许可证洁净度",
+      "stage": "M1",
+      "status": "verified",
+      "decisions": [
+        "docs/decisions/0001-document-governance-and-collaboration.md"
+      ],
+      "design": [
+        "docs/engineering/technology-selection.md"
+      ],
+      "modules": [
+        "docs/modules/README.md"
+      ],
+      "acceptance": [
+        "AC-01",
+        "AC-24"
+      ],
+      "cases": [
+        "M1-A-01",
+        "M1-A-04"
+      ]
+    },
+    {
+      "id": "NFR-08",
+      "priority": "P0",
+      "title": "文档治理与双向可追踪性",
+      "stage": "M1",
+      "status": "verified",
+      "decisions": [
+        "docs/decisions/0001-document-governance-and-collaboration.md"
+      ],
+      "design": [
+        "docs/design/system-architecture.md"
+      ],
+      "modules": [
+        "docs/modules/README.md"
+      ],
+      "acceptance": [
+        "AC-01"
+      ],
+      "cases": [
+        "M1-A-01",
+        "M1-A-02",
+        "M1-A-03",
+        "M1-A-04",
+        "M1-A-05",
+        "M1-A-06",
+        "M1-M-01"
+      ]
+    }
+  ]
+}

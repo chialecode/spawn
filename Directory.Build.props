@@ -1,0 +1,34 @@
+<Project>
+  <PropertyGroup>
+    <LangVersion>14.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <Deterministic>true</Deterministic>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest-minimum</AnalysisLevel>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);NU1701;CA1416</NoWarn>
+    <Authors>SPAWN Contributors</Authors>
+    <Product>SPAWN</Product>
+    <Copyright>Copyright (c) SPAWN Contributors. Licensed under Apache-2.0.</Copyright>
+
+    <!-- Build, Channel & Identity Metadata (injected by scripts/package.py for dev/release installers) -->
+    <SpawnChannel Condition="'$(SpawnChannel)' == ''">source</SpawnChannel>
+    <SpawnIdentity Condition="'$(SpawnIdentity)' == '' and '$(SpawnChannel)' == 'release'">spawn</SpawnIdentity>
+    <SpawnIdentity Condition="'$(SpawnIdentity)' == ''">spawn-dev</SpawnIdentity>
+    <SpawnVersion Condition="'$(SpawnVersion)' == ''">0.1.0-source</SpawnVersion>
+    <SpawnCommitSha Condition="'$(SpawnCommitSha)' == ''">local</SpawnCommitSha>
+    <SpawnBuildTimeUtc Condition="'$(SpawnBuildTimeUtc)' == ''">dev</SpawnBuildTimeUtc>
+    <InformationalVersion>$(SpawnVersion)+$(SpawnCommitSha)</InformationalVersion>
+    <ApplicationIcon Condition="'$(SpawnApplicationIcon)' != '' and Exists('$(SpawnApplicationIcon)')">$(SpawnApplicationIcon)</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyMetadata Include="SpawnChannel" Value="$(SpawnChannel)" />
+    <AssemblyMetadata Include="SpawnIdentity" Value="$(SpawnIdentity)" />
+    <AssemblyMetadata Include="SpawnVersion" Value="$(SpawnVersion)" />
+    <AssemblyMetadata Include="SpawnCommitSha" Value="$(SpawnCommitSha)" />
+    <AssemblyMetadata Include="SpawnBuildTimeUtc" Value="$(SpawnBuildTimeUtc)" />
+  </ItemGroup>
+</Project>

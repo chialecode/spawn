@@ -1,0 +1,50 @@
+name: .NET 10 Build & Architecture Gates
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dotnet-windows:
+    name: dotnet-windows
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up .NET 10 SDK
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+        with:
+          global-json-file: global.json
+
+      - name: Restore NuGet dependencies
+        run: dotnet restore Spawn.sln
+
+      - name: Build solution (Release)
+        run: dotnet build Spawn.sln -c Release --no-restore -nologo
+
+      - name: Run Architecture IAT & Core test suites (headless, temp-isolated)
+        run: dotnet test Spawn.sln -c Release --no-build -nologo --verbosity normal
+
+      - name: Verify documentation governance and whitespace hygiene
+        run: |
+          python -B scripts/check_docs.py
+          git diff --check

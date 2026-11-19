@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
   "project": "SPAWN",
-  "updatedAt": "2026-11-15",
+  "updatedAt": "2026-11-20",
   "requirements": [
     {
       "id": "REQ-SPW-01",
       "priority": "P0",
       "title": "无损双通道进程树生命周期追踪",
       "stage": "M2",
-      "status": "planned",
+      "status": "verified",
       "decisions": [
         "docs/decisions/0003-anti-cheat-guard-and-process-isolation.md"
       ],
@@ -22,14 +22,17 @@
       "acceptance": [
         "AC-04"
       ],
-      "cases": []
+      "cases": [
+        "M2-A-04",
+        "M2-M-01"
+      ]
     },
     {
       "id": "REQ-SPW-02",
       "priority": "P0",
       "title": "三态精准游玩时长统计引擎",
       "stage": "M2",
-      "status": "planned",
+      "status": "verified",
       "decisions": [
         "docs/decisions/0002-pure-native-wpf-and-nodify-ui-stack.md"
       ],
@@ -43,7 +46,9 @@
       "acceptance": [
         "AC-04"
       ],
-      "cases": []
+      "cases": [
+        "M2-A-04"
+      ]
     },
     {
       "id": "REQ-SPW-03",
@@ -112,7 +117,7 @@
       "priority": "P1",
       "title": "三级瀑布流离线与多源元数据刮削",
       "stage": "M2",
-      "status": "planned",
+      "status": "verified",
       "decisions": [
         "docs/decisions/confirmed-decisions.md"
       ],
@@ -126,7 +131,11 @@
       "acceptance": [
         "AC-05"
       ],
-      "cases": []
+      "cases": [
+        "M2-A-05",
+        "M2-A-09",
+        "M2-M-01"
+      ]
     },
     {
       "id": "REQ-PRG-01",
@@ -279,7 +288,7 @@
       "priority": "P0",
       "title": "15+ 离线模拟器、GOG 本地安装版与正版 Steam 全栈解析矩阵",
       "stage": "M2",
-      "status": "planned",
+      "status": "verified",
       "decisions": [
         "docs/decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md"
       ],
@@ -292,14 +301,17 @@
       "acceptance": [
         "AC-06"
       ],
-      "cases": []
+      "cases": [
+        "M2-A-06",
+        "M2-M-01"
+      ]
     },
     {
       "id": "REQ-ACH-02",
       "priority": "P0",
       "title": "四层防漏监听管线与首次入库静默对齐",
       "stage": "M2",
-      "status": "planned",
+      "status": "verified",
       "decisions": [
         "docs/decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md"
       ],
@@ -313,14 +325,16 @@
       "acceptance": [
         "AC-06"
       ],
-      "cases": []
+      "cases": [
+        "M2-A-06"
+      ]
     },
     {
       "id": "REQ-ACH-03",
       "priority": "P1",
       "title": "无成就桩老旧发行版一键无损赋能",
       "stage": "M2",
-      "status": "planned",
+      "status": "verified",
       "decisions": [
         "docs/decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md"
       ],
@@ -333,14 +347,16 @@
       "acceptance": [
         "AC-07"
       ],
-      "cases": []
+      "cases": [
+        "M2-A-07"
+      ]
     },
     {
       "id": "REQ-ACH-04",
       "priority": "P1",
       "title": "零配置中文成就 Schema 瀑布流与剧透保护灰阶图标合成",
       "stage": "M2",
-      "status": "planned",
+      "status": "verified",
       "decisions": [
         "docs/decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md"
       ],
@@ -354,14 +370,16 @@
       "acceptance": [
         "AC-07"
       ],
-      "cases": []
+      "cases": [
+        "M2-A-07"
+      ]
     },
     {
       "id": "REQ-ACH-05",
       "priority": "P0",
       "title": "144Hz 零掉帧独立合成弹窗宿主",
       "stage": "M2",
-      "status": "planned",
+      "status": "verified",
       "decisions": [
         "docs/decisions/0003-anti-cheat-guard-and-process-isolation.md",
         "docs/decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md"
@@ -376,7 +394,10 @@
       "acceptance": [
         "AC-08"
       ],
-      "cases": []
+      "cases": [
+        "M2-A-08",
+        "M2-M-01"
+      ]
     },
     {
       "id": "REQ-ACH-06",
@@ -700,7 +721,7 @@
       "priority": "P0",
       "title": "Clean Host 绝对纯净导入表与 CI 静态 PE 门禁",
       "stage": "M2",
-      "status": "planned",
+      "status": "verified",
       "decisions": [
         "docs/decisions/0003-anti-cheat-guard-and-process-isolation.md"
       ],
@@ -714,14 +735,16 @@
       "acceptance": [
         "AC-02"
       ],
-      "cases": []
+      "cases": [
+        "M2-A-01"
+      ]
     },
     {
       "id": "REQ-SEC-02",
       "priority": "P0",
       "title": "全域 0x1000 最低权限进程探测铁律",
       "stage": "M2",
-      "status": "planned",
+      "status": "verified",
       "decisions": [
         "docs/decisions/0003-anti-cheat-guard-and-process-isolation.md"
       ],
@@ -734,14 +757,16 @@
       "acceptance": [
         "AC-02"
       ],
-      "cases": []
+      "cases": [
+        "M2-A-01"
+      ]
     },
     {
       "id": "REQ-SEC-03",
       "priority": "P0",
       "title": "四级 AntiCheatTier 全局联锁矩阵与启动前高危环境清场",
       "stage": "M2",
-      "status": "planned",
+      "status": "verified",
       "decisions": [
         "docs/decisions/0003-anti-cheat-guard-and-process-isolation.md"
       ],
@@ -755,14 +780,16 @@
       "acceptance": [
         "AC-03"
       ],
-      "cases": []
+      "cases": [
+        "M2-A-03"
+      ]
     },
     {
       "id": "REQ-SEC-04",
       "priority": "P0",
       "title": "Explorer Shell COM 进程血缘脱钩启动",
       "stage": "M2",
-      "status": "planned",
+      "status": "verified",
       "decisions": [
         "docs/decisions/0003-anti-cheat-guard-and-process-isolation.md"
       ],
@@ -775,14 +802,16 @@
       "acceptance": [
         "AC-03"
       ],
-      "cases": []
+      "cases": [
+        "M2-A-03"
+      ]
     },
     {
       "id": "REQ-SEC-05",
       "priority": "P0",
       "title": "内核反作弊残影 15 秒强制静默冷却期状态机",
       "stage": "M2",
-      "status": "planned",
+      "status": "verified",
       "decisions": [
         "docs/decisions/0003-anti-cheat-guard-and-process-isolation.md"
       ],
@@ -796,14 +825,16 @@
       "acceptance": [
         "AC-03"
       ],
-      "cases": []
+      "cases": [
+        "M2-A-03"
+      ]
     },
     {
       "id": "REQ-SEC-06",
       "priority": "P0",
       "title": "跨完整性级别命名管道 SDDL 授权与本地文件 DPAPI 凭据保护",
       "stage": "M2",
-      "status": "planned",
+      "status": "verified",
       "decisions": [
         "docs/decisions/0003-anti-cheat-guard-and-process-isolation.md"
       ],
@@ -818,14 +849,17 @@
       "acceptance": [
         "AC-02"
       ],
-      "cases": []
+      "cases": [
+        "M2-A-02",
+        "M2-A-08"
+      ]
     },
     {
       "id": "NFR-01",
       "priority": "P0",
       "title": "原生桌面性能与低资源驻留",
       "stage": "M2",
-      "status": "planned",
+      "status": "verified",
       "decisions": [
         "docs/decisions/0002-pure-native-wpf-and-nodify-ui-stack.md"
       ],
@@ -841,14 +875,16 @@
         "AC-02",
         "AC-21"
       ],
-      "cases": []
+      "cases": [
+        "M2-A-01"
+      ]
     },
     {
       "id": "NFR-02",
       "priority": "P0",
       "title": "游戏内高刷零帧率损耗",
       "stage": "M2",
-      "status": "planned",
+      "status": "verified",
       "decisions": [
         "docs/decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md"
       ],
@@ -862,7 +898,10 @@
       "acceptance": [
         "AC-08"
       ],
-      "cases": []
+      "cases": [
+        "M2-A-08",
+        "M2-M-01"
+      ]
     },
     {
       "id": "NFR-03",
@@ -894,7 +933,7 @@
       "priority": "P0",
       "title": "自动化测试全程静默与零抢焦点",
       "stage": "M2",
-      "status": "planned",
+      "status": "verified",
       "decisions": [
         "docs/decisions/0001-document-governance-and-collaboration.md"
       ],
@@ -907,14 +946,18 @@
       "acceptance": [
         "AC-02"
       ],
-      "cases": []
+      "cases": [
+        "M2-A-01",
+        "M2-A-08",
+        "M2-A-10"
+      ]
     },
     {
       "id": "NFR-05",
       "priority": "P0",
       "title": "正式版与开发版双通道物理隔离",
       "stage": "M2",
-      "status": "planned",
+      "status": "verified",
       "decisions": [
         "docs/decisions/0001-document-governance-and-collaboration.md"
       ],
@@ -928,14 +971,18 @@
       "acceptance": [
         "AC-02"
       ],
-      "cases": []
+      "cases": [
+        "M2-A-02",
+        "M2-A-09",
+        "M2-A-10"
+      ]
     },
     {
       "id": "NFR-06",
       "priority": "P1",
       "title": "离线自治与隐私零遥测",
       "stage": "M2",
-      "status": "planned",
+      "status": "verified",
       "decisions": [
         "docs/decisions/confirmed-decisions.md"
       ],
@@ -949,7 +996,10 @@
       "acceptance": [
         "AC-05"
       ],
-      "cases": []
+      "cases": [
+        "M2-A-05",
+        "M2-A-09"
+      ]
     },
     {
       "id": "NFR-07",

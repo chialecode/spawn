@@ -1,24 +1,28 @@
-# SPAWN M1 阶段实施计划（Stage Plan — M1 Foundation）
+# SPAWN M2 阶段实施计划（Stage Plan — M2 Launcher, Offline/GOG Achievement, Game Data Cleanup & Dev Auto-Installer）
 
-> **阶段代号**：`M1`（Governance, Security Baseline & Architecture Contracts）
-> **计划版本**：`1.0`
-> **工作分支**：`feat/m1-foundation`（基线锚点 `main` @ `ad7454c1ab58bb2019e0f0ba6810c5928f8a335e`）
-> **关联文档**：[项目交付总状态](status.md) · [M1 阶段执行报告](stage-report.md) · [M1 阶段验收用例集](m1-stage-cases.json) · [里程碑路线图](../engineering/delivery-plan.md)
+> **阶段代号**：`M2`（Three-Column Clean Host, Game Library & Launch Tracking, Full-Spectrum Achievement & Overlay, Game Data Cleanup & Per-User Dev Installer）
+> **计划版本**：`1.1`（含阶段内增强：PCGamingWiki/引擎游戏数据管理清理、新增两款 Steamrip 游戏深度适配与 `install-dev` 自动打包安装上机体系）
+> **工作分支**：`feat/m2-launcher-achievement`（基线锚点 `main` @ `196faf33fe1c2f18d1e14cfc97caf6f3f91baf16`，对应已合并 [PR #1](https://github.com/chialecode/spawn/pull/1)）
+> **关联文档**：[项目交付总状态](status.md) · [M2 阶段执行报告](stage-report.md) · [M2 阶段验收用例集](m2-stage-cases.json) · [里程碑路线图](../engineering/delivery-plan.md) · [已确认架构决策](../decisions/confirmed-decisions.md)
 
 ---
 
 ## 1. 阶段目标与边界定义
 
-`M1` 阶段的核心使命是在编写任何 `.NET 10` 业务代码前，把 SPAWN 从前期深度技术调研沉淀为一套**结构自洽、安全边界刚性、双向机器可追踪的工程治理与架构契约基线**：
+依据用户确认的 **`D-19` ~ `D-23`**，`M2` 作为首个正式 `.NET 10 (LTS)` 代码交付阶段，一次性打通从**按用户免命令自动安装的 `SPAWN Dev` 桌面客户端**，到**多形态 GOG/Steamrip 游戏识别启动、全流派单机成就实时跳杯、以及 PCGamingWiki 多源游戏数据一键清理恢复**的完整闭环：
 
 - **阶段范围内（In-Scope）**：
-  1. 初始化本地与远端不可变空 `README.md` 第一提交锚点，通过 GitHub API 加固 `chialecode/spawn` 仓库设置、安全扫描开关、Actions SHA 锁定策略与 `main-protection` 分支保护规则集；
-  2. 建立根级开源治理套件、AI Agent 与多智能体 Swarm 协作守则、文档注册表（`document-registry.json`）及 CI/本地同源的 `scripts/check_docs.py` 质量门禁；
-  3. 冻结 47 项编号需求（`REQ-*` / `NFR-*`）、19 项已确认决策（`D-01` ~ `D-19`，含升级锁定 `.NET 10 LTS` 及 `M2` 启动器+单机成就闭环先行）、5 篇核心 ADR、4 篇系统顶层设计正本与 5 篇领域模块规格正本；
-  4. 归档并清洗 5 篇前期深度调研报告（清退临时总纲冗余入口），输出 38+ 开源合规矩阵、本机开发环境核验全表（确认 `SDK 10.0.404` 就绪）、M1~M6 里程碑路线图与 `traceability.json` 追踪矩阵。
-- **阶段范围外（Out-of-Scope，移交 M2+）**：
-  - 创建 `Spawn.sln` / `.csproj` 编译工程或编写 C# 业务代码（归属 `M2`）；
-  - 未经用户审阅授权擅自向远端推送 `feat/m1-foundation` 分支或创建 PR。
+  1. **阶段初四分类清理**：清理已合入 `main` 的过期阶段临时清单 `docs/delivery/m1-stage-cases.json`，推进 `document-registry.json` `currentStage="M2"`；
+  2. **`.NET 10` 物理隔离底座与单实例版本协调（`Spawn.sln`）**：建立 `Spawn.Contracts` 与 `Spawn.Core`（`SpawnPaths` 双通道隔离与 `dev-workspace.json` 桥接、SQLite WAL 单写者仓储、DPAPI + `.local` 只读凭据回退、`0x1000` 安全进程查询、`AntiCheatGuard` 15s 冷却状态机、`SingleInstanceCoordinator` `--activate`/`--quit-for-update` 优雅退出握手、SDDL `NamedPipeJsonRpc`）；
+  3. **深度子目录游戏库扫描、启动接管与多源游戏数据管理（`Spawn.Modules.Launcher`）**：
+     - 4 层子目录深度探测嵌套于 `*_Data\Plugins\x86_64\` 的 `steam_api64.cdx`（CODEX）、`steam_api64.rne`（RUNE）、`steam_emu.ini` 与 `app.info`，零误差识别 `.local\games` 下全部 3 款真实游戏（`LIMBO`、`The Stanley Parable Ultra Deluxe`、`Vampire Survivors`）；
+     - 无 `KILL_ON_JOB_CLOSE` 的 `JobObject` IOCP + `0x1000` 破壳追踪与 `Active/Background/AFK` 三态计时；
+     - **`GameDataManagementService`（`D-22`）**：融合 PCGamingWiki Cargo API + SQLite 缓存、Unity `LocalLow`（含冒号转下划线变体）与 `HKCU` 注册表离线推断、16+ 模拟器与原生存档目录纳管，实施铁血防误删围栏与 `TrashDir` 可逆备份一键恢复；
+  4. **四类全覆盖单机成就引擎与清理后初见跳杯保障（`Spawn.Modules.Achievement`）**：落地 16+ 离线模拟器（支持嵌套 `Plugins\x86_64` 与清理后目录从不存在到运行期新建文件的实时 `<1s` 捕获）、GOG `127.0.0.1:9977` Comet 守护、`LIMBO` `AES-128-ECB + XOR` 原生存档规则引擎、一键无损 `gbe_fork` 激活还原、多源简中 Schema 与 `SkiaSharp` Rec.709 灰锁图合成；
+  5. **三栏无边框主界面、系统托盘与独立弹窗宿主（`Spawn.Host` + `Spawn.OverlayHost`）**：高保真复刻 `52px+264px+主面板` 三栏界面、220+ 项成就 UI 虚拟化、详情页 **`成就 | 游戏数据`** 双标签面板、系统托盘 `--background` 静默驻留与设置页“关于与版本”，以及三主题零抢焦点 `Spawn.OverlayHost`；
+  6. **双通道图标、Inno Setup 7 按用户打包与 `install-dev` 自动安装闭环（`D-23`）**：交付 `scripts/generate_icons.py`、`installer/spawn.iss`、`scripts/package.py --install-dev`、`tests/Spawn.Architecture.GateTests`、`tests/Spawn.Core.UnitTests` 与 `scripts/quick_gate.py`。
+- **阶段范围外（Out-of-Scope，归属 `M3`~`M6`）**：
+  - `FastCDC` 增量时间机器、`32MB SPPK` 云同步与 FLiNG 修改器管家（`M3`）；CAS 硬链接 Mod 中枢与 `Alt+Z` 锁鼠大面板（`M4`）；二次元并发 DAG（`M5`）与 `Nodify` UE 蓝图虚拟机（`M6`）；未经 `ACT-007` 授权擅自推送远端。
 
 ---
 
@@ -26,11 +30,12 @@
 
 | 工作包编号 | 工作包主题 | 核心产出文件范围 | 质量控制焦点 |
 | :--- | :--- | :--- | :--- |
-| `M1-W01` | **Git 初始锚点、远端安全加固与基础设施配置** | `main` 初始提交、`.gitignore`、`.gitattributes`、`.editorconfig`、`LICENSE`、`.github/repository-settings.json`、`.github/rulesets/main.json`、`.github/actions-policy.json`、`.github/dependabot.yml`、`.github/PULL_REQUEST_TEMPLATE.md`、`.github/workflows/docs.yml` | 40 位初始提交不可变；远端规则集与安全开关回读零偏差；Actions 全量 40 位 Commit SHA 固定 |
-| `M1-W02` | **根级治理套件、开发规范与自动化文档门禁** | `README.md`、`AGENTS.md`、`CONTRIBUTING.md`、`REVIEW.md`、`SECURITY.md`、`DESIGN.md`、`USER-ACTIONS.md`、`docs/README.md`、`docs/project-baseline.md`、`docs/governance/*`、`docs/product-rules/*`、`docs/design-rules/*`、`docs/dev-rules/*`、`scripts/check_docs.py` | 全仓受控文件 100% 纳入注册表；机械拦截死链、盘符绝对路径与无关外部仓库名 |
-| `M1-W03` | **产品需求正本、ADR 体系与系统顶层设计正本** | `docs/requirements/product-requirements.md`、`docs/decisions/README.md`、`confirmed-decisions.md`、`open-questions.md`、`0001..0005-*.md`、`docs/design/system-architecture.md`、`data-model.md`、`ipc-and-security-contracts.md`、`interaction-and-workflows.md` | `.NET 10 LTS` 六进程隔离拓扑、SQLite `snake_case` DDL、`FastCDC`/`SPPK` 格式、SDDL 命名管道、15s 反作弊冷却无歧义冻结 |
-| `M1-W04` | **五大领域模块规格正本与前期调研脱敏归档** | `docs/modules/README.md`、`spawn-launcher.md`、`nexus-mods-and-utilities.md`、`progress-saves-and-trainer.md`、`achievement-and-overlay.md`、`workflow-and-blueprint.md`、`docs/research/README.md`、`01..05-*.md`（删除临时总纲） | 吸收原总纲全部工程细节至正式规格并与 `M2` 首发联动边界精确对齐 |
-| `M1-W05` | **选型环境全表、交付路线图、追踪矩阵与阶段验收** | `docs/engineering/technology-selection.md`、`delivery-plan.md`、`docs/delivery/status.md`、`stage-plan.md`、`stage-report.md`、`m1-stage-cases.json`、`traceability.json` | 47 项需求按新 `M2`~`M6` 路线 100% 闭环映射；核验本机 `.NET 10 SDK 10.0.404` 就绪；收敛为单阶段单提交 DCO |
+| `M2-W01` | **`.NET 10` 解决方案、版本身份注入、单实例协调与 `Spawn.Core` 底座** | `Spawn.sln`、`global.json`、`Directory.Build.props`、`Directory.Packages.props`、`src/Spawn.Contracts/**`、`src/Spawn.Core/**` | `dev-workspace.json` 桥接、`SingleInstanceCoordinator` 零强杀退出、SQLite WAL 与 `0x1000` 探测 |
+| `M2-W02` | **深度嵌套游戏扫描、双引擎启动追踪与三态游玩计时** | `src/Spawn.Modules.Launcher/**` | 精准识别 `.local\games` 全部 3 款真实游戏、JobObject 严禁 `KILL_ON_JOB_CLOSE` |
+| `M2-W03` | **四类全覆盖单机成就引擎、清理后初见跳杯与 `gbe_fork` 激活器** | `src/Spawn.Modules.Achievement/**` | 嵌套 `.cdx`/`.rne` 识别、无目录新建 `achievements.ini` `<1s` 实时跳杯、旧档静默对齐 |
+| `M2-W04` | **三栏无边框原生 WPF 主壳、虚拟化列表、托盘常驻与 `Spawn.OverlayHost`** | `src/Spawn.Host/**`、`src/Spawn.OverlayHost/**`、`DESIGN.md`、`docs/design-rules/DESIGN.md`、`docs/design/interaction-and-workflows.md` | 220+ 成就丝滑虚拟化、`成就 \| 游戏数据` 双面板、`--background` 零抢焦点驻留 |
+| `M2-W05` | **`PEReader` 架构门禁、`quick_gate.py` 与 Windows `.NET 10` CI** | `tests/Spawn.Architecture.GateTests/**`、`scripts/quick_gate.py`、`.github/workflows/ci.yml` | 编译器产物级 IAT 零敏感 API 断言、低优先级无窗静默门禁 |
+| `M2-W06` | **PCGamingWiki 游戏数据管理清理、Inno Setup 7 打包与 `install-dev` 自动安装** | `src/Spawn.Modules.Launcher/GameData*`、`scripts/generate_icons.py`、`scripts/package.py`、`installer/spawn.iss`、`assets/*`、`tests/Spawn.Core.UnitTests/**`、治理与交付文档 | 防误删安全围栏、`TrashDir` 可逆恢复、`spawn-dev-test` 隔离安装演练、本机 `SPAWN Dev` 自动装妥上机 |
 
 ---
 
@@ -38,10 +43,14 @@
 
 | 用例编号 | 类型 | 对应工作包 | 验证内容 | 准出标准 |
 | :--- | :---: | :---: | :--- | :--- |
-| `M1-A-01` | 自动化 | `M1-W01` | 不可变第一提交 SHA、本地分支拓扑与远端 GitHub 规则集/安全策略回读核验 | `origin/main` 恒等于 `ad7454c1ab58bb2019e0f0ba6810c5928f8a335e`，`main-protection` 处于 `active` |
-| `M1-A-02` | 自动化 | `M1-W02` | 运行 `python -B scripts/check_docs.py` 全仓文档治理、注册表覆盖与相对链接校验 | 返回退出码 `0`，零死链、零未登记孤儿文档、零引用式链接 |
-| `M1-A-03` | 自动化 | `M1-W02`, `M1-W04` | 仓库洁净度红线扫描（严禁盘符绝对路径与无关外部项目名称残留） | 全仓扫描匹配数为 `0`，临时研究总纲已清退归档 |
-| `M1-A-04` | 自动化 | `M1-W03`, `M1-W05` | 需求（`REQ-*`/`NFR-*`）、决策（`D-01`~`D-19`）、设计、模块与验收（`AC-01`~`AC-24`）双向追踪校验 | 47 项需求在 `traceability.json` 中 100% 闭合，JSON Schema 合法 |
-| `M1-A-05` | 自动化 | `M1-W01`, `M1-W05` | Git 工作树洁净度、`git diff --check` 空白/行尾校验与单提交 DCO `Signed-off-by` 校验 | `feat/m1-foundation` 领先 `main` 恰好 1 个含合法 DCO 的提交，工作区干净 |
-| `M1-A-06` | 自动化 | `M1-W01` | `.github/workflows/docs.yml` Actions SHA 固定与最小只读权限静态核验 | `permissions: contents: read`，Action 引用使用完整 40 位 Commit SHA |
-| `M1-M-01` | 人工门禁 | `M1-W05` | 仓库所有者审阅 M1 成果并按 `ACT-002` 授权推送分支与合并 PR #1 | 已在 [USER-ACTIONS.md](../../USER-ACTIONS.md) 清晰登记指引（`ACT-001` `.NET 10 SDK` 已就绪） |
+| `M2-A-01` | 自动化 | `M2-W01`, `M2-W05` | `Spawn.sln` Release 编译与 `PEReader` IAT 敏感 API 零导入静态门禁 | 0 警告 0 错误编译，`Host` / `OverlayHost` 0 敏感 API 导入（`AC-02`） |
+| `M2-A-02` | 自动化 | `M2-W01` | `SpawnPaths` 双通道隔离、`dev-workspace.json` 桥接、SQLite WAL 与 DPAPI 凭据单测 | 100% 落入临时目录，桥接与密文往返通过（`AC-02`） |
+| `M2-A-03` | 自动化 | `M2-W01`, `M2-W02` | `AntiCheatGuard` 四级分类、高危拦截与 15 秒反作弊退出冷却锁状态机单测 | 冷却未满 15s 严格拒绝解锁高敏能力；`Tier 2/3` 启动前检出 CE / `dbk64` 等高危进程或驱动即阻断（`AC-03`） |
+| `M2-A-04` | 自动化 | `M2-W02` | 无强杀标志 `JobObject` IOCP 回调与三态游玩计时单测 | 无窗短命进程准确触发归零回调并落盘时长（`AC-04`） |
+| `M2-A-05` | 自动化 | `M2-W02` | 嵌套子目录扫描与 `.local\games` 下全部 3 款真实游戏只读扫描测试 | `LIMBO`、`Stanley Parable` (CODEX `1703340`)、`Vampire Survivors` (RUNE `1794680`) 100% 只读识别成功（`AC-05`） |
+| `M2-A-06` | 自动化 | `M2-W03` | 16+ 模拟器、GOG Comet、`LIMBO` 原生存档及清理后无目录首次新建跳杯测试 | 全部夹具解析率 100%，无目录新建 `achievements.ini`/`savegame.txt` `<1s` 触发跳杯（`AC-06`） |
+| `M2-A-07` | 自动化 | `M2-W03` | `gbe_fork`（固定版本 + SHA-256）无损激活/SHA-256 还原与离线夹具简中 Schema / 隐藏描述 / 灰图合成测试 | 激活与还原哈希一致，测试注入 DLL 来源且全程零真实网络（`AC-07`） |
+| `M2-A-08` | 自动化 | `M2-W04`, `M2-W05` | `NamedPipeJsonRpc` 通信、三主题弹窗队列与 `quick_gate.py` 一键门禁 | 全程无窗无声静默通过（`AC-08`, `AC-02`） |
+| `M2-A-09` | 自动化 | `M2-W06` | `GameDataManagementService` 多源路径推断、安装目录外白名单围栏、增量撤销日志与 `TrashDir` 可逆恢复测试 | 拦截删除游戏根目录及 `My Games` / `AppData` / `LocalLow\<厂商>` 等共享父目录，通配符不扩大；文件与临时 `HKCU` 子键备份清理及一键恢复 100% 一致（`AC-05`, `AC-06`） |
+| `M2-A-10` | 自动化 | `M2-W06` | 单实例 `--quit-for-update` 握手与 `spawn-dev-test` 隔离打包/静默安装/卸载测试 | 优雅退出零强杀，测试身份安装/卸载全绿且真实 `spawn`/`spawn-dev` 零被测污染（`AC-02`） |
+| `M2-M-01` | 人工体验 | `M2-W06` | 本机 `SPAWN Dev` 已由 `package.py --install-dev` 自动安装驻留托盘供 `H-001` 体验 | 桌面/开始菜单快捷方式与托盘已就绪；`feat/m2-launcher-achievement` 保持本地单提交等待 `ACT-007` |

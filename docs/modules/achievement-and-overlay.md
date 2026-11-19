@@ -130,6 +130,7 @@ C# 解析引擎基于 `Span<T>` / `Utf8JsonReader` 实现，针对各流派历�
 | 14 | **FLT (Fairlight)** | 默认仅内存空操作桩，无落盘文件 | 扫描器检出 `FLT` 特征 `steam_api64.dll` 且无 `achievements.ini/json` 时，在 UI 提示可一键启用 **`gbe_fork` 无损赋能器**（见 §4.3）。 |
 | 15 | **GOG 离线免平台安装包** | ① 本地 `127.0.0.1:9977` Comet TCP 端口；<br>② `%PROGRAMDATA%\GOG.com\Galaxy\storage\galaxy-2.0.db` / `gameplay.db`；<br>③ `%APPDATA%\NemirtingasGalaxyEmu\` | **零修改 DLL 杀手锏**：GOG 离线安装版自带的原版 `Galaxy64.dll` 启动时会自动尝试连接本机回环 `127.0.0.1:9977` 发送带 2 字节大端头长的 Protobuf `AuthInfoReq` 与 `SetAchievementReq`！SPAWN 按需在单机启动期间挂载本地回环微型 Comet 接收器（读取根目录 `goggame-<id>.info` 中的 `clientId`/`gameId` 完成握手），**无需替换游戏任何文件即可毫秒级实时捕获 GOG 离线版解锁弹窗**！若机器装有 GOG Galaxy 客户端导致 `9977` 已监听，自动退让并切换为 SQLite `mode=ro` WAL 只读监听 `gameplay.db`。 |
 | 16 | **正版 Steam 本地缓存** | `<SteamPath>\appcache\stats\UserGameStats_<id32>_<AppID>.bin` | 原生 Binary VDF 递归解析器（识别类型码 `0x00` 子对象、`0x01` UTF-8 串、`0x02` `Int32`、`0x08` 块结束）：根据 Schema 中每项成就的 `(BlockId, BitIndex)` 检查 `(dataU32 >> BitIndex) & 1U == 1U`，并从子字典 `AchievementTimes[BitIndex]` 提取精确秒级解锁时间。 |
+| 17 | **纯 DRM-Free 原生存档规则引擎 (`NativeSaveAchievementProvider`)** | 声明式相对/系统特殊目录模板（如 `<GameInstallDir>\save_game\savegame.txt`、`<GameInstallDir>\savegame.txt`、`%APPDATA%\Playdead\Limbo\savegame.txt`） | 面向不携带 `Galaxy.dll` 的早期纯独立 GOG 离线包，提供四类声明式提取算子（**位掩码 `BitmaskFromRegexInt`、正则键值 `RegexKeyValue`、JSONPath `JsonPath`、二进制位偏移 `BinaryBitOffset`**）。首发内置 **`LIMBO`（GOG `1724299977` ↔ Steam `AppID 48000`）**：自动兼容明文键值与原版 `StorageEmulator` `AES-128-ECB + 16B XOR Mask` 加密容器，提取 `achievements = "<mask>"` 的 `Bit 0..12`（`1 << (id - 1)`）精确映射至 `ACH_1` ~ `ACH_13` 并联动拉取 13 项官方简中 Schema 与隐藏成就 `ACH_13` 揭晓描述。 |
 
 ### 4.2 四层防漏文件监听与首次入库静默种子算法（`REQ-ACH-02`, `A-05`）
 
@@ -138,6 +139,7 @@ C# 解析引擎基于 `Span<T>` / `Utf8JsonReader` 实现，针对各流派历�
    - 严禁对整个 `%APPDATA%` 或磁盘根开启宽泛递归监控；仅对已入库游戏命中的具体模拟器子目录挂载 `InternalBufferSize = 65536`（64KB，防突发溢出）的窄域 FSW，同时订阅 `Created | Changed | Renamed`（应对模拟器先写 `.tmp` 再 `MoveFileExW` 原子替换而不触发 `Changed` 的情形）。
    - 针对部分模拟器使用内存映射文件（MMF）刷盘不触发 Win32 ReadDirectoryChangesW 通知的盲区，对**当前唯一处于运行态的游戏**附加 `500ms` 极轻量 `GetFileAttributesExW` 元数据轮询（仅比对 `ftLastWriteTime` 与 `nFileSizeLow`，CPU 开销 `< 0.01%`）。
 3. **120ms 去抖与共享锁退避自愈**：事件进入按路径聚合的 `120ms` 去抖通道；读取文件一律带 `FileShare.ReadWrite | FileShare.Delete`，若遇瞬时独占写锁或读到截断的半写 JSON/INI，按 `25ms -> 60ms -> 120ms -> 250ms` 四阶退避自动重读，绝不因单次半写异常弄丢监控器。
+4. **深层子目录特征探测与“数据清理后首次重建”动态自愈**：扫描器深入至 6 层子目录（自动跳过 `StreamingAssets`、`usd`、`_OST` 等重资产目录），精准识别 Unity `*_Data\Plugins\x86_64\` 与 Unreal `ThirdParty\Steamworks\` 下的 `.cdx`（`CODEX`）、`.rne`（`RUNE`）与 `steam_emu.ini`；当玩家通过游戏数据管理清理掉尚不存在或刚被移除的存档目录（如 `%PUBLIC%\Documents\Steam\CODEX\<AppID>`）并调用 `ResetGameAchievementStateAsync` 重置解锁基线时，监听器自动向上攀升挂载存活父目录（上限 5 级且避开盘符根与用户主目录根）并配合 `500ms` 元数据微轮询实现“目录从无到有新建并写入首条成就”时的 `< 250ms` 零漏报实时跳杯。
 
 ### 4.3 无成就桩版一键无损赋能与免 Key 中文剧透保护瀑布流（`REQ-ACH-03`, `REQ-ACH-04`）
 

@@ -20,6 +20,7 @@
 *.md text eol=lf
 *.txt text eol=lf
 *.py text eol=lf
+*.iss text eol=lf
 *.sh text eol=lf
 *.svg text eol=lf
 .editorconfig text eol=lf

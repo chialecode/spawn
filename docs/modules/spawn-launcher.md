@@ -19,7 +19,8 @@
 1. **双引擎无损进程树生命周期状态机**：统一管理所有单机与联网游戏的启动、破壳发现、运行监控、正常退出与异常崩溃感知，确保 SPAWN 自身升级或崩溃退出时**绝不连坐误杀正在运行的游戏**，并准确穿透“启动器自杀拉起真实游戏主程序”的套壳场景。
 2. **Active / Background / AFK 三态真实游玩时长引擎**：按 1 秒节拍融合前台窗口焦点、代理缩放/Overlay 窗口白名单、键鼠空闲时间、`XInput` / `RawGameController` 手柄死区突破与 `WASAPI` 会话音频峰值，精细区分真实游玩、切出后台与挂机发呆时长。
 3. **Pre/Post-Launch 断电自愈环境接管管线**：在游戏启动前原子持久化系统基线快照（`environment_rollback.json`），按游戏/Profile 策略自动接管显示器分辨率/刷新率、Windows 11 系统级 HDR 开关、混合架构 CPU P-Core / AMD X3D CCD0 绑定与 `EcoQoS` 豁免、电源计划、32/64 位日韩繁区域转码（`LEProc` / `LRProc`）、`Magpie` / `Lossless Scaling` 超分伴生及 `Wallpaper Engine` 暂停静音；游戏退出或宿主冷启动自检时 100% 幂等还原。
-4. **三级漏斗离线优先元数据刮削引擎**：针对无平台免安装单机包（Steamrip、GOG 离线安装包、日系同人 Galgame/RPG），通过“确定性 ID 探针 -> PE 头与多级正则降噪 -> 多源异步图谱与竖版海报补全”实现开箱即用的精美海报墙。
+4. **三级漏斗离线优先元数据刮削引擎**：针对无平台免安装单机包（Steamrip、GOG 离线安装包、日系同人 Galgame/RPG），通过“确定性 ID 探针（含 Unity `*_Data\Plugins\x86_64\steam_api64.cdx|.rne`、UE `ThirdParty\Steamworks` 嵌套识别与 `app.info` 提取） -> PE 头与多级正则降噪 -> 多源异步图谱与竖版海报补全”实现开箱即用的精美海报墙。
+5. **多源游戏数据探查与可逆清理引擎（`IGameDataManagementService`）**：融合 `PCGamingWiki` Cargo/MediaWiki 规则解析缓存（`game_data_rules`）、Unity `LocalLow`（含 `:` 转 `_` 非法字符映射与 `HKCU\Software\<Company>\<Product>` `PlayerPrefs` 注册表）及 Unreal `Saved` 零配置引擎推断、16+ 离线模拟器与原生存档规则，配合防误删安全围栏与 `TrashDir` 快照支持一键安全清理及 `RestoreLastCleanupAsync` 完整还原。
 
 ### 1.2 明确排除边界（Out-of-Scope）
 
@@ -133,7 +134,7 @@ stateDiagram-v2
 遵循正式版 `%LOCALAPPDATA%\spawn` 与开发态 `%LOCALAPPDATA%\spawn-dev` 双通道物理隔离规范（`REQ-SEC-06`、`NFR-05`）：
 
 - **环境自愈事务日志**：`%LOCALAPPDATA%\spawn\config\environment_rollback.json`（仅在环境已被接管期间存在；完整还原后立即 `File.Delete`）。
-- **离线媒体资产缓存**：`%LOCALAPPDATA%\spawn\cache\media\<GameId>\{poster_600x900.webp, hero_1920x620.webp, logo.png, icon.ico}`。
+- **离线媒体资产缓存**：`%LOCALAPPDATA%\spawn\artwork\<GameId>\{poster_600x900.jpg, background.jpg, logo2x.jpg, sidebarIcon2x.png, icon.png}`（开发态自动隔离至 `spawn-dev\artwork\<GameId>\`）。
 - **随包/托管转区工具槽位**：`%LOCALAPPDATA%\spawn\tools\locale-remulator\LRProc.exe`（x64）与 `%LOCALAPPDATA%\spawn\tools\locale-emulator\LEProc.exe`（x86），支持用户在设置中指向本机已有安装路径。
 
 ---
@@ -144,8 +145,8 @@ stateDiagram-v2
 
 1. **通道 A（`Tier 0 / Tier 1` 常规单机与弱联网客户端）—— 无连坐 `JobObject` + IOCP**：
    - 调用 `CreateJobObjectW(IntPtr.Zero, null)` 创建匿名作业对象，通过 `CreateIoCompletionPort` 绑定 `JOBOBJECT_ASSOCIATE_COMPLETION_PORT`。
-   - 调用 `SetInformationJobObject(..., JobObjectExtendedLimitInformation)` 时，`BasicLimitInformation.LimitFlags` **显式设为 `0`**（或仅含 `JOB_OBJECT_LIMIT_BREAKAWAY_OK`），**严禁置位 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE (0x2000)`**。一旦 `Spawn.Host.exe` 意外崩溃或用户手动关闭管理器，操作系统仅关闭句柄而绝不终止正在运行的游戏进程。
-   - 后台单线程阻塞 `GetQueuedCompletionStatus`：收到 `JOB_OBJECT_MSG_NEW_PROCESS (6)` 时动态纳入会话 PID 集合；收到 `JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO (8)` 时判定整棵进程树自然归零。
+   - 调用 `SetInformationJobObject(..., JobObjectExtendedLimitInformation)` 时，`BasicLimitInformation.LimitFlags` **显式仅设为 `JOB_OBJECT_LIMIT_BREAKAWAY_OK (0x0800)`**，**严禁置位 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE (0x2000)`**。一旦 `Spawn.Host.exe` 意外崩溃或用户手动关闭管理器，操作系统仅关闭句柄而绝不终止正在运行的游戏进程。
+   - 后台单线程阻塞 `GetQueuedCompletionStatus`：收到 `JOB_OBJECT_MSG_NEW_PROCESS (6)` 时动态纳入会话 PID 集合；收到 `JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO (4)` 时判定整棵进程树自然归零。
 2. **破壳发现状态机（Shell-Breaking Heuristic）**：
    - 若初始进程在启动后 `< 15s` 内触发 `ACTIVE_PROCESS_ZERO`（典型场景：游戏自更新器重启、GOG/DRM Wrapper 脱壳、Steam stub 转发），状态机不立即结算退出，而是转入最长 **35 秒 `ShellBreakingWatch` 慢速监听窗口**（每 `1500ms` 采样一次）。
    - 扫描算法：调用 `CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)` 遍历进程快照 -> 先剔除系统核心进程 -> 调用 `OpenProcess(0x1000 /* PROCESS_QUERY_LIMITED_INFORMATION */, false, pid)` + `QueryFullProcessImageNameW` 获取完整可执行路径 -> 若路径位于 `<GameInstallDir>` 子树下且**未命中辅助幽灵进程黑名单正则**，即捕获为真实主游戏进程并挂载 `RegisterWaitForSingleObject` 监听其 `SYNCHRONIZE` 句柄。
@@ -217,8 +218,8 @@ flowchart LR
 ```
 
 1. **Stage 1（确定性零误差探针）**：
-   - 探测 `steam_appid.txt`、`steam_settings\steam_appid.txt`、`steam_emu.ini` / `tenoke.ini` / `codex.ini` / `Configs.main.ini` 中的 `AppId=`、Steam 正版库 `appmanifest_*.acf`；
-   - 探测 GOG 离线安装包根目录 `goggame-<id>.info` JSON；
+   - 探测 `steam_appid.txt`、`steam_settings\steam_appid.txt`、`OnlineFix.ini`（优先读取 `RealAppId` 防 `480` Spacewar 误判）、`steam_emu.ini` / `tenoke.ini` / `codex.ini` / `ColdClientLoader.ini` / `configs.main.ini` 中的 `AppId`、Steam 正版库 `appmanifest_*.acf`；
+   - 探测 GOG 离线安装包根目录 `goggame-<id>.info` JSON（解析 `gameId`、`clientId`、`name` 及 `playTasks` 主程序），并直接从同目录 `webcache.zip` 内的 `resources.json` 秒级离线直提 `icon`、`sidebarIcon2x`、`logo2x`、`background` 美工资产（缺失时回退 `goggame-*.ico` 或 PE EXE 图标）；
    - 正则匹配目录名中的同人作品唯一编号 `\b([RVB]J\d{6,8})\b`（直连 DLsite Web JSON / HTML 元数据接口）。
 2. **Stage 2（PE 头提取与脏目录名多级清洗）**：
    - 优先通过 `FileVersionInfo.GetVersionInfo(exePath).ProductName` 读取官方内嵌产品名（过滤 `Application`、`BootstrapPackagedGame`、`UnityPlayer` 等通用引擎占位符）。
@@ -248,7 +249,7 @@ flowchart LR
    - `Spawn.Host.exe` 每次启动初始化首步调用 `RecoverOrphanedEnvironmentOnStartupAsync()` 检查 `%LOCALAPPDATA%\spawn\config\environment_rollback.json`。
    - 若文件存在：先通过 `OpenProcess(0x1000)` 探测快照记录的游戏是否仍在后台存活；若游戏已不在运行，立即按快照幂等恢复系统 HDR、原生分辨率/刷新率、原电源计划与 Wallpaper Engine 播放状态，清理伴生孤儿进程后删除该快照文件（`REQ-SPW-03`）。
 2. **危险内核驱动启动前阻断（`REQ-SEC-03`）**：
-   - 当用户尝试启动 `Tier 2` 或 `Tier 3` 游戏时，利用 `EnumDeviceDrivers` + `GetDeviceDriverBaseName` 检查当前内核模块列表；一旦发现已加载 `dbk64.sys` / `dbk32.sys`（Cheat Engine 内核驱动）、`WinRing0x64.sys` 或 `inpoutx64.sys`，**立即中断启动流程并弹出高危红框告警**，防止带毒环境启动竞技网游触发封号。
+   - 当用户尝试启动 `Tier 2` 或 `Tier 3` 游戏时，利用 `EnumDeviceDrivers` + `GetDeviceDriverBaseName` 检查当前内核模块列表（新版 Windows 对标准用户隐藏模块列表时，回退至 SCM 活动 `SERVICE_DRIVER` 枚举 + 注册表 `ImagePath` 只读比对），并以 Toolhelp 快照检出 Cheat Engine 进程与 SPAWN 高敏 Worker；一旦发现已加载 `dbk64.sys` / `dbk32.sys`（Cheat Engine 内核驱动）、`WinRing0x64.sys` 或 `inpoutx64.sys`，**立即中断启动流程并弹出高危红框告警**，防止带毒环境启动竞技网游触发封号。
 3. **内核反作弊残影 15 秒强制静默冷却（`REQ-SEC-05`, `A-04`）**：
    - 当 `Tier 2/3` 游戏窗口关闭后（典型如腾讯 ACE 安全组件 `SGuard64.exe` / `SGuardSvc64.exe` 往往在游戏主进程退出后继续在后台驻留 5~12 秒完成内存校验上报），状态机强制停留在 `AntiCheatCoolingDown`：每 1 秒以 `0x1000` 探测伴生反作弊进程列表，待其 **100% 消失后再额外倒计时 15 秒**（设置中仅允许延长、禁止缩短），期间全局锁定一切特权 Worker 拉起请求。
 

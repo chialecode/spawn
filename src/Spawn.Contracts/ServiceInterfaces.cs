@@ -70,6 +70,147 @@ public interface IGameDataManagementService
     Task<GameDataCleanResult> RestoreLastCleanupAsync(
         string gameId,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Read-only enumeration of discovered save directories/files and <c>HKCU</c> registry keys for a game
+    /// (consumed by <c>Spawn.Modules.Progress</c> pre-trainer snapshots without cross-module project coupling).
+    /// </summary>
+    async Task<IReadOnlyList<GameDataEntryDto>> EnumerateSaveLocationsAsync(
+        string gameId,
+        bool refreshOnlineRules = false,
+        CancellationToken cancellationToken = default)
+    {
+        var all = await InspectGameDataAsync(gameId, refreshOnlineRules, cancellationToken).ConfigureAwait(false);
+        return all
+            .Where(e => e.Exists && e.IsSafeToClean && (e.Category == GameDataCategory.SaveData || e.Category == GameDataCategory.RegistryData))
+            .ToArray();
+    }
+
+    /// <summary>
+    /// Validates a candidate save restore target (filesystem path or <c>HKCU</c> registry key) against the safety fence.
+    /// Allows restoring into known safe save locations even when the target directory/key has since been deleted (<c>Exists == false</c>).
+    /// </summary>
+    async Task<GameDataSafetyCheckResult> ValidateSaveRestoreTargetAsync(
+        string gameId,
+        string pathOrRegistryKey,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(gameId) || string.IsNullOrWhiteSpace(pathOrRegistryKey))
+        {
+            return new GameDataSafetyCheckResult(false, "游戏标识或恢复目标路径为空。");
+        }
+
+        string trimmed = pathOrRegistryKey.Trim();
+        string[] rawSegments = trimmed.Split(['\\', '/'], StringSplitOptions.None);
+        if (rawSegments.Any(static s => s is ".." or "."))
+        {
+            return new GameDataSafetyCheckResult(false, $"安全围栏已拦截含相对跳转段的目标路径：{pathOrRegistryKey}");
+        }
+
+        bool looksLikeRegistry =
+            trimmed.StartsWith("HKCU\\", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("HKCU/", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("HKEY_", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("HKLM\\", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("HKLM/", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("HKCR\\", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("HKU\\", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("HKCC\\", StringComparison.OrdinalIgnoreCase);
+
+        if (looksLikeRegistry)
+        {
+            string normalizedReg = trimmed.Replace('/', '\\').TrimEnd('\\');
+            if (normalizedReg.StartsWith("HKEY_CURRENT_USER\\", StringComparison.OrdinalIgnoreCase))
+            {
+                normalizedReg = "HKCU\\" + normalizedReg["HKEY_CURRENT_USER\\".Length..];
+            }
+
+            if (!normalizedReg.StartsWith("HKCU\\", StringComparison.OrdinalIgnoreCase)
+                || normalizedReg.Length <= "HKCU\\".Length)
+            {
+                return new GameDataSafetyCheckResult(false, $"安全围栏仅允许恢复 HKCU 下的游戏注册表项：{pathOrRegistryKey}");
+            }
+
+            var allEntries = await InspectGameDataAsync(gameId, refreshOnlineRules: false, cancellationToken).ConfigureAwait(false);
+            foreach (var loc in allEntries)
+            {
+                if (!loc.IsSafeToClean || !loc.IsRegistryEntry || string.IsNullOrWhiteSpace(loc.PathOrRegistryKey))
+                {
+                    continue;
+                }
+
+                string locReg = loc.PathOrRegistryKey.Trim().Replace('/', '\\').TrimEnd('\\');
+                if (locReg.StartsWith("HKEY_CURRENT_USER\\", StringComparison.OrdinalIgnoreCase))
+                {
+                    locReg = "HKCU\\" + locReg["HKEY_CURRENT_USER\\".Length..];
+                }
+
+                if (!locReg.StartsWith("HKCU\\", StringComparison.OrdinalIgnoreCase) || locReg.Length <= "HKCU\\".Length)
+                {
+                    continue;
+                }
+
+                if (string.Equals(normalizedReg, locReg, StringComparison.OrdinalIgnoreCase)
+                    || normalizedReg.StartsWith(locReg + "\\", StringComparison.OrdinalIgnoreCase))
+                {
+                    return new GameDataSafetyCheckResult(true);
+                }
+            }
+
+            return new GameDataSafetyCheckResult(false, $"注册表路径不在已验证的存档位置范围内：{pathOrRegistryKey}");
+        }
+
+        if (!Path.IsPathFullyQualified(trimmed))
+        {
+            return new GameDataSafetyCheckResult(false, $"恢复目标必须为绝对路径：{pathOrRegistryKey}");
+        }
+
+        string normalizedTarget;
+        try
+        {
+            normalizedTarget = Path.TrimEndingDirectorySeparator(Path.GetFullPath(trimmed));
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return new GameDataSafetyCheckResult(false, $"非法的恢复目标路径：{pathOrRegistryKey}");
+        }
+
+        var discovered = await InspectGameDataAsync(gameId, refreshOnlineRules: false, cancellationToken).ConfigureAwait(false);
+        foreach (var loc in discovered)
+        {
+            if (!loc.IsSafeToClean
+                || loc.IsRegistryEntry
+                || loc.Category != GameDataCategory.SaveData
+                || string.IsNullOrWhiteSpace(loc.PathOrRegistryKey))
+            {
+                continue;
+            }
+
+            string normalizedLoc;
+            try
+            {
+                string candidateLoc = loc.PathOrRegistryKey.Trim();
+                if (!Path.IsPathFullyQualified(candidateLoc))
+                {
+                    continue;
+                }
+
+                normalizedLoc = Path.TrimEndingDirectorySeparator(Path.GetFullPath(candidateLoc));
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                continue;
+            }
+
+            if (string.Equals(normalizedTarget, normalizedLoc, StringComparison.OrdinalIgnoreCase)
+                || normalizedTarget.StartsWith(normalizedLoc + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            {
+                return new GameDataSafetyCheckResult(true);
+            }
+        }
+
+        return new GameDataSafetyCheckResult(false, $"路径不在已验证的存档位置范围内：{pathOrRegistryKey}");
+    }
 }
 
 /// <summary>

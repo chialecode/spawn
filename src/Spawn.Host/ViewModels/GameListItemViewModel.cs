@@ -37,7 +37,11 @@ public sealed partial class GameListItemViewModel : ObservableObject
     public PlatformSource PlatformSource => Record.PlatformSource;
     public string PlatformShortLabel => UiFormatters.FormatPlatformShortLabel(Record.PlatformSource);
     public string PlatformFullLabel => UiFormatters.FormatPlatformFullLabel(Record.PlatformSource);
+    public AntiCheatTier AntiCheatTier => Record.AntiCheatTier;
     public string AntiCheatBadgeText => UiFormatters.FormatAntiCheatTierBadge(Record.AntiCheatTier);
+    public string AntiCheatBadgeHexColor => UiFormatters.FormatAntiCheatTierHexColor(Record.AntiCheatTier);
+    public bool HasVerifiedOfflineBypassBadge => Record.AntiCheatTier == AntiCheatTier.Tier2 && Record.VerifiedOfflineBypass;
+    public string VerifiedOfflineBypassBadgeText => HasVerifiedOfflineBypassBadge ? "离线无 AC 就绪" : string.Empty;
 
     public string InitialsText
     {
@@ -173,7 +177,11 @@ public sealed partial class GameListItemViewModel : ObservableObject
         OnPropertyChanged(nameof(PlatformSource));
         OnPropertyChanged(nameof(PlatformShortLabel));
         OnPropertyChanged(nameof(PlatformFullLabel));
+        OnPropertyChanged(nameof(AntiCheatTier));
         OnPropertyChanged(nameof(AntiCheatBadgeText));
+        OnPropertyChanged(nameof(AntiCheatBadgeHexColor));
+        OnPropertyChanged(nameof(HasVerifiedOfflineBypassBadge));
+        OnPropertyChanged(nameof(VerifiedOfflineBypassBadgeText));
         OnPropertyChanged(nameof(InitialsText));
         OnPropertyChanged(nameof(IsRunning));
         OnPropertyChanged(nameof(SidebarRightTag));

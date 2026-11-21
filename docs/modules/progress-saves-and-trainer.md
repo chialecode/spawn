@@ -1,37 +1,129 @@
-# Progress 模块规格正本：去重存档时间机器、SPPK 云同步与单机修改器管家（`spawn.progress`）
+# Progress 模块规格正本：单机外部修改器安全管家、启动前存档快照与存档时间机器/云同步（`spawn.progress`）
 
 | 元数据项 | 规格定义 |
 | :--- | :--- |
 | **模块代号** | `spawn.progress` |
-| **承载子工程** | `Spawn.Modules.Progress`（存档规则解析、FastCDC 去重库、SPPK 云同步、修改器匹配与静音控制）、`Spawn.TrainerWorker`（修改器沙箱托管、扫描码代理、AlphaVSS 锁穿透、二期原生 `.CT` 引擎），统一基于 `.NET 10 LTS`（`net10.0-windows`） |
-| **所属进程域与权限** | 存档快照、云同步与 WASAPI 音量会话管理运行于 `Spawn.Host.exe`（`Medium IL 0x2000`）；修改器进程沙箱、按键模拟与 VSS 卷影复制物理隔离于 `Spawn.TrainerWorker.exe`（`High IL 0x3000`） |
-| **覆盖需求与决策** | `REQ-PRG-01` ~ `REQ-PRG-07`、`REQ-NEX-07`、`REQ-SEC-01`、`REQ-SEC-03`、`REQ-SEC-06`、`D-01`、`D-04`、`D-09`、`D-11`、`D-12`、`A-01` ~ `A-03` |
-| **目标交付里程碑** | `M3`（`Ludusavi` 预编译索引、`FastCDC` 存档时间机器、`32MB SPPK` 云同步、FLiNG 一键下载与零报毒静音管家及热键代理） · `M6`（`NativeCheatTableBackend` 二期 CE `.CT` 原生内存引擎） |
-| **关联设计正本** | [ADR-0004：CAS 与 FastCDC 存储架构](../decisions/0004-cas-fastcdc-storage-and-mod-junction-topology.md) · [ADR-0005：外部生态与零报毒修改器治理](../decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md) · [数据模型正本](../design/data-model.md) · [IPC 与安全契约](../design/ipc-and-security-contracts.md) · [Nexus 模块规格](./nexus-mods-and-utilities.md) |
-| **前期调研档案** | [卷 03：存档时间机器、去中心化云同步与单机修改器管家](../research/03-save-timemachine-and-trainer.md) |
+| **承载子工程** | `Spawn.Modules.Progress`（Clean Host 侧：修改器目录与匹配、洁净室 FLiNG 发现/解析/下载、本地导入、`A0+A` 静音控制、启动前存档快照；`M4` 轨道：存档规则解析、FastCDC 去重库、SPPK 云同步）、`Spawn.TrainerWorker`（隔离进程：修改器 `KILL_ON_JOB_CLOSE` 托管、`SendInput` 热键代理、窗口显隐、WASAPI 回退；`M6`：收窄原生修改后端），统一基于 `.NET 10 LTS`（`net10.0-windows`） |
+| **所属进程域与权限** | 修改器目录、下载、解压、静音会话管理与存档快照运行于 `Spawn.Host.exe`（`Medium IL 0x2000`，受 `PEReader` 门禁）；修改器进程托管与按键代理物理隔离于 `Spawn.TrainerWorker.exe`（发布于 `Workers\Trainer\`；按 `D-11` 分级：无管理员清单时 `Medium IL`，需要时每会话 1 次 UAC 升为 `High IL 0x3000`），`M3` 零跨进程内存读写 API 导入 |
+| **覆盖需求与决策** | `REQ-PRG-01` ~ `REQ-PRG-08`、`REQ-NEX-07`、`REQ-SEC-01`、`REQ-SEC-03`、`REQ-SEC-05`、`REQ-SEC-06`、`NFR-07`、`D-04`、`D-09`、`D-11`、`D-12`、`D-25` ~ `D-29`、`A-01` ~ `A-03` |
+| **目标交付里程碑** | `M3`（外部修改器安全管家 + 启动前轻量存档快照，`AC-12` / `AC-12b`） · `M4`（`Ludusavi` 预编译索引、`FastCDC` 存档时间机器、`32MB SPPK` 云同步轨道，`AC-09` ~ `AC-11`，自 `M3` 顺延） · `M6`（收窄原生修改后端，`AC-24`） |
+| **关联设计正本** | [ADR-0004：CAS 与 FastCDC 存储架构](../decisions/0004-cas-fastcdc-storage-and-mod-junction-topology.md) · [ADR-0005：外部生态与零报毒修改器治理](../decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md) · [ADR-0006：修改器提权与 IPC](../decisions/0006-m3-external-trainer-manager-elevation-and-ipc.md) · [数据模型正本](../design/data-model.md) · [IPC 与安全契约](../design/ipc-and-security-contracts.md) · [Nexus 模块规格](./nexus-mods-and-utilities.md) |
+| **前期调研档案** | [卷 03：存档时间机器、去中心化云同步与单机修改器管家](../research/03-save-timemachine-and-trainer.md)（`reference`；其中 22B MIDI、35ms 扫描码、`Reloaded.Memory.SigScan`、移植 `GPL`/`AGPL` 解析器、抓取 `/?s=` 等表述已被本规格推翻，以本规格为准） |
 
 ---
 
 ## 1. 职责边界与进程权限域
 
-### 1.1 模块职责范围（In-Scope）
+### 1.1 `M3` 模块职责范围（In-Scope）
 
-1. **毫秒级存档路径自动探测与配置拆流**：将开源社区持续更新的 `ludusavi-manifest` 规则集离线预编译入 `spawn.db`，原生解析全部 16 类跨平台路径占位符、多离线模拟器 `<storeUserId>` 展开及 Windows 注册表项，并严格区分 `[save]` 进度数据与 `[config]` 分辨率/键位设置，避免跨桌面与掌机同步时污染画质配置。
-2. **块级去重存档时间机器（Save Time-Machine）**：基于确定性 Gear-Hash `FastCDC` 变长分块、`BLAKE3` 寻址与 `Zstd` 压缩构建跨槽位共享块池；通过 2.5 秒写入静默去抖、前后双元数据向量防撕裂校验与 `AlphaVSS` 热备份兜底确保零半写坏档；强制在任意回滚前自动生成 `[PreRollbackSafety]` 安全锚点并与 `spawn.nexus` 校验 `mod_profile_hash`。
-3. **去中心化自建云同步（32MB `SPPK` Packfile）**：拒绝同步 `spawn.db` 本体，采用 `32MB SPPK` 聚合包格式打通 S3/Cloudflare R2、WebDAV（坚果云/Nextcloud/OpenList）与本地同步盘目录，依托 64 代 `ParentSnapshotId` 哈希祖先链实现无感 Fast-Forward 与双端离线分叉可视化合并。
-4. **一期零杀软误报外部 FLiNG 修改器管家**：从官方双源确定性检索单机修改器、双语正则提取热键生成原生开关卡片、引导配置隔离沙箱目录；采用 **配置预写 + 22 字节合法静音 MIDI + 全输出端点 `NAudio.Wasapi` 会话事件拦截** 实现零刺耳启动 BGM 与提示音独立调音（**100% 零 DLL 注入、零杀软误报**），并通过 `TrainerWorker` 提供无小键盘笔记本硬件扫描码代理。
-5. **二期原生 `.CT` 引擎扩展槽（`ITrainerBackend`）**：在 M3 提前冻结统一策略契约，M6 在 `Spawn.TrainerWorker` 内实现 Cheat Engine `.CT` 逆序指针链解析、`Reloaded.Memory.SigScan` AVX2 特征码搜索与 `Iced.Intel` ±1.75GB 安全跳板。
+1. **修改器发现与版本匹配（`REQ-PRG-04`）**：以英文标准名与本地版本指纹匹配 FLiNG 主站/归档站修改器，给出三级置信度提示（非硬阻断）；严守源站 `robots.txt`，零后台爬虫、零中转镜像。
+2. **用户显式触发下载与本地导入一等公民（`REQ-PRG-04`）**：单次用户点击触发的安全下载流水线 + 拖放导入 `.exe`/`.zip`/`.rar`/`.7z`；落盘即钉扎本地 `SHA-256`。
+3. **结构化热键解析（`REQ-PRG-04`）**：`AngleSharp` DOM 洁净室解析热键表与 `toolTips` 提示；非 FLiNG 修改器自动进入“自由托管模式”。
+4. **零注入双保险静音（`REQ-PRG-05`、`D-04`、`D-28`）**：`A0` INI + 27 字节静音 SMF 预置，`A` 专用 MTA 线程 WASAPI 全端点会话控制；默认完全静音。
+5. **隔离托管与无小键盘热键代理（`REQ-PRG-06`、`D-11`、`D-26`）**：`Spawn.TrainerWorker` 分级按需提权、倒置管道鉴权、原子 `KILL_ON_JOB_CLOSE` 作业对象、`MAPVK_VK_TO_VSC_EX` 交错按键代理、窗口显隐与随游戏退出联动。
+6. **启动修改器前轻量存档快照与一键回滚（`REQ-PRG-08`、`D-25`）**：复用 `M2` `GameDataManagementService` + `GameDataSafetyFence`。
+7. **反作弊放行判定配合（`REQ-SEC-03`、`D-27`）**：消费 `Spawn.Core` 四层 `Tier 0` 判定、`VerifiedOfflineBypass` 硬验票与 2 秒急停看门狗。
+8. **杀软与系统安全提示（`REQ-PRG-04`）**：Opt-in Defender 沙箱单目录排除助手、隔离错误码 `225`/`226` 诊断与 Smart App Control 透明说明。
+9. **`ITrainerBackend` 契约冻结（`REQ-PRG-07`）**：一期实现 `ExternalTrainerBackend`，为 `M6` 收窄原生修改后端留出扩展槽。
 
-### 1.2 明确排除边界（Out-of-Scope）
+### 1.2 `M4` 轨道职责（自 `M3` 顺延，契约保留于本规格 §5）
 
-- **严禁触碰任何受保护联网游戏**：修改器检索、沙箱启动、热键代理与二期 `.CT` 后端**硬锁死仅对 `AntiCheatTier == Tier 0` 纯离线单机开放**；一旦系统中存在运行态或冷却态的 `Tier 2/3` 游戏，服务层与 Worker 层双重熔断拒绝执行（`REQ-PRG-06`、`REQ-SEC-03`）。
-- **严禁对外部加壳修改器注入 Hook DLL**：彻底否决向 FLiNG 等加壳 `.exe` 注入 `MinHook` 拦截 `PlaySoundW` / `winmm.dll` 的高风险做法（`REQ-PRG-05`、`D-04`）。
+`ludusavi-manifest` 预编译索引与 `[save]`/`[config]` 拆流（`REQ-PRG-01`）、`FastCDC` 块级去重存档时间机器与防撕裂原子回滚（`REQ-PRG-02`）、`32MB SPPK` 自建云同步与血缘合并（`REQ-PRG-03`），并与 Nexus `mod_profile_hash`（`REQ-NEX-07`）联动。
+
+### 1.3 明确排除边界（Out-of-Scope）
+
+- **严禁触碰任何受保护联网游戏**：修改器检索、下载、沙箱启动与热键代理**仅对 `Tier 0` 或已通过零 AC 硬验票的 `VerifiedOfflineBypass` 混合单机开放**；守卫处于 `ProtectedRunning` / `ResidualGuardWatch` / `MandatoryCooldown15s` 任一锁定态时，Host 与 Worker 双重拒绝执行。
+- **严禁对外部修改器注入 Hook DLL 或改写其二进制**：否决 `MinHook` 拦截 `PlaySoundW` / `winmm.dll`，否决 `UpdateResourceW` 替换 PE `MID`/`MIDI` 资源（保 SHA-256 钉扎、降杀软启发式）。
+- **`M3` 不做 `.CT` 执行引擎与内存数值扫描器**；不接入 FearlessRevolution、OpenCheatTables 或任何商业聚合门户的自动抓取；不建设任何修改器二进制中转/镜像服务器。
+- **严禁复制或移植 `GPL`/`AGPL` 参考管理器代码、正则或标题词典**（`D-29`、`NFR-07`）。
 
 ---
 
 ## 2. 核心接口与状态机契约
 
-### 2.1 核心领域服务接口（`Spawn.Modules.Progress` / `Spawn.Core`）
+### 2.1 `M3` 修改器与快照契约（`Spawn.Contracts`，`M3-W02` 冻结）
+
+```csharp
+namespace Spawn.Contracts;
+
+public interface ITrainerBackend : IAsyncDisposable
+{
+    string BackendKind { get; } // "ExternalTrainer" (M3) | "NativeModPack" (M6)
+    Task<TrainerSessionHandle> ActivateSessionAsync(TrainerLaunchSpec spec, CancellationToken ct = default);
+    Task TriggerEntryAsync(Guid sessionId, string entryId, bool targetEnabled, CancellationToken ct = default);
+    Task ShutdownAllImmediatelyAsync(TrainerShutdownReason reason, CancellationToken ct = default);
+}
+
+public interface ITrainerCatalogService
+{
+    Task<TrainerMatchResult> MatchAsync(Guid gameId, string? userSearchOverride = null, CancellationToken ct = default);
+    Task<TrainerImportResult> DownloadAsync(Guid gameId, TrainerCandidate candidate, IProgress<TrainerDownloadProgress>? progress = null, CancellationToken ct = default);
+    Task<TrainerImportResult> ImportLocalAsync(Guid gameId, string userSelectedPath, CancellationToken ct = default);
+    Task<TrainerIntegrityReport> VerifyAsync(Guid trainerId, CancellationToken ct = default); // 启动前 SHA-256 TOCTOU 复核
+    Task RemoveAsync(Guid trainerId, CancellationToken ct = default);
+}
+
+public interface ITrainerRuntimeService
+{
+    TrainerRuntimeState State { get; }
+    event EventHandler<TrainerRuntimeStateChanged>? StateChanged;
+    Task<TrainerLaunchOutcome> LaunchAsync(Guid trainerId, TrainerLaunchOptions options, CancellationToken ct = default);
+    Task TriggerHotkeyAsync(Guid sessionId, string entryId, CancellationToken ct = default);
+    Task SetOriginalWindowVisibleAsync(Guid sessionId, bool visible, CancellationToken ct = default);
+    Task StopAsync(Guid sessionId, CancellationToken ct = default);
+}
+
+public interface ITrainerAudioController : IAsyncDisposable
+{
+    Task PrepareAsync(TrainerAudioPolicy policy, string sandboxRoot, CancellationToken ct = default); // A0 + MTA 预注册
+    void TrackProcess(int pid);                                                                         // 主 PID 与 IOCP 上报子 PID
+    Task ApplyPolicyAsync(TrainerAudioPolicy policy, CancellationToken ct = default);                   // 完全静音 / 实验性提示音
+}
+
+public interface IPreTrainerSaveSnapshotService
+{
+    Task<PreTrainerSnapshotResult> CreateAsync(Guid gameId, Guid? trainerId, CancellationToken ct = default); // 非阻塞：超阈值/排他锁返回 Skipped
+    Task<IReadOnlyList<PreTrainerSnapshotRecord>> ListAsync(Guid gameId, CancellationToken ct = default);
+    Task<PreTrainerRestoreResult> RestoreAsync(Guid snapshotId, CancellationToken ct = default);            // 先建 PreRestoreSafety，游戏运行中拒绝
+}
+
+public interface ISensitiveWorkerShutdownHook // 零循环依赖：由 Progress 实现、注入 GameLaunchService
+{
+    Task<SensitiveWorkerShutdownReport> ShutdownAllForProtectedLaunchAsync(TimeSpan budget, CancellationToken ct = default);
+}
+```
+
+- `TrainerAudioPolicy`：`Mode`（`FullMute` 默认 / `KeepCuesExperimental`）、`CueVolume`（`0.0–1.0`，默认 `0.35`）、`EnableA0`（默认 `true`）。
+- `TrainerLaunchOptions`：`HotkeyHoldMs`（`50–120`，默认 `75`）、`HideOriginalWindow`、`StopWithGameExit`（默认 `true`）、`CreatePreTrainerSnapshot`（默认 `true`）、`ScanCodeMode`（默认 `false`）。
+- 反作弊放行结果统一以 `Spawn.Core` 的判定结果对象返回（`Allowed` / `BlockedByTier` / `BlockedByGuardPhase` / `BlockedByLiveAntiCheat` / `RequiresOfflineConfirmation` / `VanguardIdleWarning`），UI 不自行推断。
+
+### 2.2 修改器会话状态机
+
+```mermaid
+stateDiagram-v2
+    [*] --> Unbound : 游戏无已绑定修改器
+    Unbound --> Matching : 点击“匹配修改器”
+    Matching --> Downloading : 用户选择候选并点击“下载所选版本”
+    Matching --> FallbackBrowser : 403 / Challenge / HTML 负载
+    FallbackBrowser --> Importing : 用户拖放本地文件
+    Unbound --> Importing : “导入本地文件”
+    Downloading --> Verifying : 落入 .staging
+    Importing --> Verifying
+    Verifying --> Ready : 魔数/PE/清单字节核对通过并钉扎 SHA-256
+    Verifying --> Quarantined : 225/226 或解压后文件缺失
+    Quarantined --> Ready : 用户处理杀软隔离后重试
+    Ready --> PreFlight : 点击“启动修改器”
+    PreFlight --> Ready : 硬验票失败 / 用户取消 UAC
+    PreFlight --> Snapshotting : 守卫 IdleSafe + 零 AC 进程/驱动 + SHA-256 复核通过
+    Snapshotting --> Launching : 快照完成或非阻塞跳过
+    Launching --> Running : Worker 握手成功 + 修改器入组
+    Running --> Stopping : 用户停止 / 游戏退出 / 修改器自行退出
+    Running --> EmergencyStopped : 看门狗检出反作弊 / Tier 2-3 启动前清场
+    Stopping --> Ready : WM_CLOSE 1500ms 后 TerminateJobObject
+    EmergencyStopped --> Ready : WM_CLOSE 500ms 后 TerminateJobObject 并上锁
+```
+
+### 2.3 `M4` 轨道契约（顺延保留）
 
 ```csharp
 namespace Spawn.Modules.Progress.Contracts;
@@ -39,40 +131,18 @@ namespace Spawn.Modules.Progress.Contracts;
 public interface ISaveTimeMachineService
 {
     ValueTask<ResolvedSaveLayout> ResolveGameSavePathsAsync(Guid gameId, CancellationToken ct = default);
-
-    Task<SaveSnapshotRecord> CreateSnapshotAsync(
-        Guid gameId,
-        SnapshotTriggerKind trigger,
-        string? userNote = null,
-        bool includeConfigFiles = false,
-        CancellationToken ct = default);
-
-    Task<RollbackResult> RollbackToSnapshotAsync(
-        Guid snapshotId,
-        ModMismatchResolution mismatchPolicy = ModMismatchResolution.AbortAndPrompt,
-        CancellationToken ct = default);
+    Task<SaveSnapshotRecord> CreateSnapshotAsync(Guid gameId, SnapshotTriggerKind trigger, string? userNote = null, bool includeConfigFiles = false, CancellationToken ct = default);
+    Task<RollbackResult> RollbackToSnapshotAsync(Guid snapshotId, ModMismatchResolution mismatchPolicy = ModMismatchResolution.AbortAndPrompt, CancellationToken ct = default);
 }
 
 public interface ICloudSaveSyncService
 {
     Task<SyncPlanPreview> PlanSyncAsync(Guid gameId, CancellationToken ct = default);
-    Task<SyncExecutionReport> ExecuteSyncAsync(
-        Guid gameId,
-        DivergenceResolutionChoice? userChoice = null,
-        IProgress<SyncProgressTick>? progress = null,
-        CancellationToken ct = default);
-}
-
-public interface ITrainerBackend : IAsyncDisposable
-{
-    string BackendKind { get; } // "ExternalFling" (M3) | "NativeCheatTable" (M6)
-    Task<TrainerSessionHandle> ActivateSessionAsync(TrainerLaunchSpec spec, CancellationToken ct = default);
-    Task TriggerEntryAsync(Guid sessionId, string entryId, bool targetEnabled, CancellationToken ct = default);
-    Task ShutdownAllImmediatelyAsync(CancellationToken ct = default);
+    Task<SyncExecutionReport> ExecuteSyncAsync(Guid gameId, DivergenceResolutionChoice? userChoice = null, IProgress<SyncProgressTick>? progress = null, CancellationToken ct = default);
 }
 ```
 
-### 2.2 去中心化云同步三路血缘比对状态机
+去中心化云同步三路血缘比对状态机：
 
 ```mermaid
 stateDiagram-v2
@@ -99,46 +169,156 @@ stateDiagram-v2
 
 ## 3. 数据模型与存储路径
 
-### 3.1 SQLite 核心表契约（归属 `spawn.db`）
+### 3.1 SQLite Schema `v4`（`M3-W02` 幂等迁移，归属 `spawn.db`）
 
-主表结构严格对齐 [data-model.md](../design/data-model.md) 全局 `snake_case` 命名契约，模块配置辅表（如 `cloud_sync_endpoints`、`trainer_title_map`）共享同一版本化 SQL 迁移管线：
+主表结构严格对齐 [data-model.md](../design/data-model.md) 全局 `snake_case` 命名契约，迁移由 `SpawnDatabase` 版本化管线执行（`v3 → v4` 幂等，可重复运行）：
+
+| 表名 | 主键 | 关键字段与约束摘要 | 业务用途 |
+| :--- | :--- | :--- | :--- |
+| `trainer_catalog` | `trainer_id TEXT` | `game_id TEXT NOT NULL`, `provider TEXT NOT NULL`（`FlingMain`/`FlingArchive`/`LocalImport`）, `display_name TEXT`, `version_label TEXT`, `source_page_url TEXT`, `source_updated_at TEXT`, `sandbox_relative_path TEXT NOT NULL`, `file_sha256 TEXT NOT NULL`, `file_size INT`, `pe_machine TEXT`, `requires_admin INT DEFAULT 0`, `authenticode_status TEXT`, `parse_mode TEXT`（`Structured`/`FreeHosted`）, `bound_build_id TEXT`, `bound_exe_size INT`, `bound_exe_last_write_utc TEXT`, `imported_at_utc TEXT NOT NULL`, `last_launched_at_utc TEXT` | 已导入修改器目录、来源归属、本地钉扎哈希与绑定时游戏版本指纹 |
+| `trainer_title_map` | `game_id TEXT` | `english_title TEXT NOT NULL`, `title_source TEXT`（`AcfName`/`SteamAppDetails`/`GogInfo`/`Cleaner`/`User`）, `user_search_override TEXT`, `fling_page_url TEXT`, `updated_at_utc TEXT` | 英文标准名缓存与用户纠偏（**废除 Slug 硬拼**） |
+| `trainer_hotkey_bindings` | `(trainer_id, entry_id)` | `label TEXT NOT NULL`, `tooltip TEXT`, `original_chord TEXT NOT NULL`, `mapped_chord TEXT`, `entry_kind TEXT`（`Toggle`/`Trigger`）, `proxy_state INT DEFAULT 0`, `sort_order INT` | 结构化热键、用户自定义映射与代理开关显示状态 |
+| `pre_trainer_snapshots` | `snapshot_id TEXT` | `game_id TEXT NOT NULL`, `trainer_id TEXT`, `trigger_kind TEXT NOT NULL`（`PreTrainer`/`PreRestoreSafety`）, `status TEXT NOT NULL`（`Completed`/`Skipped`/`Failed`）, `skip_reason TEXT`, `file_count INT`, `total_bytes INT`, `manifest_relative_path TEXT`, `created_at_utc TEXT NOT NULL`, `restored_at_utc TEXT` | 启动前轻量快照台账（滚动保留，`PreRestoreSafety` 不计入滚动配额） |
+
+`games` 主表新增列（列名以 `SpawnDatabase` 既有命名风格为准）：`steam_build_id`、`steam_last_updated`、`verified_offline_bypass INT DEFAULT 0`、`verified_offline_bypass_at_utc`。**`verified_offline_bypass` 绝不改写既有 `anti_cheat_tier`**；重扫游戏库不得清除用户确认，但若静态 `Tier` 变为 `Tier 1`/`Tier 3` 或检测到失去单人模式，自动失效并提示。修改器全局偏好（沙箱根目录覆盖、音频模式与提示音音量、按键保持时长、启动前备份开关/保留份数/阈值、随游戏退出、自动隐藏原窗、`vgk.sys` 严格模式）沿用 `M2` 设置存储机制持久化。
+
+`M4` 轨道表（顺延保留，`M3` 不建表）：
 
 | 表名 | 主键 | 关键字段与约束摘要 | 业务用途 |
 | :--- | :--- | :--- | :--- |
 | `ludusavi_rules` | `rule_name TEXT` | `steam_app_id INT`, `gog_id INT`, `aliases_json TEXT`, `save_paths_json TEXT NOT NULL`, `config_paths_json TEXT`, `registry_rules_json TEXT` | 预编译存档路径与标签索引（`steam_app_id` 索引，查询 `< 1ms`） |
-| `cas_chunks` | `chunk_blake3 TEXT` | `raw_size_bytes INT NOT NULL`, `compressed_size_bytes INT NOT NULL`, `ref_count INT NOT NULL`, `pack_id TEXT` | 全局去重 `FastCDC` 块字典（本地散列文件与远端 `SPPK` 包双向索引） |
-| `save_snapshots` | `snapshot_id TEXT` | `game_id TEXT NOT NULL`, `profile_id TEXT`, `parent_snapshot_id TEXT`, `mod_profile_hash TEXT NOT NULL`, `trigger_kind TEXT`, `total_raw_bytes INT`, `created_machine_id TEXT`, `created_at_utc TEXT`, `is_pinned INT DEFAULT 0` | 存档快照历史树与血缘链（`is_pinned=1` 永久豁免滑动窗口 GC） |
-| `snapshot_files` | `(snapshot_id, logical_path)` | `category TEXT NOT NULL` (`Save`/`Config`/`RegistryExport`), `file_size INT`, `last_write_time_utc TEXT`, `file_blake3 TEXT`, `chunk_sequence_json TEXT NOT NULL` | 单快照内标准化逻辑文件与有序 `cas_chunks` 重组清单 |
-| `trainer_catalog` | `trainer_id TEXT` | `game_id TEXT NOT NULL`, `provider TEXT`, `target_game_build TEXT`, `executable_sandbox_path TEXT`, `file_sha256 TEXT`, `hotkeys_schema_json TEXT`, `mute_start_music INT DEFAULT 1`, `effect_volume_scalar REAL DEFAULT 0.35` | 已导入单机修改器目录、双语热键映射表与专属音量偏好 |
-| `cloud_sync_endpoints` | `id TEXT` | `provider_type TEXT` (`S3`/`WebDav`/`LocalFolder`), `endpoint_url TEXT`, `bucket_or_root TEXT`, `secret_file_name TEXT` | 云同步后端配置辅表（凭据密文独立存于 DPAPI `.sec` 文件，`spawn.db` 零明文密钥） |
-| `trainer_title_map` | `game_id TEXT` | `english_search_slug TEXT NOT NULL`, `manual_url_override TEXT` | 解决纯中文/日文名游戏到 FLiNG 英文固定 URL Slug 的确定性映射辅表 |
+| `cas_chunks` | `chunk_blake3 TEXT` | `raw_size_bytes INT NOT NULL`, `compressed_size_bytes INT NOT NULL`, `ref_count INT NOT NULL`, `pack_id TEXT` | 全局去重 `FastCDC` 块字典 |
+| `save_snapshots` | `snapshot_id TEXT` | `game_id TEXT NOT NULL`, `profile_id TEXT`, `parent_snapshot_id TEXT`, `mod_profile_hash TEXT NOT NULL`, `trigger_kind TEXT`, `total_raw_bytes INT`, `created_machine_id TEXT`, `created_at_utc TEXT`, `is_pinned INT DEFAULT 0` | 存档快照历史树与血缘链 |
+| `snapshot_files` | `(snapshot_id, logical_path)` | `category TEXT NOT NULL`（`Save`/`Config`/`RegistryExport`）, `file_size INT`, `last_write_time_utc TEXT`, `file_blake3 TEXT`, `chunk_sequence_json TEXT NOT NULL` | 单快照内逻辑文件与有序块重组清单 |
+| `cloud_sync_endpoints` | `id TEXT` | `provider_type TEXT`（`S3`/`WebDav`/`LocalFolder`）, `endpoint_url TEXT`, `bucket_or_root TEXT`, `secret_file_name TEXT` | 云同步后端配置（凭据存 DPAPI `.sec`） |
 
-### 3.2 本地与远端物理存储布局
+### 3.2 本地物理存储布局
 
 ```text
-%LOCALAPPDATA%\spawn\                          # 开发调试环境自动切换为 %LOCALAPPDATA%\spawn-dev\
-├── secrets\
-│   └── <credential-id>.sec                    # DPAPI (CurrentUser) 加密的 S3 SecretKey / WebDAV 应用密码
+%LOCALAPPDATA%\spawn\                          # 开发/源码运行为 %LOCALAPPDATA%\spawn-dev\；测试强制重定向临时目录
+├── cache\trainers\
+│   ├── fling-all-trainers.html                # 24h 缓存的 /all-trainers/ 索引（并发 1）
+│   └── fling-archive-index.html               # 用户勾选后按需缓存 7 天的归档站索引
 └── vault\
-    ├── Chunks\ab\cd\<64-char-blake3>.zst      # 本地 Zstd 压缩去重块池
-    └── Sandbox\Trainers\<GameId>\             # 单次 UAC 引导加入 Defender 排除目录的修改器专属沙箱
-        └── <TrainerName>.exe
+    ├── Sandbox\Trainers\                      # 唯一允许加入 Defender 排除的目录（可由用户改为纯 ASCII 自定义根；自定义根须为空目录，迁移逐目录校验后才删除旧副本）
+    │   ├── .staging\<guid>\                   # 下载/解压暂存，校验通过后原子移动
+    │   └── <GameId>\<TrainerId>\              # 成品修改器（多 EXE 时用户自选主程序，辅助 EXE 绝不自动执行）
+    └── Snapshots\PreTrainer\<GameId>\<SnapshotId>\
+        ├── files\...                          # 存档原始副本（跳过 ReparsePoint）
+        ├── registry_snapshot.json             # HKCU 导出（确定性 UTF-8 字典序）
+        └── manifest.json                      # 原子写入（临时文件 + 同卷重命名）
 
-<RemoteRoot>/spawn-sync/                       # S3 Bucket / WebDAV 目录 / Syncthing 同步目录
-├── repo.json                                  # 仓库格式版本、加密盐参数与创建时间
-├── packs/
-│   └── pack-<pack_blake3>.sppk                # 不可变 <= 32MB 聚合包（内容寻址，支持无锁上传与 Range 按需拉取）
-├── snapshots/
-│   └── <GameId>/<SnapshotId>.json             # 不可变单快照清单（含 ModProfileHash、ParentSnapshotId 与逻辑文件块序列）
-└── heads/
-    └── <GameId>/<MachineId>.json              # 每台设备独立写自己的最新指针与最近 64 代 AncestorIds 数组
+<InstallDir>\Workers\Trainer\Spawn.TrainerWorker.exe   # 独立发布子目录，严禁平铺于主程序根目录
 ```
+
+`M4` 轨道追加：`vault\Chunks\ab\cd\<64-char-blake3>.zst` 本地块池与远端 `<RemoteRoot>/spawn-sync/{repo.json, packs/, snapshots/, heads/}` 布局（见 §5.3）。
 
 ---
 
-## 4. 关键算法与协议细节
+## 4. `M3` 关键算法与协议细节
 
-### 4.1 原生 `ludusavi` 16 种跨平台路径占位符解析表（`REQ-PRG-01`）
+### 4.1 英文标准名与版本指纹匹配（`REQ-PRG-04`）
+
+1. **一级身份锚定**：`appmanifest_<id>.acf` `"name"` → 惰性请求 `https://store.steampowered.com/api/appdetails?appids=<id>&l=english&filters=basic` 并永久缓存至 `trainer_title_map` → GOG `goggame-*.info` `"name"` → `GameTitleCleaner` 回退 + 用户可编辑搜索词。修复 `M2` 扫描器以 `l=schinese` 落库中文名导致无法直搜英文源的缺口（中文名仍用于展示）。
+2. **二级更新检测**：`GameDirectoryScanner` 解析 ACF `"buildid"` 与 `"LastUpdated"`；绑定修改器时记录 `(BuildId, ExeSize, ExeLastWriteUtc)`，后续变化时温和提示“游戏文件已更新，建议检查新版修改器”。
+3. **三级参考比对**：PE `FileVersion`/`ProductVersion` 先过滤 Unity（`20xx.x.*`）/Unreal（`4.27.*`/`5.x.*`）引擎版本号噪声，仅在量级一致时参与比对。
+4. **四级置信度（非硬阻断）**：FLiNG 版本串存在 `v1.02-v1.16.1`、`v1.0+`/`Early Access+`、`v1.0-v20251216`、`v4.1.1 Updated 2025.04.16`、`v2.0-v2.5 Updated` 等非统一格式，统一映射为 `版本范围匹配` / `建议按更新日期核对`（默认置顶最新并列出全部历史附件）/ `可能已过期`。
+
+### 4.2 洁净室发现与用户显式触发下载流水线（`REQ-PRG-04`）
+
+1. **发现层（严守 `robots.txt` 与直接归档附件合成）**：仅使用 24h 缓存 `https://flingtrainer.com/all-trainers/`（约 180KB，~767 条）与单次 `wp-json/wp/v2/posts?search=<英文名>&per_page=<n>`，全链路携带诚实非伪装 `User-Agent` 与标准 RFC `Accept` / `Accept-Language` 请求头；并发锁死 `1`；**绝不请求 `/?s=`、`/attachments/` 或批量抓取 `/downloads/`**；归档站 `archive.flingtrainer.com` 静态索引仅在用户勾选后缓存 7 天。`wp-json` 的 `content.rendered` 不含附件表，附件表仅在用户打开某候选时单次拉取详情页 HTML，并捕获经白名单校验的重定向后规范 `PageUrl` 作为后续下载同源 `Referer`；对 `archive.flingtrainer.com/files/*.rar|.zip|.7z|.exe` 直接下载条目，解析索引行直接合成 `TrainerAttachmentCandidate`（含估算字节体积），严禁将压缩包二进制当 HTML 拉取。
+2. **源域白名单与词边界推广过滤**：解析器仅接受 `flingtrainer.com` / `archive.flingtrainer.com` 链接，显式拒绝含 `wemod`、`auto-updat`、`installer`、`setup` 与第三方注入脚本的链接；推广词 `wand` 严格限定为词边界匹配，避免误杀合法游戏名（如 *Wandering Sword*）。
+3. **下载（仅用户点击“下载所选版本”触发单次）**：使用 `SocketsHttpHandler`（`AllowAutoRedirect = false`、`UseCookies = false`、`PooledConnectionLifetime = 2m`），每次下载独占作用域隔离的 `CookieContainer` 跨手动重定向传播会话 Cookie（严禁跨次下载串用），手动跟随最多 10 跳并兼容含未转义空格/括号的原始 `Location` 响应头解析；每跳强制 `https://`、严格校核白名单主机、固定发送 `Accept: */*` 与经规范化/白名单校验的同源 `Referer`（`https://flingtrainer.com/...` 或 `https://archive.flingtrainer.com/`）；连接超时 `15s`、读流停滞 `30s`、体积上限 `100MB`（源站常缺 `Content-Length` 且忽略 `Range`，按流式计数截断）；写入 `vault\Sandbox\Trainers\.staging\<guid>\`。
+4. **Challenge 与 403 精准分类秒退（零误报、零绕过）**：
+   - 严禁以裸子串 `challenge-platform` 误判 Cloudflare 在正常 HTTP `200` 网页末尾嵌入的被动 JS Detection 遥测脚本（`/cdn-cgi/challenge-platform/scripts/jsd/main.js`）；
+   - 仅在响应触发真实挑战或阻断时判定拦截：HTTP `403` / `503`、响应头含 `cf-mitigated: challenge`、页面 `<title>` 为 Cloudflare 校验/拦截页（如 `Just a moment...` / `Attention Required!`）、正文含主动挑战标记（`/cdn-cgi/challenge-platform/h/`、`window._cf_chl_opt`、`cf-browser-verification`、`cf-challenge-running`、`id="challenge-form"`、Turnstile 组件），或二进制下载流返回任何 HTML 负载；
+   - 一旦命中上述任一条件，立即零重试中止、清理 `.staging` 暂存目录，按 `Challenge` / `HTTP 403` / `HTTP 503` / `HTML 负载` 区分输出诚实诊断文案，UI 切换为“在默认浏览器打开原页”+“拖放本地文件导入”，绝不做任何验证绕过。
+5. **完整性防线**（源站不提供任何官方哈希）：
+   - 魔数嗅探分流：`4D 5A`（裸 PE，FLiNG 主站 Hop 3 实际返回）→ `PEReader` 头结构检查；`50 4B 03 04` / `52 61 72 21` / `37 7A BC AF` → 压缩包；其他一律拒绝；
+   - 压缩包：先读清单（条目数与解压后字节数），逐条目执行 Zip-Slip 校验（规范化后必须位于暂存根内，拒绝绝对路径、`..`、设备名与 ReparsePoint），`.zip` 优先 BCL `System.IO.Compression`，`.rar`/`.7z` 用 `SharpCompress 0.50.9`，异常时若用户本机存在 `7z.exe` 则以模式 C 兜底；解压后逐文件核对字节数——缺失/截断视为杀软静默吞文件；
+   - 捕获 `ERROR_VIRUS_INFECTED (225)` / `ERROR_VIRUS_DELETED (226)` 归类为“杀软隔离”，回滚暂存并展示修复卡（与网络/文件损坏区分）；
+   - 多 EXE 时弹窗由用户选择主程序，辅助 EXE 与说明文件仅保留不执行；
+   - 校验通过后原子移动至 `<GameId>\<TrainerId>\`，计算并钉扎 `SHA-256`；**每次启动前复核 SHA-256（TOCTOU）**，不一致即拒绝启动并提示重新导入。
+6. **本地导入**：拖放/选择 `.exe`/`.zip`/`.rar`/`.7z` 走同一暂存与校验流水线（来源记为 `LocalImport`）；**严禁静默剥离用户导入文件的 `Zone.Identifier`**。只读检测 PE 位数、清单 `requireAdministrator` 与 Authenticode 状态（仅作信息标签）。
+7. **非 ASCII 路径**：沙箱根含非 ASCII 字符时优先尝试 `GetShortPathNameW`（8.3 可用时）作为启动路径，并在设置页提供自定义纯 ASCII 沙箱根（迁移时整体移动并更新 `sandbox_relative_path` 基准）。
+
+### 4.3 结构化热键解析（`REQ-PRG-04`）
+
+- 使用 `AngleSharp` 解析详情页（或 `wp-json` `content.rendered`）DOM：剥离 `<script>`，从 `toolTips('.tooltip_x', '说明')` 调用中提取功能提示；按段落/换行切分条目，兼容 `&#8211;` en-dash、`</p>` 结尾末项、`<span class='tooltipsall'>` 包裹；键位词表覆盖 `Num 0–9`、`Num .`、`Num +`、`Num -`、`Num *`、`Num /`、`Num Enter`、`F1–F12`、`Home`、`End`、`Insert`、`Delete`、`Page Up/Down` 及 `Ctrl`/`Alt`/`Shift` 组合。
+- 解析结果写入 `trainer_hotkey_bindings`；解析失败或非 FLiNG 修改器进入 `FreeHosted` 自由托管模式（仍享沙箱、静音、随游戏退出与显隐原窗，提供手动添加热键条目），绝不阻断启动。
+- 词典与正则 100% 原创编写，**严禁参照 `GPL`/`AGPL` 实现的 `options.rs` 等源码**。
+
+### 4.4 `A0 + A` 零注入静音与提示音控制（`REQ-PRG-05`、`D-28`）
+
+1. **`A0` 启动前预写**：
+   - 目录：`SHGetKnownFolderPath(FOLDERID_Documents)\FLiNGTrainer\`（若发生 OneDrive/自定义重定向且原 `%USERPROFILE%\Documents\FLiNGTrainer` 已存在则一并处理）与 `%LOCALAPPDATA%\FLiNGTrainer\`；严禁硬编码 `%USERPROFILE%\Documents`；
+   - 写入：`FLiNGTSettings.ini` 的 `OnLoadMusic = False`（等号两侧空格）与 `TrainerSettings.ini` 的 `OnLoadMusic=False`；已存在文件仅改该键（保留其他键与编码），不存在时新建 `[Settings]` 节（冷启动生效性按 `OSS-07` 实机记录）；
+   - 预置 `TrainerBGM.mid` 为 **27 字节 5.0 秒非零时长纯静音 SMF**（96 PPQ、默认 120 BPM，单个 `87 40`（960 ticks）delta 后接 End-of-Track，无任何音符）：
+
+     ```text
+     4D 54 68 64 00 00 00 06 00 00 00 01 00 60
+     4D 54 72 6B 00 00 00 05 87 40 FF 2F 00
+     ```
+   - 写入前备份原文件为 `.spawn_bak`，用户关闭 `A0` 时可还原；不修改修改器 EXE 同级目录与 `%APPDATA%`（未核实，不纳入默认）。
+2. **`A` WASAPI 会话控制**：
+   - 专用后台线程以 MTA（`COINIT_MULTITHREADED`）初始化 Core Audio，严禁在 WPF STA 线程注册；
+   - 每个活跃渲染端点严格执行 `RegisterSessionNotification` → `GetSessionEnumerator` → `GetCount()`，绝不在回调路径调用 NAudio `RefreshSessions()`（其先注销后枚举会制造监听盲窗）；
+   - 实现 `IMMNotificationClient` 动态增删端点（USB 耳机/蓝牙/显示器音频热插拔）；回调 Sink 保持强引用防 GC；妥善处理 `AUDCLNT_E_DEVICE_INVALIDATED` 与 `AUDCLNT_S_NO_SINGLE_PROCESS (0x0889000D)`；
+   - 会话匹配：主 PID、Worker IOCP 上报的子 PID（`trainer.processCreated`）与 `0x1000` 回读映像路径位于沙箱根前缀；
+   - 策略：`FullMute`（默认）→ `ISimpleAudioVolume.SetMute(true)`；`KeepCuesExperimental` → `SetMasterVolume(CueVolume)` 并在 UI 标注“仅支持 `A0` 生效的新版 FLiNG 修改器去除背景音乐”；
+   - Medium IL 对 High IL 会话 `SetMute` 返回 `E_ACCESSDENIED` 时，经 `trainer.setAudioFallback` 由 Worker 侧执行（`OSS-07` ③）；
+   - 首次冷启 10–50ms 首帧泄漏属于 WASAPI 异步回调物理边界，诚实记录，不承诺 0ms。
+
+### 4.5 `Spawn.TrainerWorker` 托管、倒置管道与热键代理（`REQ-PRG-06`、`D-11`）
+
+1. **启动链**：Host 完成硬验票与快照 → 创建单实例会话管道服务端 → 按 `D-11` Level 1（`CreateProcessW` Medium IL）或 Level 2（`ShellExecuteExW` `runas`）拉起 `Workers\Trainer\Spawn.TrainerWorker.exe --host-pid <pid> --pipe <name> --nonce <base64url>` → 双向 PID/路径/Nonce 鉴权（[IPC 契约 §2.2](../design/ipc-and-security-contracts.md)）→ `trainer.launch`。
+2. **原子作业对象**：Worker 创建 `TrainerSandboxJob`（`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE (0x2000) = ON`、`BREAKAWAY_OK = OFF`、`SILENT_BREAKAWAY_OK = OFF`），以 `InitializeProcThreadAttributeList` + `PROC_THREAD_ATTRIBUTE_JOB_LIST` + `CreateProcessW` 原子入组（消除自解压子进程逃逸竞态，兼容嵌套 Job）；绑定 IOCP：`JOB_OBJECT_MSG_NEW_PROCESS` 推送子 PID，`JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO` 判定会话结束（绝不以启动 Stub 退出误判）。
+3. **停止**：优雅 `PostMessageW(WM_CLOSE)` 至修改器顶层窗口等 `1500ms`（急停 `500ms`）→ `TerminateJobObject` → `CloseHandle`；Worker 检测 Host 进程退出或管道断连即自毁，由内核连坐清场。
+4. **热键代理**：
+   - `wScan = LOBYTE(MapVirtualKeyW(vk, 4 /* MAPVK_VK_TO_VSC_EX */))`；高字节为 `0xE0`/`0xE1`（及 `Num Enter` 显式标记）时附加 `KEYEVENTF_EXTENDEDKEY (0x0001)`；`Num 0–9`、`Num .`、`Num +`、`Num -`、`Num *`、`Right Shift`、`NumLock` 严禁设该标志；
+   - 同时填充 `wVk` 与 `wScan`，**默认不设 `KEYEVENTF_SCANCODE`**（否则 `NumLock OFF` 时 `0x4F` 被译为 `VK_END`）；每个修改器可选“纯扫描码模式”以兼容极少数 DirectInput 工具；
+   - 交错时序：`ModifierDown → 20ms → KeyDown → HoldMs（默认 75，范围 50–120）→ KeyUp → 20ms → ModifierUp`，使用高精度等待（避免 15.6ms 时钟粒度导致的漏采）；
+   - UI 诚实提示：`SendInput` 送达前台窗口，若游戏自身也绑定该键会同时触发；开关显示为“代理状态”，可“重置开关显示”。
+5. **窗口显隐**：启动后可自动隐藏修改器原窗口（`ShowWindow(SW_HIDE)`），提供“显示 / 隐藏原窗口”；不注入、不改窗口过程。
+
+### 4.6 启动修改器前轻量存档快照（`REQ-PRG-08`、`D-25`）
+
+1. **路径发现**：复用 `GameDataManagementService` 多源存档发现与 `GameDataSafetyFence`；修复 `PcGamingWikiRuleParser` 依赖的 `action=cargoquery`（2026-11-21 实测返回 `permissiondenied`）——改用 `action=parse&redirects=1&prop=wikitext` 解析 `{{Game data/saves|Windows|...}}`，页面名未知时 `action=query&list=search` 兜底，结果仍写入既有 SQLite 缓存；新增 Steam 本地 `<SteamRoot>\userdata\<uid>\<AppId>\remote` 离线规则。
+2. **创建**：默认开启；以 `FileShare.ReadWrite | FileShare.Delete` 读取并记录前后 `(Length, LastWriteTimeUtc)`，不一致重试一次，仍不一致记为 `Skipped`；递归拷贝跳过 ReparsePoint；`HKCU` 导出确定性 JSON；最后写 `manifest.json`（临时文件 + 同卷原子重命名）。
+3. **非阻塞跳过**：总量超阈值（默认 `256MB`）或命中 `ERROR_SHARING_VIOLATION` 时记为 `Skipped` 并在 UI 提示，**绝不阻断修改器启动**，不引入 `AlphaVSS`。
+4. **滚动保留**：每游戏默认保留 `5` 份 `PreTrainer`（`3/5/10`），超额删除最旧快照目录（仅删除快照目录自身，非递归穿越 Junction）；`PreRestoreSafety` 单独保留最近 `1` 份。
+5. **回滚**：游戏运行中拒绝；先对当前现场创建 `PreRestoreSafety`，再按 manifest 解压至同目录 `<file>.spawn_stage_tmp` 并 `Flush(true)`，全部就绪后批量 `File.Move(..., overwrite: true)`；回滚目标路径必须通过 `GameDataSafetyFence` 校验（严禁游戏根目录、EXE/DLL、`*_Data`、`HKLM`）。
+6. 快照 `manifest.json` 采用可被 `M4` 时间机器无损导入的原始副本结构（相对逻辑路径 + 大小 + 修改时间 + SHA-256）。
+
+### 4.7 Defender、Smart App Control 与杀软提示（`REQ-PRG-04`）
+
+- 仅在用户首次启用修改器或触发隔离时展示透明同意卡，绝不在启动时自动弹 UAC；排除范围**仅** `vault\Sandbox\Trainers\`（含 `.staging`），严禁排除游戏目录、`%LOCALAPPDATA%` 或 `Downloads`。
+- 流程与降级见 [IPC 契约 §6.1](../design/ipc-and-security-contracts.md)：预读 `TPExclusions`/`ManagedDefenderProductType` → 单次 UAC WMI `MSFT_MpPreference.Add`（零 `powershell.exe`）→ 强制回读核验；失败时“复制沙箱路径 + 打开 `windowsdefender://exclusions`（回退 `ms-settings:windowsdefender`）”。
+- Windows 11 Smart App Control 无法被 Defender 排除项绕过：识别拦截后向用户解释并提供微软官方说明链接，绝不尝试编程关闭。
+- 每张修改器卡片展示来源域名、日期、体积、本地 `SHA-256`，并提供用户点击才打开的“在 VirusTotal 查看此哈希”（仅打开 `https://www.virustotal.com/gui/file/<sha256>`，绝不上传文件）。
+
+### 4.8 UI 集成契约（`D-20`，细节同步至 [DESIGN.md](../design-rules/DESIGN.md) 与 [交互与工作流设计](../design/interaction-and-workflows.md)）
+
+- **Column 1 独立一级入口 + 侧栏总览 + 详情子页签双向同步**：
+  - Column 1（`52px` 图标栏）挂载已完整落地的第 3 个非空壳业务一级入口 **③ 修改器（`PrimaryNavSection.Trainers`）**，采用 `1.6px` / 选中 `2.0px` 线性滑块图标，存在活跃修改器会话时右上角同步点亮 `8px` 翡翠绿 `#10B981` 状态圆点；
+  - Column 2（`264px` 上下文侧栏）在修改器视图顶部提供刷新按钮、固定 **`全部修改器总览`** 入口、带中文输入法（IME）组合态 `Enter` 防误触保护的检索框，以及按优先级排序的游戏列表（运行中修改器 → 已就绪已绑定修改器 → 可用单机 `Tier 0` / 混合单机 → 受保护屏蔽游戏）；
+  - Column 3（右侧主面板）在选中 `全部修改器总览` 时展示全库统计摘要条、安全沙箱路径与 Defender 快捷栏、活跃运行横幅及 `Recycling` 虚拟化已纳管修改器列表（支持直启/停止、打开沙箱、校验 SHA-256、VirusTotal 外链及经 `PlacementTarget.Tag` 桥接的 `⋯` 菜单移除；无修改器时显示空状态引导）；选中侧栏任意游戏时复用共享 `TrainerWorkbenchTemplate` 渲染单游戏工作台，并与游戏详情页 **`成就 (x/y) | 游戏数据 | 修改器`**（`GameDetailSubTab.Trainers`，头部 `⋯` 菜单含“打开修改器”）保持实时状态与选中项双向同步；设置页保留第 6 分类 **`修改器与安全沙箱`**（`SettingsCategory.TrainerAndSandbox`）。
+- 单区域唯一主按钮：未绑定 → `匹配修改器`（次要“导入本地文件”）；就绪 → `启动修改器`（`⋯` 菜单：重新匹配、导入覆盖、打开沙箱目录、校验 SHA-256、重置开关显示、在 VirusTotal 查看哈希、红字“移除”，严格经 `PlacementTarget.Tag` 桥接 `DataContext`）；运行中 → 翡翠绿 `运行中 · 停止修改器`（次要“显示 / 隐藏原窗口”）。
+- 安全视觉：修复 `AntiCheatBadgeText` 硬编码绿色——`Tier 0` 翡翠绿 `#10B981`、`Tier 1` 琥珀 `#F59E0B`、`Tier 2/3` 警戒红 `#DC2626`，`VerifiedOfflineBypass` 附加“离线无 AC 就绪”小徽标；受保护联网游戏的 `修改器` 页签仅渲染安全围栏说明卡（物理不渲染下载/启动控件）；混合单机渲染可展开离线校验面板（实时 AC 进程/驱动清零状态 + 显式确认勾选）；守卫非 `IdleSafe` 时顶部常驻等宽倒计时横幅并置灰运行/热键控件；`vgk.sys` 空闲驻留显示可折叠橙色警示条。
+- 热键列表虚拟化；深浅主题与 `1000 DIP` 窄窗口无截断。
+
+### 4.9 `M6` 收窄原生修改后端（`REQ-PRG-07`、`D-29`，预留）
+
+- **范围**：声明式原生修改包 + 静态指针链 / 基础纯汇编 `.CT` 子集；复杂 Lua / `{$c}` / Mono 表经模式 C 外部唤起用户本机 Cheat Engine。
+- **CE `<Offsets>` 逆序解引用铁律**：经核验 Cheat Engine `MemoryRecordUnit.pas`，`<Offsets><Offset>18</Offset><Offset>A0</Offset><Offset>48</Offset></Offsets>` 自底向上存储，解引用必须 `offsets.Reverse()`：`ReadPtr(ReadPtr(ModuleBase + BaseDisp) + 0x48) + 0xA0` 最后 `+ 0x18`。
+- **AOB 扫描与安全跳板**：`.NET 10` `Vector256` / `Avx2` 自研扫描器（约 80 行）定位特征码；在目标指令 `±1.75 GiB (0x7000_0000)` 半径内按 `64KB` 粒度双向探测 `MEM_FREE` 页分配近端 Code Cave，`Iced` `BlockEncoder` 重定位被覆盖指令中的 `RIP-Relative` 偏移；退出时原子还原原始字节。
+- 引入前须先修订 [IPC 契约 §4.2](../design/ipc-and-security-contracts.md) Worker 门禁白名单。
+
+---
+
+## 5. `M4` 轨道算法与协议细节（自 `M3` 顺延，契约保留）
+
+### 5.1 原生 `ludusavi` 16 种跨平台路径占位符解析表（`REQ-PRG-01`）
 
 C# 路径展开器仅接纳 `when: [{ os: windows }]` 或无 OS 限定的条目，按下列确定性规则将占位符展开为标准 Windows 路径，并对 `[save]` 与 `[config]` 标签物理分流：
 
@@ -149,32 +329,27 @@ C# 路径展开器仅接纳 `when: [{ os: windows }]` 或无 OS 限定的条目�
 | `<home>` | `%USERPROFILE%` | 标准用户主目录 |
 | `<winAppData>` | `%APPDATA%`（即 `Roaming`） | 支持通配多模拟器漫游存档 |
 | `<winLocalAppData>` | `%LOCALAPPDATA%` | 常规本地应用数据目录 |
-| `<winLocalAppDataLow>` | `SHGetKnownFolderPath(FOLDERID_LocalAppDataLow)`（`%USERPROFILE%\AppData\LocalLow`） | Unity 引擎单机游戏核心存档落点 |
-| `<winDocuments>` | `SHGetKnownFolderPath(FOLDERID_Documents)` | 自动跟随用户在系统属性中迁移至其他分区的“我的文档”真实路径 |
+| `<winLocalAppDataLow>` | `SHGetKnownFolderPath(FOLDERID_LocalAppDataLow)` | Unity 引擎单机游戏核心存档落点 |
+| `<winDocuments>` | `SHGetKnownFolderPath(FOLDERID_Documents)` | 自动跟随用户迁移至其他分区的“我的文档”真实路径 |
 | `<winPublic>` | `%PUBLIC%` | CODEX / RUNE 等离线模拟器常用共享存档根 |
 | `<winProgramData>` | `%PROGRAMDATA%` | Steam RLD! / 早期发行版公共存档目录 |
 | `<winDir>` | `%SystemRoot%` | 仅极少数远古老游戏 `win.ini` 兼容读取 |
 | `<osUserName>` | `Environment.UserName` | 匹配带系统登录名子目录的存档规则 |
 | `<storeUserId>` | 通配枚举 Steam `userdata\<id32>`、Goldberg `6561197960265728`、`gbe_fork` 自定义 ID 等 | 扫描所有已存在用户 ID 目录并按最近修改时间标注活跃分支 |
-| `<xdgData>` / `<xdgConfig>` | 在 Windows 下忽略纯 Linux 路径，除非规则未提供 Windows 替代分支时回退 `%LOCALAPPDATA%` | 保障跨掌机（SteamOS 导出包导入 Windows）清单兼容 |
+| `<xdgData>` / `<xdgConfig>` | 在 Windows 下忽略纯 Linux 路径，除非规则未提供 Windows 替代分支时回退 `%LOCALAPPDATA%` | 保障跨掌机清单兼容 |
 | `*` / `**` Glob | 编译为零回溯目录枚举器 | 严格跳过临时缓存目录（`ShaderCache`、`CrashDumps`、`Logs`） |
 
-**注册表存档确定性序列化**：不调用受系统语言与换行影响的 `reg.exe export`，统一使用 `Microsoft.Win32.Registry` 读取目标键值树，按键名 UTF-8 字典序序列化为 `registry_snapshot.json`（显式标注 `REG_SZ`、`REG_DWORD`、`REG_QWORD`、`REG_BINARY` Base64）纳入同一套快照清单。
+**注册表存档确定性序列化**：不调用受系统语言与换行影响的 `reg.exe export`，统一使用 `Microsoft.Win32.Registry` 读取目标键值树，按键名 UTF-8 字典序序列化为 `registry_snapshot.json`（显式标注 `REG_SZ`、`REG_DWORD`、`REG_QWORD`、`REG_BINARY` Base64）纳入同一套快照清单（`M3` 启动前快照复用同一序列化器）。
 
-### 4.2 Gear-Hash `FastCDC` 分块与防半写撕裂热备份协议（`REQ-PRG-02`）
+### 5.2 Gear-Hash `FastCDC` 分块与防半写撕裂热备份协议（`REQ-PRG-02`）
 
-1. **确定性 `FastCDC` 参数契约（跨机器分块边界 100% 一致，`A-01`）**：
-   - 小文件直通：文件长度 `< 2 MiB` 时整文件作为单块计算 `BLAKE3` 并经 `ZstdSharp.Port`（`Level 3`）压缩，省去滑动哈希开销。
-   - 大文件变长切分（如上百 MB 的开放世界 `.sav` / SQLite 存档库）：`MinSize = 256 KiB`、`AvgSize = 1 MiB`、`MaxSize = 4 MiB`；256 项 `ulong[256]` Gear 表采用固定魔数种子 `0x535041574E5F4344UL`（`"SPAWN_CD"`）经 `SplitMix64` 生成，配合两段式归一化掩码（`< AvgSize` 使用高约束掩码 `MaskS = 0x0003590703530000UL`，`>= AvgSize` 使用宽约束掩码 `MaskL = 0x0000D90303530000UL`），使玩家存档局部改动 `64KB` 后，前后未变区间在毫秒内自动重对齐命中已有 `cas_chunks`。
-2. **三保险防撕裂捕获流水线（Zero Torn-Write Guarantee）**：
-   - **第一重（2.5s 静默窗口 `A-03`）**：实时监控收到写入事件后重置 `2500ms` 去抖定时器；唯有存档目录下全部关联文件连续 `2.5s` 无新增写入，才启动快照提取。
-   - **第二重（Pre/Post 元数据向量二次比对）**：提取前先对存档组所有文件采样向量 $V_{\text{pre}} = \{(\text{RelPath}, \text{Length}, \text{LastWriteTimeUtc})\}$；以 `FileShare.ReadWrite | FileShare.Delete` 流式分块读取完毕后立即复采 $V_{\text{post}}$。若 $V_{\text{pre}} \neq V_{\text{post}}$，说明读取中途游戏恰好再次刷盘，**立即丢弃本次脏块集合并重新排队（最多重试 3 次）**。
-   - **第三重（`AlphaVSS` 卷影复制兜底）**：若游戏以独占锁锁死存档抛出 `IOException (HResult == 0x80070020 ERROR_SHARING_VIOLATION)`，或连续高频刷盘超过 `15s` 未出现静默窗口（`A-03`），宿主自动通过命名管道唤醒 `Spawn.TrainerWorker.exe`（High IL）调用 `AlphaVSS` 创建瞬态 NTFS 卷影快照，从只读卷影路径提取原子一致镜像后立即销毁卷影。
-3. **原子回滚铁律**：调用 `RollbackToSnapshotAsync` 时，第一步强制为当前磁盘现场创建一条 `trigger_kind = "PreRollbackSafety"` 且短期受保护的快照；随后将目标块解压至同目录 `<file>.spawn_stage_tmp` 并 `Flush(flushToDisk: true)`，全部校验通过后批量 `File.Move(..., overwrite: true)` 原子替换。
+1. **确定性 `FastCDC` 参数契约（`A-01`）**：小文件 `< 2 MiB` 整文件单块 `BLAKE3` + `ZstdSharp.Port`（`Level 3`）；大文件 `MinSize = 256 KiB`、`AvgSize = 1 MiB`、`MaxSize = 4 MiB`，256 项 Gear 表采用固定魔数种子 `0x535041574E5F4344UL`（`"SPAWN_CD"`）经 `SplitMix64` 生成，两段式归一化掩码 `MaskS = 0x0003590703530000UL` / `MaskL = 0x0000D90303530000UL`。
+2. **三保险防撕裂捕获**：① `2500ms` 静默窗口（`A-03`）；② 前后元数据向量 $V_{\text{pre}} = V_{\text{post}}$ 比对，不一致丢弃重采（最多 3 次）；③ 排他锁 `ERROR_SHARING_VIOLATION` 或持续刷盘超 `15s` 时按 `OSS-05`（`D-11` Level 2 用户确认的单次 UAC）调用 `AlphaVSS` 卷影快照。
+3. **原子回滚铁律**：回滚前强制创建 `trigger_kind = "PreRollbackSafety"` 快照；目标块解压至 `<file>.spawn_stage_tmp` 并 `Flush(flushToDisk: true)`，全部校验通过后批量原子替换。
 
-### 4.3 `32MB SPPK` 二进制封装格式协议（`REQ-PRG-03`, `A-02`）
+### 5.3 `32MB SPPK` 二进制封装格式协议（`REQ-PRG-03`, `A-02`）
 
-为彻底根治数千个小块直接上传 WebDAV（如坚果云）触发的 `HTTP 429 Too Many Requests` 限流风暴，远端传输统一封装为最大 `32 MiB` 的不可变 `SPPK` v1 文件，字节序固定为小端序（Little-Endian）：
+远端传输统一封装为最大 `32 MiB` 的不可变 `SPPK` v1 文件（小端序）：
 
 ```text
 +-------------------------------------------------------------------+
@@ -200,54 +375,36 @@ C# 路径展开器仅接纳 `when: [{ os: windows }]` 或无 OS 限定的条目�
 +-------------------------------------------------------------------+
 ```
 
-- **按需拉取优化**：拉取端若仅缺失某 `SPPK` 包中的 2 个增量块，无需下载整包 32MB，可直接发送 `HTTP Range: bytes=<Offset>-<End>` 定点拉取对应切片并做单块 `BLAKE3` 校验（本地盘与不支持 Range 的极简后端自动回退整包读取）。
-
-### 4.4 零报毒修改器静音、沙箱托管与二期 `.CT` 引擎细节（`REQ-PRG-04` ~ `REQ-PRG-07`）
-
-1. **FLiNG 双站检索与双语热键正则提取**：
-   - 依据 `Steam AppID -> Ludusavi Canonical Title / trainer_title_map` 组装英文检索词，并发检索主站 `flingtrainer.com`（新版独立包）与归档站 `archive.flingtrainer.com`（明确过滤捆绑第三方平台的在线安装壳，仅接收独立可执行归档）。
-   - 使用编译期源码生成正则 `[GeneratedRegex(@"^\s*(?<key>(?:Ctrl\+|Alt\+|Shift\+)*(?:Num\s*[\d\.\+\-\*\/]|F\d{1,2}|Home|Insert|Page\s*(?:Up|Down)))\s*[-–—:]\s*(?<desc>.+)$", RegexOptions.Multiline | RegexOptions.IgnoreCase)]` 解析说明文本或 PE 资源串，映射为带中英对照词典的原生 Toggle 卡片。
-2. **双保险零注入静音与提示音控音协议（彻底杜绝杀软误报）**：
-   - **第一道防线（`A0` 启动前配置与合法空 MIDI 预置，零漏音）**：FLiNG 独立版框架在初始化窗口前会自动读取配置与外部 BGM 资源。启动修改器前，宿主自动在 `%LOCALAPPDATA%\FLiNGTrainer\FLiNGTSettings.ini`、`%USERPROFILE%\Documents\FLiNGTrainer\TrainerSettings.ini` 及修改器同级目录写入 `OnLoadMusic=False`（兼容 `0`），并预置 **22 字节标准合法静音 MIDI 文件 `TrainerBGM.mid`**（十六进制字节：`4D 54 68 64 00 00 00 06 00 00 00 01 00 60 4D 54 72 6B 00 00 00 04 00 FF 2F 00`），从源头令首帧启动芯片音乐消失。
-   - **第二道防线（`A` 全输出端点 `NAudio.Wasapi` 会话事件控制）**：枚举 `MMDeviceEnumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active)` 下**全部活跃音频输出设备**（兼顾音箱、USB 耳机与蓝牙切换），注册 `IAudioSessionNotification.OnSessionCreated`；当新会话创建时以 `0x1000` 校验其 PID 是否归属 `vault\Sandbox\Trainers\`：若用户设置完全静音则置 `SimpleAudioVolume.Mute = true`，若保留“叮”激活提示音则按 `trainer_catalog.effect_volume_scalar`（默认 `35%`）设置 `Volume`（Windows 音频栈自动持久化该路径的会话音量，后续重启零延迟生效）。
-3. **High IL 沙箱生命周期与无小键盘 35ms 扫描码代理**：
-   - `Spawn.TrainerWorker.exe` 将拉起的修改器绑定至置位了 **`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`** 的专属 `JobObject`——与游戏宿主恰恰相反，一旦游戏退出或安全门禁触发关闭 `TrainerWorker`，所有外部修改器子进程 **100% 由内核连坐瞬杀，绝无后台残留**。
-   - 当无小键盘笔记本玩家点击 UI 开关时，`TrainerWorker` 同时填充 `KEYBDINPUT.wVk`（如 `VK_NUMPAD1 = 0x61`）与 `wScan = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC)`，按下后 **`await Task.Delay(35)`** 再发送抬起事件，兼容修改器内部 `GetAsyncKeyState` 轮询帧窗口。
-4. **二期 `NativeCheatTableBackend` 技术契约（M6 预留，`REQ-PRG-07`）**：
-   - **CE `<Offsets>` 逆序解引用铁律**：经核验 Cheat Engine 源码 `MemoryRecordUnit.pas`，XML 中 `<Offsets><Offset>18</Offset><Offset>A0</Offset><Offset>48</Offset></Offsets>` 是**自底向上存储**的！解引用时必须执行 `offsets.Reverse()`，即 `ReadPtr(ReadPtr(ModuleBase + BaseDisp) + 0x48) + 0xA0` 最后 `+ 0x18` 得到最终目标地址，顺序弄反将 100% 指飞。
-   - **x64 安全跳板分配**：利用 `Reloaded.Memory.SigScan` AVX2 搜索 AOB 特征码，在目标指令地址 `±1.75 GiB (0x7000_0000)` 半径内按 `64KB` 分配粒度双向探测 `MEM_FREE` 页调用 `VirtualAllocEx` 分配近端 Code Cave（确保 5 字节 `E9 rel32` 相对跳转可达而不破坏更长指令边界），并用 `Iced.Intel` `BlockEncoder` 自动重定位被覆盖指令中的 `RIP-Relative` 寻址偏移。
+远端布局：`<RemoteRoot>/spawn-sync/repo.json`、`packs/pack-<pack_blake3>.sppk`、`snapshots/<GameId>/<SnapshotId>.json`、`heads/<GameId>/<MachineId>.json`（每台设备独立写自己的最新指针与最近 64 代 AncestorIds）。拉取端仅缺少量块时以 `HTTP Range` 定点拉取并单块 `BLAKE3` 校验；上传严格按“packs → snapshots → 最后原子更新 heads”尾提交顺序，断网断电后远端 `head` 仍指向旧一致快照。
 
 ---
 
-## 5. 跨模块协同契约
+## 6. 跨模块协同契约
 
-- **与 `spawn.launcher` 协同**：订阅游戏生命周期事件——游戏运行中启动存档目录静默防撕裂监控（可选定时自动存档点）；收到 `PostExitReclaiming` 事件时：先通知 `TrainerWorker` 立即销毁伴生修改器，再执行退出增量快照并按策略排队触发 `ICloudSaveSyncService.ExecuteSyncAsync`。
-- **与 `spawn.nexus` 协同**：每次生成 `save_snapshots` 时强制写入当前 Profile 的 `mod_profile_hash`；回滚存档若哈希不一致，调用 `spawn.nexus` 弹窗展示差异并支持联动切换 Profile（`REQ-NEX-07`）。
-- **与 `spawn.achievement` (`Alt+Z` 面板) 协同**：向游戏内 `Alt+Z` 覆盖层暴露“一键手动创建检查点（Quick Checkpoint）”与单机修改项开关列表（仅 `Tier 0` 游戏可见）。
-
----
-
-## 6. 异常恢复与反作弊熔断行为
-
-1. **`AntiCheatGuard` 全局硬熔断**：
-   - 任何时刻只要 `IAntiCheatGuardService.CurrentLockState` 处于 `ProtectedGameRunning (Tier 2/3)` 或 `CoolingDown`，`ActivateSessionAsync` 立即在宿主与 Worker 两端抛出安全异常；若玩家在单机修改器开启期间直接点击启动一款 `Tier 2/3` 游戏，启动管线 `PreFlightChecking` 会先行调用 `ShutdownAllImmediatelyAsync()` 销毁 `TrainerWorker` 并等待进程退出确认后才放行网游启动（`REQ-PRG-06`、`REQ-SEC-03`）。
-2. **云同步网络中断与半传恢复**：
-   - `SPPK` 上传采用“先传不可变数据块包 `packs/pack-<pack_blake3>.sppk` -> 再传快照清单 `snapshots/<GameId>/<SnapshotId>.json` -> **最后一步才通过 S3 `If-Match` 或原子重命名更新 `heads/<GameId>/<MachineId>.json`**”的严格尾提交顺序。即使上传到 99% 断网或断电，远端 `head` 指针依然指向旧的一致快照，下次重连通过 `HEAD` 请求跳过已成功落盘的 `SPPK` 包实现零损断点续传。
-3. **滑动窗口垃圾回收（GC）安全边界**：
-   - 自动快照超配额裁剪时，**严禁回收满足以下任一条件的快照**：① 用户手动钉住 `is_pinned = 1`；② 当前任意设备 `heads/<GameId>/*.json` 正在引用的最新快照；③ 最近一次 `[PreRollbackSafety]` 回滚保护锚点；唯有 `cas_chunks.ref_count` 归零的孤立数据块才从磁盘物理清理。
+- **与 `spawn.launcher` 协同**：`GameLaunchService` 注入 `ISensitiveWorkerShutdownHook`，启动 `Tier 2/3` 前自动清场并复检（`LOOP-06`）；单机游戏退出（`PostExitReclaiming`）时若 `StopWithGameExit = true` 则停止对应修改器会话；`GameDirectoryScanner` 补 `buildid` 与英文名缓存；`GameDataManagementService` 为启动前快照提供路径发现与安全围栏。
+- **与 `Spawn.Core` 反作弊守卫协同**：修改器放行一律调用 `Spawn.Core` 的四层判定与硬验票接口；看门狗由守卫在存在活跃会话时启停；`AreWeAntiCheatYet` 精简索引作为 `Spawn.Core` 嵌入资源随包分发。
+- **与 `spawn.nexus` 协同（`M4` 轨道）**：每次生成 `save_snapshots` 时强制写入当前 Profile 的 `mod_profile_hash`；回滚哈希不一致时联动差异弹窗（`REQ-NEX-07`）。
+- **与 `spawn.achievement`（`Alt+Z` 面板，`M4`）协同**：向游戏内面板暴露“一键手动检查点”与单机修改项开关列表（仅 `Tier 0` / 已核验离线态游戏可见）。
 
 ---
 
-## 7. 测试与阶段验收要求
+## 7. 异常恢复与反作弊熔断行为
 
-1. **`Ludusavi` 规则编译与 16 占位符展开基准测试（验证 `REQ-PRG-01`）**：
-   - 使用包含 100 款代表性游戏（覆盖 Steam `userdata`、`LocalLow`、`Public`、注册表与 `[save]`/`[config]` 混排）的测试清单夹具：验证预编译后按 `SteamAppId` 查询中位耗时 `< 1ms`，16 种占位符展开准确率 `100%`，且仅恢复 `[save]` 时模拟目录中的 `config.ini` 内容保持原样。
-2. **`FastCDC` 去重率与并发写防撕裂压力测试（验证 `REQ-PRG-02`）**：
-   - 构造 `64MB` 模拟大存档文件，每次随机覆写中间 `16KB` 连续生成 10 份快照，断言总压缩块池体积增长 `< 4MB`，且任意一版回滚后的整文件 `BLAKE3` 100% 匹配对应时刻原文件；
-   - 启动后台写入协程持续高频覆写测试存档，验证双向量校验准确识别并发修改并延迟/重采，**零撕裂坏档入库**，且回滚前自动生成 `[PreRollbackSafety]` 快照。
-3. **`32MB SPPK` 二进制往返与三路分叉冲突测试（验证 `REQ-PRG-03`）**：
-   - 对内存模拟对象存储 / 本地文件后端执行“设备 A 推进 2 代 -> 设备 B Fast-Forward 拉取 -> A 与 B 同时离线各自推进 1 代 -> 同步触发 `TrueDivergence`”，断言 100% 识别分叉并保留两侧备份快照，且 `SPPK` 尾部整包 `BLAKE3` 篡改 1 比特即刻校验报错拦截。
-4. **零报毒静音预置与热键解析测试（验证 `REQ-PRG-04`, `REQ-PRG-05`）**：
-   - 准备 30 份真实中英文双语修改器说明样本，验证 `[GeneratedRegex]` 热键提取准确率 `>= 95%`；验证 `A0` 预置器生成的 22 字节 `TrainerBGM.mid` 可被标准音频解码器无错读取且时长为 0，全程 `Spawn.Host` 与 `TrainerWorker` 对目标测试进程零 `WriteProcessMemory` / 零远程线程调用。
-5. **二期 CE 逆序指针链单元测试（验证 `REQ-PRG-07`）**：
-   - 在本进程内部分配四级嵌套结构体链并构造对应 `.CT` `<Offsets>` XML 片段，验证逆序解析器 100% 命中叶子字段地址。
+1. **`AntiCheatGuard` 全局硬熔断**：守卫处于任一锁定态时 `LaunchAsync` / `ActivateSessionAsync` 在 Host 与 Worker 两端拒绝；玩家在修改器运行期间点击启动 `Tier 2/3` 游戏时，启动管线先经 `ISensitiveWorkerShutdownHook` 销毁 Worker 并确认退出后才放行；玩家在 SPAWN 外部启动任何反作弊游戏时，2 秒急停看门狗 `<500ms` 销毁全部修改器。
+2. **Host 崩溃 / 更新退出**：Worker 检测 Host PID 退出或管道断连立即自毁；`--quit-for-update` 先对活跃会话执行优雅停止再退出；重启后不自动恢复修改器会话。
+3. **下载中断与杀软隔离**：任何失败（网络、Challenge、校验、`225/226`）均删除 `.staging\<guid>\` 并保持既有已就绪修改器不变；替换已有修改器时先写新目录再原子切换，失败回滚旧版本。
+4. **快照失败**：`Skipped`/`Failed` 仅提示不阻断；回滚失败时保留 `PreRestoreSafety` 并提示手动恢复路径。
+5. **`M4` 轨道**：云同步半传恢复与滑动窗口 GC 边界（钉住快照、远端 head 引用快照、最近 `PreRollbackSafety` 永不回收；仅 `ref_count = 0` 的孤立块物理清理）沿用 ADR-0004。
+
+---
+
+## 8. 测试与阶段验收要求
+
+全部测试 100% 离线、后台静默（`CREATE_NO_WINDOW`、`BELOW_NORMAL_PRIORITY_CLASS`），数据目录重定向至临时目录；不下载、不执行任何真实修改器二进制，使用自制无害合成夹具。
+
+1. **发现、解析与下载（`REQ-PRG-04`，`AC-12`）**：静态 HTML / `wp-json` 夹具验证热键提取 `>=95%`（含 `</p>` 末项、`Num /`、`toolTips`）、推广链接过滤与源域白名单；Mock HTTP 验证 10 跳重定向、HTTPS 降级拒绝、无 `Referer` 403、Challenge 即时回退、HTML 伪装拒绝、`100MB` 截断；合成 `.zip`/`.rar`（RAR4/RAR5/Solid）/`.7z`/stub `.exe` 夹具验证魔数分流、Zip-Slip 拒绝、解压前后字节核对、`225/226` 分类与 SHA-256 钉扎/TOCTOU 复核。
+2. **静音（`REQ-PRG-05`）**：27 字节 SMF 字节级断言与 `mciSendString` 播放/重播无错误、无忙等；INI 预写/还原幂等；MTA 线程注册顺序与释放零泄漏（以可注入的 Core Audio 抽象测试状态机）；`UNV-02` 静音端点探针按 `OSS-07` 记录。
+3. **Worker（`REQ-PRG-06`、`REQ-SEC-06`）**：合成多子进程 Stub 验证 Worker 强杀/Host 断连后子孙进程清零；伪造 Nonce、非法路径客户端、非 Host 服务端连接被拒；`Num /`、`Num Enter`、`Home`、`Insert`、`Num 1` 的 `wVk`/`wScan`/`dwFlags` 与交错时序断言（以可注入输入发送器测试，**严禁真实注入键盘事件**）；`PEReader` 断言 Worker 零跨进程内存 API。
+4. **启动前快照（`REQ-PRG-08`，`AC-12b`）**：正常备份、超阈值跳过、排他锁跳过、滚动保留 N 份、回滚前 `PreRestoreSafety`、游戏运行中拒绝回滚、回滚后哈希一致；PCGamingWiki `action=parse` 解析与 Steam `userdata` 规则夹具单测。
+5. **反作弊（`REQ-SEC-03`/`05`）**：CS2/Valorant 等索引命中不再判 `Tier 0`；混合单机模拟 AC 进程/驱动存在时拦截、清零确认后放行；`Tier 2/3` 启动自动清场与二次复检；改名 `dbk64.sys` 元数据与 `CEDRIVER*` 命中、普通驱动零误报；看门狗仅在活跃会话期间轮询。
+6. **`M4` 轨道（`AC-09` ~ `AC-11`）**：`Ludusavi` 100 款规则展开基准、`FastCDC` 去重率与并发写防撕裂、`SPPK` 往返与三路分叉测试在 `M4` 交付时执行。

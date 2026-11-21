@@ -133,6 +133,13 @@ public sealed record GameDataCleanResult
 }
 
 /// <summary>
+/// Result of validating a save filesystem path or <c>HKCU</c> registry key against the game data safety fence.
+/// </summary>
+public sealed record GameDataSafetyCheckResult(
+    bool IsSafe,
+    string? Reason = null);
+
+/// <summary>
 /// Cached online game data location rule row persisted in SQLite (<c>game_data_rules</c>).
 /// </summary>
 public sealed record GameDataRuleCacheRecord

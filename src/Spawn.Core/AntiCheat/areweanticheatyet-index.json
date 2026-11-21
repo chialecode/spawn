@@ -1,0 +1,569 @@
+{
+  "schemaVersion": 1,
+  "source": "AreWeAntiCheatYet (https://github.com/AreWeAntiCheatYet/AreWeAntiCheatYet)",
+  "license": "MIT",
+  "copyright": "Copyright (c) AreWeAntiCheatYet Contributors. Licensed under the MIT License.",
+  "generatedUtc": "2026-11-21T00:00:00Z",
+  "entries": [
+    {
+      "steamAppId": 730,
+      "name": "Counter-Strike 2",
+      "aliases": ["Counter-Strike: Global Offensive", "CS2", "CS:GO", "cs2"],
+      "antiCheats": ["VAC"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": null,
+      "name": "VALORANT",
+      "aliases": ["Valorant", "VALORANT-Win64-Shipping"],
+      "antiCheats": ["Vanguard"],
+      "minTier": 3,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 1245620,
+      "name": "ELDEN RING",
+      "aliases": ["Elden Ring", "eldenring"],
+      "antiCheats": ["Easy Anti-Cheat"],
+      "minTier": 2,
+      "hasSinglePlayer": true
+    },
+    {
+      "steamAppId": 1888160,
+      "name": "ARMORED CORE VI FIRES OF RUBICON",
+      "aliases": ["Armored Core VI", "Armored Core VI: Fires of Rubicon", "armoredcore6"],
+      "antiCheats": ["Easy Anti-Cheat"],
+      "minTier": 2,
+      "hasSinglePlayer": true
+    },
+    {
+      "steamAppId": 1172470,
+      "name": "Apex Legends",
+      "aliases": ["r5apex"],
+      "antiCheats": ["Easy Anti-Cheat"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 578080,
+      "name": "PUBG: BATTLEGROUNDS",
+      "aliases": ["PUBG", "PLAYERUNKNOWN'S BATTLEGROUNDS", "TslGame"],
+      "antiCheats": ["BattlEye", "Zakynthos", "ACE"],
+      "minTier": 3,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 359550,
+      "name": "Tom Clancy's Rainbow Six Siege",
+      "aliases": ["Rainbow Six Siege", "RainbowSix"],
+      "antiCheats": ["BattlEye", "QB"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 1085660,
+      "name": "Destiny 2",
+      "aliases": ["destiny2"],
+      "antiCheats": ["BattlEye"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 976730,
+      "name": "Halo: The Master Chief Collection",
+      "aliases": ["Halo MCC", "MCC-Win64-Shipping"],
+      "antiCheats": ["Easy Anti-Cheat"],
+      "minTier": 2,
+      "hasSinglePlayer": true
+    },
+    {
+      "steamAppId": 271590,
+      "name": "Grand Theft Auto V",
+      "aliases": ["GTA V", "Grand Theft Auto V Legacy", "GTA5"],
+      "antiCheats": ["BattlEye"],
+      "minTier": 2,
+      "hasSinglePlayer": true
+    },
+    {
+      "steamAppId": 3240220,
+      "name": "Grand Theft Auto V Enhanced",
+      "aliases": ["GTA V Enhanced", "GTA5_Enhanced"],
+      "antiCheats": ["BattlEye"],
+      "minTier": 2,
+      "hasSinglePlayer": true
+    },
+    {
+      "steamAppId": 1599340,
+      "name": "Lost Ark",
+      "aliases": ["LOSTARK"],
+      "antiCheats": ["Easy Anti-Cheat"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 1203220,
+      "name": "NARAKA: BLADEPOINT",
+      "aliases": ["Naraka Bladepoint", "NarakaBladepoint", "永劫无间"],
+      "antiCheats": ["NetEase Anti-Cheat"],
+      "minTier": 3,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 252490,
+      "name": "Rust",
+      "aliases": ["RustClient"],
+      "antiCheats": ["Easy Anti-Cheat"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 381210,
+      "name": "Dead by Daylight",
+      "aliases": ["DeadByDaylight", "DeadByDaylight-Win64-Shipping"],
+      "antiCheats": ["Easy Anti-Cheat"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": null,
+      "name": "Fortnite",
+      "aliases": ["FortniteClient-Win64-Shipping"],
+      "antiCheats": ["Easy Anti-Cheat", "BattlEye"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": null,
+      "name": "League of Legends",
+      "aliases": ["League of Legends Client", "英雄联盟"],
+      "antiCheats": ["Vanguard"],
+      "minTier": 3,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": null,
+      "name": "Teamfight Tactics",
+      "aliases": ["TFT"],
+      "antiCheats": ["Vanguard"],
+      "minTier": 3,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 570,
+      "name": "Dota 2",
+      "aliases": ["dota2"],
+      "antiCheats": ["VAC"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 440,
+      "name": "Team Fortress 2",
+      "aliases": ["TF2"],
+      "antiCheats": ["VAC"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 550,
+      "name": "Left 4 Dead 2",
+      "aliases": ["left4dead2"],
+      "antiCheats": ["VAC"],
+      "minTier": 2,
+      "hasSinglePlayer": true
+    },
+    {
+      "steamAppId": 1422450,
+      "name": "Deadlock",
+      "aliases": [],
+      "antiCheats": ["VAC"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 1938090,
+      "name": "Call of Duty",
+      "aliases": ["Call of Duty HQ", "Call of Duty: Modern Warfare III", "Call of Duty: Black Ops 6"],
+      "antiCheats": ["Ricochet"],
+      "minTier": 3,
+      "hasSinglePlayer": true
+    },
+    {
+      "steamAppId": 1962663,
+      "name": "Call of Duty: Warzone",
+      "aliases": ["Warzone"],
+      "antiCheats": ["Ricochet"],
+      "minTier": 3,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 1517290,
+      "name": "Battlefield 2042",
+      "aliases": ["BF2042"],
+      "antiCheats": ["EA AntiCheat"],
+      "minTier": 3,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 1238810,
+      "name": "Battlefield V",
+      "aliases": ["bfv"],
+      "antiCheats": ["EA AntiCheat"],
+      "minTier": 3,
+      "hasSinglePlayer": true
+    },
+    {
+      "steamAppId": 1238840,
+      "name": "Battlefield 1",
+      "aliases": ["bf1"],
+      "antiCheats": ["EA AntiCheat"],
+      "minTier": 3,
+      "hasSinglePlayer": true
+    },
+    {
+      "steamAppId": 2195250,
+      "name": "EA SPORTS FC 24",
+      "aliases": ["FC24"],
+      "antiCheats": ["EA AntiCheat"],
+      "minTier": 3,
+      "hasSinglePlayer": true
+    },
+    {
+      "steamAppId": 2669320,
+      "name": "EA SPORTS FC 25",
+      "aliases": ["FC25"],
+      "antiCheats": ["EA AntiCheat"],
+      "minTier": 3,
+      "hasSinglePlayer": true
+    },
+    {
+      "steamAppId": 2507950,
+      "name": "Delta Force",
+      "aliases": ["DeltaForceClient-Win64-Shipping", "三角洲行动"],
+      "antiCheats": ["ACE"],
+      "minTier": 3,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 2073620,
+      "name": "Arena Breakout: Infinite",
+      "aliases": ["暗区突围：无限"],
+      "antiCheats": ["ACE"],
+      "minTier": 3,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 1282270,
+      "name": "Strinova",
+      "aliases": ["卡拉彼丘"],
+      "antiCheats": ["ACE"],
+      "minTier": 3,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": null,
+      "name": "CrossFire",
+      "aliases": ["穿越火线"],
+      "antiCheats": ["ACE"],
+      "minTier": 3,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 3513350,
+      "name": "Wuthering Waves",
+      "aliases": ["鸣潮"],
+      "antiCheats": ["ACE"],
+      "minTier": 3,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": null,
+      "name": "Genshin Impact",
+      "aliases": ["原神", "GenshinImpact"],
+      "antiCheats": ["HoYoKProtect"],
+      "minTier": 1,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": null,
+      "name": "Honkai: Star Rail",
+      "aliases": ["崩坏：星穹铁道", "StarRail"],
+      "antiCheats": ["HoYoKProtect"],
+      "minTier": 1,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": null,
+      "name": "Zenless Zone Zero",
+      "aliases": ["绝区零", "ZenlessZoneZero"],
+      "antiCheats": ["HoYoKProtect"],
+      "minTier": 1,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": null,
+      "name": "Escape from Tarkov",
+      "aliases": ["EscapeFromTarkov"],
+      "antiCheats": ["BattlEye"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 221100,
+      "name": "DayZ",
+      "aliases": ["DayZ_x64"],
+      "antiCheats": ["BattlEye"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 107410,
+      "name": "Arma 3",
+      "aliases": ["arma3_x64"],
+      "antiCheats": ["BattlEye"],
+      "minTier": 2,
+      "hasSinglePlayer": true
+    },
+    {
+      "steamAppId": 346110,
+      "name": "ARK: Survival Evolved",
+      "aliases": ["ARK Survival Evolved"],
+      "antiCheats": ["BattlEye"],
+      "minTier": 2,
+      "hasSinglePlayer": true
+    },
+    {
+      "steamAppId": 2399830,
+      "name": "ARK: Survival Ascended",
+      "aliases": ["ArkAscended"],
+      "antiCheats": ["BattlEye"],
+      "minTier": 2,
+      "hasSinglePlayer": true
+    },
+    {
+      "steamAppId": 236390,
+      "name": "War Thunder",
+      "aliases": ["WarThunder"],
+      "antiCheats": ["Easy Anti-Cheat", "BattlEye"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 2051620,
+      "name": "Enlisted",
+      "aliases": [],
+      "antiCheats": ["Easy Anti-Cheat", "BattlEye"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 2073850,
+      "name": "THE FINALS",
+      "aliases": ["TheFinals"],
+      "antiCheats": ["Easy Anti-Cheat"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 553850,
+      "name": "HELLDIVERS 2",
+      "aliases": ["Helldivers 2", "helldivers2"],
+      "antiCheats": ["nProtect GameGuard"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 582660,
+      "name": "Black Desert",
+      "aliases": ["Black Desert Online", "BlackDesert64"],
+      "antiCheats": ["XIGNCODE3"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 216150,
+      "name": "MapleStory",
+      "aliases": [],
+      "antiCheats": ["Nexon Game Security"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 2074920,
+      "name": "The First Descendant",
+      "aliases": ["M1-Win64-Shipping"],
+      "antiCheats": ["Easy Anti-Cheat"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 2139460,
+      "name": "Once Human",
+      "aliases": ["七日世界"],
+      "antiCheats": ["NetEase Anti-Cheat"],
+      "minTier": 3,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 2767030,
+      "name": "Marvel Rivals",
+      "aliases": ["漫威争锋"],
+      "antiCheats": ["NetEase Anti-Cheat"],
+      "minTier": 3,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 594650,
+      "name": "Hunt: Showdown 1896",
+      "aliases": ["Hunt: Showdown", "HuntGame"],
+      "antiCheats": ["Easy Anti-Cheat"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 438100,
+      "name": "VRChat",
+      "aliases": [],
+      "antiCheats": ["Easy Anti-Cheat"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 1097150,
+      "name": "Fall Guys",
+      "aliases": ["FallGuys_client_game"],
+      "antiCheats": ["Easy Anti-Cheat"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 671860,
+      "name": "BattleBit Remastered",
+      "aliases": [],
+      "antiCheats": ["Easy Anti-Cheat"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 393380,
+      "name": "Squad",
+      "aliases": [],
+      "antiCheats": ["Easy Anti-Cheat"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 686810,
+      "name": "Hell Let Loose",
+      "aliases": ["HLL-Win64-Shipping"],
+      "antiCheats": ["Easy Anti-Cheat"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 581320,
+      "name": "Insurgency: Sandstorm",
+      "aliases": [],
+      "antiCheats": ["Easy Anti-Cheat"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 1063730,
+      "name": "New World: Aeternum",
+      "aliases": ["New World"],
+      "antiCheats": ["Easy Anti-Cheat"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 304390,
+      "name": "FOR HONOR",
+      "aliases": ["For Honor"],
+      "antiCheats": ["Easy Anti-Cheat"],
+      "minTier": 2,
+      "hasSinglePlayer": true
+    },
+    {
+      "steamAppId": 2221490,
+      "name": "Tom Clancy's The Division 2",
+      "aliases": ["The Division 2"],
+      "antiCheats": ["Easy Anti-Cheat"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 447040,
+      "name": "Watch_Dogs 2",
+      "aliases": ["Watch Dogs 2"],
+      "antiCheats": ["Easy Anti-Cheat"],
+      "minTier": 2,
+      "hasSinglePlayer": true
+    },
+    {
+      "steamAppId": 678950,
+      "name": "DRAGON BALL FighterZ",
+      "aliases": ["Dragon Ball FighterZ"],
+      "antiCheats": ["Easy Anti-Cheat"],
+      "minTier": 2,
+      "hasSinglePlayer": true
+    },
+    {
+      "steamAppId": 1824220,
+      "name": "Chivalry 2",
+      "aliases": [],
+      "antiCheats": ["Easy Anti-Cheat"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 2357570,
+      "name": "Overwatch 2",
+      "aliases": ["Overwatch"],
+      "antiCheats": ["Blizzard Warden"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 2344520,
+      "name": "Diablo IV",
+      "aliases": ["Diablo IV Retail"],
+      "antiCheats": ["Blizzard Warden"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": null,
+      "name": "World of Warcraft",
+      "aliases": ["Wow", "WowClassic"],
+      "antiCheats": ["Blizzard Warden"],
+      "minTier": 2,
+      "hasSinglePlayer": false
+    },
+    {
+      "steamAppId": 513710,
+      "name": "SCUM",
+      "aliases": [],
+      "antiCheats": ["Easy Anti-Cheat"],
+      "minTier": 2,
+      "hasSinglePlayer": true
+    },
+    {
+      "steamAppId": 251570,
+      "name": "7 Days to Die",
+      "aliases": ["7DaysToDie"],
+      "antiCheats": ["Easy Anti-Cheat"],
+      "minTier": 2,
+      "hasSinglePlayer": true
+    },
+    {
+      "steamAppId": 304930,
+      "name": "Unturned",
+      "aliases": [],
+      "antiCheats": ["BattlEye"],
+      "minTier": 2,
+      "hasSinglePlayer": true
+    }
+  ]
+}

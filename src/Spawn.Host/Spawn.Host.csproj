@@ -16,6 +16,7 @@
     <ProjectReference Include="..\Spawn.Core\Spawn.Core.csproj" />
     <ProjectReference Include="..\Spawn.Modules.Launcher\Spawn.Modules.Launcher.csproj" />
     <ProjectReference Include="..\Spawn.Modules.Achievement\Spawn.Modules.Achievement.csproj" />
+    <ProjectReference Include="..\Spawn.Modules.Progress\Spawn.Modules.Progress.csproj" />
   </ItemGroup>
 
   <ItemGroup>

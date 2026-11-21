@@ -136,7 +136,7 @@ public sealed record OverlayToastRequest
     public OverlaySoundPreset SoundPreset { get; init; } = OverlaySoundPreset.SteamAuthentic;
     public string? CustomSoundPath { get; init; }
     public string? AudioOutputDeviceId { get; init; }
-    public double SoundVolume { get; init; } = 0.7;
+    public double SoundVolume { get; init; } = 1.0;
     public bool MuteSound { get; init; }
     public int DurationMs { get; init; } = 4500;
 }
@@ -179,7 +179,7 @@ public sealed record OverlaySettingsDto
     public OverlaySoundPreset SoundPreset { get; init; } = OverlaySoundPreset.SteamAuthentic;
     public string? CustomSoundPath { get; init; }
     public string? AudioOutputDeviceId { get; init; }
-    public double SoundVolume { get; init; } = 0.75;
+    public double SoundVolume { get; init; } = 1.0;
     public bool MuteSound { get; init; }
 }
 
@@ -201,4 +201,19 @@ public static class AppSettingKeys
     public const string LibraryScanDirectories = "library.scan_directories";
     public const string LauncherAfkTimeoutSec = "launcher.afk_timeout_sec";
     public const string SteamWebApiCredentialId = "steam-web-api";
+
+    // M3 Trainer & Sandbox settings
+    public const string TrainerCustomSandboxRoot = "trainer.custom_sandbox_root";
+    public const string TrainerAudioMode = "trainer.audio_mode";
+    public const string TrainerCueVolume = "trainer.cue_volume";
+    public const string TrainerEnableA0PreMute = "trainer.enable_a0_premute";
+    public const string TrainerHotkeyHoldMs = "trainer.hotkey_hold_ms";
+    public const string TrainerPreSnapshotEnabled = "trainer.pre_snapshot_enabled";
+    public const string TrainerPreSnapshotRetentionCount = "trainer.pre_snapshot_retention_count";
+    public const string TrainerPreSnapshotMaxSizeMb = "trainer.pre_snapshot_max_size_mb";
+    public const string TrainerStopWithGameExit = "trainer.stop_with_game_exit";
+    public const string TrainerHideOriginalWindowOnLaunch = "trainer.hide_original_window_on_launch";
+    public const string TrainerStrictVanguardMode = "trainer.strict_vanguard_mode";
+    public const string TrainerIncludeFlingArchive = "trainer.include_fling_archive";
+    public const string TrainerDefaultScanCodeMode = "trainer.default_scancode_mode";
 }

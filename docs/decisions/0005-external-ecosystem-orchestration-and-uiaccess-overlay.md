@@ -20,7 +20,7 @@
 | 业务域 | 否决路线 | 采纳路线 |
 | :--- | :--- | :--- |
 | **二次元日常收菜** | 自研每款二次元游戏的 CV/OCR 刷本脚本逻辑。 | **顶层元调度编排器**：原生内嵌 `Maa.Framework` C# NuGet 直驱 `interface.json` 生态；`MAA` 原子预写 `gui.json`；`MaaFgo` 采用 `_ctypes.pyd` 代理免改包桥接 `BBChannel` 双端口；PC 原生助手统一走标准 CLI 适配器 + 四维资源锁并发 DAG。 |
-| **外部修改器静音** | 远程线程向修改器 EXE 注入 `MinHook` 拦截 `waveOutWrite` / `WASAPI`。 | **`A0 + A` 零注入纯外部双保险静音**：`A0` 启动前预写 `FLiNGTSettings.ini` 与 22B 合法静音 MIDI 从源头关闭启动音乐；`A` 通过 `NAudio.Wasapi` 监听全声卡端点 `OnSessionCreated` 按 PID 微秒级静音并独立调节提示音音量。 |
+| **外部修改器静音** | 远程线程向修改器 EXE 注入 `MinHook` 拦截 `waveOutWrite` / `WASAPI`。 | **`A0 + A` 零注入纯外部双保险静音**：`A0` 启动前预写 `OnLoadMusic` INI 与 27 字节 5.0 秒静音 SMF 从源头关闭启动音乐；`A` 通过专用 MTA 线程 `NAudio.Wasapi` 监听全声卡端点会话按 PID 静音（默认完全静音，提示音保留为实验性，参数以 [ADR-0006](0006-m3-external-trainer-manager-elevation-and-ipc.md) 与 `D-04`/`D-28` 为准）。 |
 | **游戏内成就与面板** | 默认向所有游戏注入 DirectX / Vulkan Present Hook DLL。 | **独立进程 `Spawn.OverlayHost`（`DirectComposition` + `SkiaSharp` Flip-Model + 本地自签名 `ZBID_UIACCESS`）**，144Hz 零掉帧、零游戏注入覆盖 95%+ 现代全屏游戏。 |
 
 ## 3. 最终决策
@@ -31,9 +31,9 @@
 3. **FGO `MaaFgo + BBChannel` 双端口桥接**：在 `BBChannel` 工作目录部署轻量 `_ctypes.pyd` 转发代理模块，启动时自动激活 `127.0.0.1:25001`（指令 RPC）与 `25002`（事件流）、将废弃的 `_RetiredMumuApi` 透明替换为 `MaaFramework` ADB 控制器、静默屏蔽阻塞式 `tkinter.messagebox`，并配属 30 秒助战连接错误视觉看门狗。
 4. **四维资源锁并发 DAG 与无人值守闭环**：统一调度 `PrimaryForegroundLock`、`ChildSessionSlot`、`EmulatorInstanceLock` 与内存/显存水位门禁，串联 RTC 睡眠唤醒、HDR 临时关闭、OLED 黑屏幕布、`SkiaSharp` 战报长图推送与 60 秒可取消自动休眠。
 
-### 3.2 零杀软误报修改器管家与二期 `.CT` 预留
-1. **一期（M3）纯外部管家**：通过 `A0`（配置与静音 MIDI 预置）+ `A`（全端点 WASAPI 会话静音控制器）彻底消灭启动爆音且实现 **0 注入、0 报毒**；沙箱目录 `SPAWN_Vault\Sandbox\Trainers\` 引导单次添加 Defender 目录排除项，由 High IL `TrainerWorker` 提供 35ms 硬件扫描码小键盘代理。
-2. **二期（M6）原生内存后端预留**：抽象 `ITrainerBackend` 接口，二期在不触碰主宿主的前提下于 `TrainerWorker` 内扩展 `NativeCheatTableBackend`（CE `.CT` 逆序指针链 + `Reloaded.Memory.SigScan` + `Iced` 安全跳板）。
+### 3.2 零注入修改器管家与二期原生后端预留（2026-11-21 由 [ADR-0006](0006-m3-external-trainer-manager-elevation-and-ipc.md) 细化修订）
+1. **一期（M3）纯外部管家**：通过 `A0`（配置与 27 字节静音 SMF 预置）+ `A`（专用 MTA 线程全端点 WASAPI 会话静音控制器）实现 **SPAWN 零注入、零改写修改器二进制**；沙箱目录 `vault\Sandbox\Trainers\` 由用户 Opt-in 单次 UAC 添加 Defender 单目录排除并回读核验（不承诺“0 报毒”，Smart App Control 无法被排除项绕过）；`Spawn.TrainerWorker` 按 `D-11` 分级按需提权并提供 `MAPVK_VK_TO_VSC_EX` 交错 `65–80ms` 小键盘代理。
+2. **二期（M6）原生后端预留（目标收窄，`D-29`）**：抽象 `ITrainerBackend` 接口，二期在不触碰主宿主的前提下于 `TrainerWorker` 内扩展声明式原生修改包与静态指针 / 基础纯汇编 `.CT` 子集（CE `.CT` 逆序指针链 + `.NET 10` `Vector256` 自研 AOB 扫描 + `Iced` 安全跳板）；`Reloaded.Memory` 家族因传递污染 `GPL-3.0` 全仓禁用。
 
 ### 3.3 `ZBID_UIACCESS` 零注入高刷图层架构
 1. 独立进程 `Spawn.OverlayHost.exe` 创建 `WS_EX_NOREDIRECTIONBITMAP | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_NOACTIVATE` 窗口，挂载 `DirectComposition` 视觉树与 `DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL` + `SkiaSharp` GPU 上下文渲染多主题弹窗与 `Alt+Z` 战术面板。
@@ -46,5 +46,5 @@
 
 ## 5. 验证判据
 
-- 外部 FLiNG 修改器冷启动在开启 Windows Defender 实时防护与篡改保护环境下 0 报毒、0 启动音乐泄漏。
+- 外部修改器冷启动全程 SPAWN 零注入、零改写修改器二进制、背景音乐默认静音（实机首帧泄漏与杀软行为按 `OSS-07` / `H-002` 如实记录）。
 - `MaaFgo` 双端口握手、助战异常看门狗恢复及 `OverlayHost` 144Hz Flip-Model 帧耗时指标均在对应里程碑自动化夹具中验证达标。

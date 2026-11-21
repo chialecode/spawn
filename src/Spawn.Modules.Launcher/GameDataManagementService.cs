@@ -49,8 +49,10 @@ public sealed class GameDataManagementService : IGameDataManagementService
         _paths = paths;
         _launchService = launchService;
         _serviceProvider = serviceProvider;
-        _httpClient = httpClient ?? GameArtworkExtractor.CreateDefaultHttpClient();
         _options = options ?? new GameDataManagementOptions();
+        _httpClient = _options.HttpMessageHandlerOverride is not null
+            ? PcGamingWikiRuleParser.CreateHttpClient(_options.HttpMessageHandlerOverride, disposeHandler: false)
+            : (httpClient ?? GameArtworkExtractor.CreateDefaultHttpClient());
         _timeProvider = timeProvider ?? TimeProvider.System;
         _logger = logger ?? NullLogger<GameDataManagementService>.Instance;
     }
@@ -95,13 +97,149 @@ public sealed class GameDataManagementService : IGameDataManagementService
         AddUnityEngineLocations(game, builder);
         AddUnrealEngineLocations(game, builder);
 
-        // 3. Offline Steam Emulators (CODEX, RUNE, Goldberg, gbe_fork, TENOKE, Online-Fix, ALI213, 3DM, SSE, EMPRESS).
+        // 3. Steam local userdata\<uid>\<AppId>\remote offline save discovery.
+        AddSteamUserdataLocations(game, builder);
+
+        // 4. Offline Steam Emulators (CODEX, RUNE, Goldberg, gbe_fork, TENOKE, Online-Fix, ALI213, 3DM, SSE, EMPRESS).
         AddSteamEmulatorLocations(game, builder);
 
-        // 4. Native / DRM-free game save & config rules (e.g., LIMBO GOG 1724299977).
+        // 5. Native / DRM-free game save & config rules (e.g., LIMBO GOG 1724299977).
         AddNativeAndPortableLocations(game, builder);
 
         return builder.BuildSorted();
+    }
+
+    public async Task<IReadOnlyList<GameDataEntryDto>> EnumerateSaveLocationsAsync(
+        string gameId,
+        bool refreshOnlineRules = false,
+        CancellationToken cancellationToken = default)
+    {
+        var all = await InspectGameDataAsync(gameId, refreshOnlineRules, cancellationToken).ConfigureAwait(false);
+        var safeExisting = all
+            .Where(e => e.Exists
+                        && e.IsSafeToClean
+                        && (e.Category == GameDataCategory.SaveData || e.Category == GameDataCategory.RegistryData))
+            .ToList();
+
+        return DeduplicateNestedFilesystemTargets(safeExisting);
+    }
+
+    public async Task<GameDataSafetyCheckResult> ValidateSaveRestoreTargetAsync(
+        string gameId,
+        string pathOrRegistryKey,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(gameId) || string.IsNullOrWhiteSpace(pathOrRegistryKey))
+        {
+            return new GameDataSafetyCheckResult(false, "游戏标识或恢复目标路径为空。");
+        }
+
+        var game = await _database.GetGameByIdAsync(gameId, cancellationToken).ConfigureAwait(false);
+        if (game is null)
+        {
+            return new GameDataSafetyCheckResult(false, "未在游戏库中找到该游戏记录。");
+        }
+
+        string trimmed = pathOrRegistryKey.Trim();
+        if (trimmed.Contains('\0', StringComparison.Ordinal)
+            || trimmed.Contains('*', StringComparison.Ordinal)
+            || trimmed.Contains('?', StringComparison.Ordinal))
+        {
+            return new GameDataSafetyCheckResult(false, $"安全围栏拦截：恢复目标包含非法字符或通配符：{pathOrRegistryKey}");
+        }
+
+        if (trimmed.StartsWith(@"\\", StringComparison.Ordinal) || trimmed.StartsWith("//", StringComparison.Ordinal))
+        {
+            return new GameDataSafetyCheckResult(false, $"安全围栏拦截：禁止向设备路径或 UNC 共享路径恢复存档：{pathOrRegistryKey}");
+        }
+
+        string[] rawSegments = trimmed.Split(['\\', '/'], StringSplitOptions.None);
+        if (rawSegments.Any(static s => s is ".." or "."))
+        {
+            return new GameDataSafetyCheckResult(false, $"安全围栏已拦截含相对跳转段的目标路径：{pathOrRegistryKey}");
+        }
+
+        var identity = BuildTargetIdentity(game);
+
+        if (LooksLikeRegistryKeyPath(trimmed))
+        {
+            var (safe, subKey, reason) = GameDataSafetyFence.ValidateRegistryTarget(trimmed, _options);
+            if (!safe || string.IsNullOrWhiteSpace(subKey))
+            {
+                return new GameDataSafetyCheckResult(false, reason ?? $"安全围栏拦截了不安全的注册表恢复目标：{pathOrRegistryKey}");
+            }
+
+            string canonicalReg = @"HKCU\" + subKey;
+            string prefix = (string.IsNullOrWhiteSpace(_options.HkcuSoftwarePrefix)
+                ? "Software"
+                : _options.HkcuSoftwarePrefix.Trim('\\')) + @"\";
+            string remainder = subKey.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                ? subKey[prefix.Length..]
+                : subKey;
+
+            string[] regSegments = remainder.Split('\\', StringSplitOptions.RemoveEmptyEntries);
+            if (regSegments.Any(seg => GameDataSafetyFence.IsGameSpecificSegment(seg, identity)))
+            {
+                return new GameDataSafetyCheckResult(true);
+            }
+
+            var discovered = await InspectGameDataAsync(gameId, refreshOnlineRules: false, cancellationToken).ConfigureAwait(false);
+            foreach (var loc in discovered)
+            {
+                if (!loc.IsSafeToClean || !loc.IsRegistryEntry || string.IsNullOrWhiteSpace(loc.PathOrRegistryKey))
+                {
+                    continue;
+                }
+
+                var (locSafe, locSubKey, _) = GameDataSafetyFence.ValidateRegistryTarget(loc.PathOrRegistryKey, _options);
+                if (!locSafe || string.IsNullOrWhiteSpace(locSubKey))
+                {
+                    continue;
+                }
+
+                string canonicalLoc = @"HKCU\" + locSubKey;
+                if (string.Equals(canonicalReg, canonicalLoc, StringComparison.OrdinalIgnoreCase)
+                    || canonicalReg.StartsWith(canonicalLoc + @"\", StringComparison.OrdinalIgnoreCase))
+                {
+                    return new GameDataSafetyCheckResult(true);
+                }
+            }
+
+            return new GameDataSafetyCheckResult(false, $"安全围栏拦截：注册表恢复目标不在当前游戏存档范围内：{pathOrRegistryKey}");
+        }
+
+        if (!Path.IsPathFullyQualified(trimmed))
+        {
+            return new GameDataSafetyCheckResult(false, $"恢复目标必须为绝对路径：{pathOrRegistryKey}");
+        }
+
+        string normalizedTarget;
+        try
+        {
+            normalizedTarget = Path.TrimEndingDirectorySeparator(Path.GetFullPath(trimmed));
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return new GameDataSafetyCheckResult(false, $"非法的恢复目标路径：{pathOrRegistryKey}");
+        }
+
+        var (fsSafe, fsReason) = GameDataSafetyFence.ValidateFilesystemTarget(
+            normalizedTarget,
+            game.InstallDir,
+            identity,
+            _paths,
+            _options);
+        if (!fsSafe)
+        {
+            return new GameDataSafetyCheckResult(false, fsReason ?? $"安全围栏拦截了不安全的文件恢复目标：{pathOrRegistryKey}");
+        }
+
+        if (ContainsDisallowedReparsePoint(normalizedTarget, game.InstallDir, identity, _options))
+        {
+            return new GameDataSafetyCheckResult(false, $"安全围栏拦截：禁止向符号链接或目录联接点恢复存档：{pathOrRegistryKey}");
+        }
+
+        return new GameDataSafetyCheckResult(true);
     }
 
     public async Task<GameDataCleanResult> CleanGameDataAsync(
@@ -655,13 +793,31 @@ public sealed class GameDataManagementService : IGameDataManagementService
 
         if (_options.AllowOnlinePcGamingWikiLookup)
         {
+            var titleMap = await _database.GetTrainerTitleMapAsync(game.GameId, cancellationToken).ConfigureAwait(false);
+            string primaryLookupTitle = !string.IsNullOrWhiteSpace(titleMap?.EnglishTitle)
+                ? titleMap.EnglishTitle
+                : game.Title;
+
             var fetched = await PcGamingWikiRuleParser.FetchOnlineRulesAsync(
                 _httpClient,
                 game.SteamAppId,
                 game.GogGameId,
-                game.Title,
+                primaryLookupTitle,
                 _options.OnlineLookupTimeout,
                 cancellationToken).ConfigureAwait(false);
+
+            if (fetched is null
+                && !string.IsNullOrWhiteSpace(game.Title)
+                && !string.Equals(primaryLookupTitle, game.Title, StringComparison.OrdinalIgnoreCase))
+            {
+                fetched = await PcGamingWikiRuleParser.FetchOnlineRulesAsync(
+                    _httpClient,
+                    game.SteamAppId,
+                    game.GogGameId,
+                    game.Title,
+                    _options.OnlineLookupTimeout,
+                    cancellationToken).ConfigureAwait(false);
+            }
 
             if (fetched is not null)
             {
@@ -702,7 +858,90 @@ public sealed class GameDataManagementService : IGameDataManagementService
         }
 
         extras.Add(GameEngineInspector.TryDetectUnrealProjectName(game.InstallDir));
-        return GameDataTargetIdentity.FromGame(game, extras);
+        var identity = GameDataTargetIdentity.FromGame(game, extras);
+        if (identity.SteamAppId is not > 0)
+        {
+            var (_, inspectedAppId, _, _) = GameEngineInspector.InspectSteamFiles(game.InstallDir);
+            if (inspectedAppId is > 0)
+            {
+                identity = identity with { SteamAppId = inspectedAppId };
+            }
+        }
+
+        return identity;
+    }
+
+    private static bool LooksLikeRegistryKeyPath(string candidate) =>
+        candidate.StartsWith(@"HKCU\", StringComparison.OrdinalIgnoreCase)
+        || candidate.StartsWith("HKCU/", StringComparison.OrdinalIgnoreCase)
+        || candidate.Equals("HKCU", StringComparison.OrdinalIgnoreCase)
+        || candidate.StartsWith("HKEY_", StringComparison.OrdinalIgnoreCase)
+        || candidate.StartsWith(@"HKLM\", StringComparison.OrdinalIgnoreCase)
+        || candidate.StartsWith("HKLM/", StringComparison.OrdinalIgnoreCase)
+        || candidate.Equals("HKLM", StringComparison.OrdinalIgnoreCase)
+        || candidate.StartsWith(@"HKCR\", StringComparison.OrdinalIgnoreCase)
+        || candidate.StartsWith("HKCR/", StringComparison.OrdinalIgnoreCase)
+        || candidate.Equals("HKCR", StringComparison.OrdinalIgnoreCase)
+        || candidate.StartsWith(@"HKU\", StringComparison.OrdinalIgnoreCase)
+        || candidate.StartsWith("HKU/", StringComparison.OrdinalIgnoreCase)
+        || candidate.Equals("HKU", StringComparison.OrdinalIgnoreCase)
+        || candidate.StartsWith(@"HKCC\", StringComparison.OrdinalIgnoreCase)
+        || candidate.StartsWith("HKCC/", StringComparison.OrdinalIgnoreCase)
+        || candidate.Equals("HKCC", StringComparison.OrdinalIgnoreCase);
+
+    private static bool ContainsDisallowedReparsePoint(
+        string normalizedTarget,
+        string gameInstallDir,
+        GameDataTargetIdentity identity,
+        GameDataManagementOptions options)
+    {
+        try
+        {
+            if ((File.Exists(normalizedTarget) || Directory.Exists(normalizedTarget))
+                && (File.GetAttributes(normalizedTarget) & FileAttributes.ReparsePoint) != 0)
+            {
+                return true;
+            }
+
+            string fullInstallDir = Path.TrimEndingDirectorySeparator(Path.GetFullPath(gameInstallDir));
+            if (normalizedTarget.StartsWith(fullInstallDir + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            {
+                string? current = Path.GetDirectoryName(normalizedTarget);
+                while (!string.IsNullOrWhiteSpace(current)
+                       && current.Length > fullInstallDir.Length
+                       && current.StartsWith(fullInstallDir + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (Directory.Exists(current)
+                        && (File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
+                    {
+                        return true;
+                    }
+
+                    current = Path.GetDirectoryName(current);
+                }
+            }
+            else
+            {
+                string? current = Path.GetDirectoryName(normalizedTarget);
+                while (!string.IsNullOrWhiteSpace(current)
+                       && GameDataSafetyFence.IsGameSpecificPathOutsideInstall(current, identity, options))
+                {
+                    if (Directory.Exists(current)
+                        && (File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
+                    {
+                        return true;
+                    }
+
+                    current = Path.GetDirectoryName(current);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return true;
+        }
+
+        return false;
     }
 
     private void AddUnityEngineLocations(GameRecord game, CandidateListBuilder builder)
@@ -837,6 +1076,88 @@ public sealed class GameDataManagementService : IGameDataManagementService
                 logsDir,
                 "Unreal Engine 运行日志",
                 defaultSelected: false);
+        }
+    }
+
+    private void AddSteamUserdataLocations(GameRecord game, CandidateListBuilder builder)
+    {
+        var (_, inspectedAppId, _, _) = GameEngineInspector.InspectSteamFiles(game.InstallDir);
+        int? appId = game.SteamAppId ?? inspectedAppId;
+        if (appId is not > 0)
+        {
+            return;
+        }
+
+        string? steamRoot = _options.ResolveSteamInstallDir();
+        if (string.IsNullOrWhiteSpace(steamRoot))
+        {
+            return;
+        }
+
+        string userdataRoot = Path.Combine(steamRoot, "userdata");
+        if (!Directory.Exists(userdataRoot))
+        {
+            return;
+        }
+
+        try
+        {
+            if ((File.GetAttributes(userdataRoot) & FileAttributes.ReparsePoint) != 0)
+            {
+                return;
+            }
+
+            string appIdStr = appId.Value.ToString(CultureInfo.InvariantCulture);
+            foreach (string uidDir in Directory.EnumerateDirectories(userdataRoot))
+            {
+                var uidInfo = new DirectoryInfo(uidDir);
+                if ((uidInfo.Attributes & FileAttributes.ReparsePoint) != 0)
+                {
+                    continue;
+                }
+
+                string uidName = uidInfo.Name;
+                if (string.IsNullOrWhiteSpace(uidName)
+                    || uidName.StartsWith('.')
+                    || uidName.Equals("anonymous", StringComparison.OrdinalIgnoreCase)
+                    || uidName.Equals("0", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                string appDir = Path.Combine(uidDir, appIdStr);
+                if (!Directory.Exists(appDir))
+                {
+                    continue;
+                }
+
+                if ((File.GetAttributes(appDir) & FileAttributes.ReparsePoint) != 0)
+                {
+                    continue;
+                }
+
+                string remoteDir = Path.Combine(appDir, "remote");
+                if (Directory.Exists(remoteDir)
+                    && (File.GetAttributes(remoteDir) & FileAttributes.ReparsePoint) != 0)
+                {
+                    continue;
+                }
+
+                builder.TryAdd(
+                    category: GameDataCategory.SaveData,
+                    sourceRule: GameDataSourceRule.NativeRule,
+                    sourceLabel: "Steam 本地存档",
+                    pathOrRegistryKey: remoteDir,
+                    description: $"Steam userdata ({uidName}) 本地存档目录 (remote)",
+                    defaultSelected: true);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Skipped inaccessible Steam userdata directory under {SteamRoot}.", steamRoot);
+            }
         }
     }
 

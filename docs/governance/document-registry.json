@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "currentStage": "M2",
+  "currentStage": "M3",
   "documents": [
     {
       "path": ".github/PULL_REQUEST_TEMPLATE.md",
@@ -17,8 +17,8 @@
       "status": "active",
       "owner": "git-github / 维护者",
       "scope": "GitHub Actions 权限、SHA 固定与允许运行的官方 Action 白名单声明镜像",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：远端 API 实际配置回读镜像（仅允许 actions/checkout@* 与 actions/setup-dotnet@*）"
+      "reviewed": "2026-11-22",
+      "basis": "M3-W11：同步增加 actions/upload-artifact@* 与 actions/download-artifact@* 允许模式以匹配 release.yml（远端设置待同步）"
     },
     {
       "path": ".github/repository-settings.json",
@@ -44,8 +44,8 @@
       "status": "active",
       "owner": "gov-rules / Agent A",
       "scope": "SPAWN 仓库级 AI Agent 与开发者最高工作指令唯一正本",
-      "reviewed": "2026-11-20",
-      "basis": "M2 v1.1：补充本机 SPAWN Dev 交付自动安装 (package.py --install-dev) 与测试身份物理隔离红线"
+      "reviewed": "2026-11-22",
+      "basis": "M3 v1.1：逐提交重装与正式版每周发布规则（D-32、ADR-0007）"
     },
     {
       "path": "CLAUDE.md",
@@ -62,8 +62,8 @@
       "status": "active",
       "owner": "gov-rules / Agent A",
       "scope": "SPAWN 开发环境要求、最小交付闭环、DCO 分支规范与验证门禁指南",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：明确 .NET 10 LTS SDK / Python 3.12+ 门禁要求与 Apache-2.0 贡献协议"
+      "reviewed": "2026-11-21",
+      "basis": "M3-W09：同步 M3 里程碑现状、NamedPipeJsonRpc 措辞与 quick_gate.py 实际 4 工程门禁说明"
     },
     {
       "path": "DESIGN.md",
@@ -71,8 +71,8 @@
       "status": "active",
       "owner": "gov-rules / Agent A",
       "scope": "SPAWN 根级视觉与交互设计入口",
-      "reviewed": "2026-11-20",
-      "basis": "M2 v1.1：同步双子标签（成就 | 游戏数据）、回收虚拟化与系统托盘设计入口"
+      "reviewed": "2026-11-21",
+      "basis": "M3-W08：同步移除顶栏导入胶囊（#16）、三子页签（成就 | 游戏数据 | 修改器）与设置 6 大分类入口"
     },
     {
       "path": "README.md",
@@ -80,8 +80,8 @@
       "status": "active",
       "owner": "gov-rules / Agent A",
       "scope": "SPAWN 项目门面：五大核心域、三栏无边框原生 WPF 架构、Spawn.sln 目录地图与 quick_gate.py 入口",
-      "reviewed": "2026-11-20",
-      "basis": "M2 v1.1：同步双通道图标、Inno Setup 7 打包、游戏数据可逆清理与 SPAWN Dev 自动安装入口"
+      "reviewed": "2026-11-21",
+      "basis": "M3-W09：同步 Progress M3 交付范围、NamedPipeJsonRpc / D-11 分级提权、Workers\\Trainer\\ 与 THIRD-PARTY-NOTICES.txt 目录地图"
     },
     {
       "path": "REVIEW.md",
@@ -89,8 +89,8 @@
       "status": "active",
       "owner": "gov-rules / Agent A",
       "scope": "SPAWN 集中技术审查口径（PEReader IAT 门禁、反作弊联锁、WAL/Junction 防丢档与诚实证据）",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：沉淀 15 大工程深坑核查与 A/Verifier 独立审查标准"
+      "reviewed": "2026-11-21",
+      "basis": "M3 v1.0：审查口径同步零 GPL 传递依赖、27 字节静音 SMF、TrainerWorker 零内存 API 与倒置管道核查项"
     },
     {
       "path": "SECURITY.md",
@@ -98,17 +98,17 @@
       "status": "active",
       "owner": "gov-rules / Agent A",
       "scope": "SPAWN 安全策略、反作弊零越界承诺、UIAccess 一次性自签私钥即毁策略与凭据隐私声明",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：对接 GitHub 私密漏洞报告与 ADR-0003/0005 安全红线"
+      "reviewed": "2026-11-21",
+      "basis": "M3-W09：命名管道与提权措辞同步为 NamedPipeJsonRpc 倒置双向互验与 D-11 分级按需提权（免 UAC 仅限 LOOP-07）"
     },
     {
       "path": "USER-ACTIONS.md",
       "kind": "status",
       "status": "active",
       "owner": "gov-rules / Agent A",
-      "scope": "全仓唯一用户待办台账（ACT-001/002/006 已完成、ACT-007 M2 远端授权与 H-001 三栏启动器及 LIMBO 体验指引）",
-      "reviewed": "2026-11-20",
-      "basis": "M2 v1.1：更新 .local/games 3 款真实样本就位、SPAWN Dev 自动装妥免命令体验指引与 ACT-007 请求"
+      "scope": "全仓唯一用户待办台账（ACT-001/002/006/007 已完成，ACT-008/009/010、Q-001/002 与 H-001/002/005 体验指引）",
+      "reviewed": "2026-11-22",
+      "basis": "M3 v1.1：ACT-009 补齐公钥指纹、相对私钥路径与远端 Actions 白名单提示；ACT-008 刷新为 W10~W12 已交付待 A 复审"
     },
     {
       "path": "docs/README.md",
@@ -143,8 +143,8 @@
       "status": "active",
       "owner": "arch-delivery / Agent A",
       "scope": "ADR-0003：Clean Host 物理隔离、PEReader IAT 门禁与 Anti-Cheat Guard 四级熔断架构",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：切断敏感 API 污染、Explorer COM 脱钩 PPID 与 15s SGuard64 退出冷却决策"
+      "reviewed": "2026-11-21",
+      "basis": "M3 v1.0：§3.3 标注由 ADR-0006 修订为分级按需提权与 NamedPipeJsonRpc 倒置角色"
     },
     {
       "path": "docs/decisions/0004-cas-fastcdc-storage-and-mod-junction-topology.md",
@@ -161,26 +161,44 @@
       "status": "active",
       "owner": "arch-delivery / Agent A",
       "scope": "ADR-0005：二次元外部生态顶层编排、FLiNG 零报毒静音与 ZBID_UIACCESS 高刷 Overlay 决策",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：内嵌 Maa.Framework、MaaFgo/BBC 双端口桥接、WASAPI 静音与 DirectComposition 覆盖层决策"
+      "reviewed": "2026-11-21",
+      "basis": "M3 v1.0：修改器静音参数（27 字节 SMF、默认完全静音）与二期后端收窄由 ADR-0006 细化修订"
+    },
+    {
+      "path": "docs/decisions/0006-m3-external-trainer-manager-elevation-and-ipc.md",
+      "kind": "decision",
+      "status": "active",
+      "owner": "arch-delivery / Agent A",
+      "scope": "ADR-0006：M3 外部修改器安全管家分级按需提权、倒置跨 IL NamedPipeJsonRpc 与洁净室依赖边界",
+      "reviewed": "2026-11-21",
+      "basis": "M3 v1.0：M3-R01 实证 + 用户确认 M3-Q2/Q5，废止按用户安装目录计划任务并移除 Reloaded.Memory 家族"
+    },
+    {
+      "path": "docs/decisions/0007-weekly-release-and-signed-in-app-update.md",
+      "kind": "decision",
+      "status": "active",
+      "owner": "arch-delivery / Agent A",
+      "scope": "ADR-0007：正式版每周发布流水线、BCL ECDSA P-256 签名应用内更新、自包含打包与开发版逐提交重装",
+      "reviewed": "2026-11-22",
+      "basis": "M3 v1.1：用户 2026-11-22 选择（D-30~D-33），Velopack/NetSparkle/MSIX/WiX 对照否决"
     },
     {
       "path": "docs/decisions/README.md",
       "kind": "index",
       "status": "active",
       "owner": "arch-delivery / Agent A",
-      "scope": "架构决策记录（ADR）、已确认决策与工程事项台账总索引",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：汇总 ADR-0001~0005、confirmed-decisions 与 open-questions 导航"
+      "scope": "架构决策记录（ADR-0001~0006）、已确认决策与工程事项台账总索引",
+      "reviewed": "2026-11-22",
+      "basis": "M3 v1.1：登记 ADR-0007"
     },
     {
       "path": "docs/decisions/confirmed-decisions.md",
       "kind": "decision",
       "status": "active",
       "owner": "arch-delivery / Agent A",
-      "scope": "SPAWN 已确认核心产品与技术决策台账（D-01~D-23）及可逆设计默认值",
-      "reviewed": "2026-11-20",
-      "basis": "M2 v1.1：新增 PCGamingWiki 多源游戏数据可逆清理 (D-22) 与 Inno Setup 7 install-dev 自动安装决策 (D-23)"
+      "scope": "SPAWN 已确认核心产品与技术决策台账（D-01~D-29）及可逆设计默认值",
+      "reviewed": "2026-11-22",
+      "basis": "M3 v1.1：新增 D-30~D-33（每周发布、签名自动更新、开发版逐提交重装、正式版自包含）"
     },
     {
       "path": "docs/decisions/open-questions.md",
@@ -188,47 +206,47 @@
       "status": "active",
       "owner": "arch-delivery / Agent A",
       "scope": "SPAWN 集中工程事项与开源适配跟踪台账（OSS-* / LOOP-*）",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：记录 M2~M6 待实机锁定的非阻塞工程验证项与触发阶段"
+      "reviewed": "2026-11-22",
+      "basis": "M3 v1.1：LOOP-05 在线更新引擎部分提前至 M3-W12（D-31）"
     },
     {
-      "path": "docs/delivery/m2-stage-cases.json",
+      "path": "docs/delivery/m3-stage-cases.json",
       "kind": "plan",
       "status": "active",
       "owner": "git-github / Agent A",
-      "scope": "M2 启动器与单机成就首发闭环阶段可执行检查与验收用例清单",
-      "reviewed": "2026-11-20",
-      "basis": "M2 v1.1：扩充 M2-A-09 (PCGamingWiki/引擎数据清理恢复) 与 M2-A-10 (单实例及隔离打包演练)",
-      "retireAfter": "M2"
+      "scope": "M3 阶段验收用例集（M3-A-00~22 自动化、M3-M-01~03 人工体验）",
+      "reviewed": "2026-11-22",
+      "basis": "M3 v1.1：M3-A-19~M3-A-22 全部验证通过，M3-M-03 保持 pending",
+      "retireAfter": "M3"
     },
     {
       "path": "docs/delivery/stage-plan.md",
       "kind": "plan",
       "status": "active",
       "owner": "git-github / Agent A",
-      "scope": "M2 启动器与单机成就首发闭环阶段完整实施计划、工作包与验收映射",
-      "reviewed": "2026-11-20",
-      "basis": "M2 v1.1：纳入 3 款真实游戏深度适配、游戏数据管理清理与 Inno Setup 7 install-dev 闭环",
-      "retireAfter": "M2"
+      "scope": "M3 单机外部修改器安全管家与每周发布/签名更新阶段实施计划（v1.1：M3-W00~W12）",
+      "reviewed": "2026-11-22",
+      "basis": "M3 v1.1：M3-W10~M3-W12 已本地实施完成并全量集成通过，待 Agent A 复审",
+      "retireAfter": "M3"
     },
     {
       "path": "docs/delivery/stage-report.md",
       "kind": "evidence",
       "status": "active",
       "owner": "git-github / Agent B & Verifier",
-      "scope": "M2 启动器与单机成就首发闭环阶段执行与自动化门禁验证报告",
-      "reviewed": "2026-11-20",
-      "basis": "M2 v1.1：记录全套 M2.1 增强功能、隔离门禁验证与本机 SPAWN Dev 自动上机实证",
-      "retireAfter": "M2"
+      "scope": "M3 单机游戏修改器与每周发布/签名更新阶段执行与验证报告",
+      "reviewed": "2026-11-22",
+      "basis": "M3 v1.1：补齐 M3-W10~W12 交付记录、全量集成门禁、漏洞/许可证审计、安装包体积与 not-run 边界",
+      "retireAfter": "M3"
     },
     {
       "path": "docs/delivery/status.md",
       "kind": "status",
       "status": "active",
       "owner": "arch-delivery / Agent A",
-      "scope": "SPAWN 项目当前里程碑执行状态（M1 已合并 main，M2 本地完成待 ACT-007 授权）",
-      "reviewed": "2026-11-20",
-      "basis": "M2 v1.1：更新本机 SPAWN Dev 已自动装妥运行与 M2 单提交待 ACT-007 授权状态"
+      "scope": "SPAWN 项目当前里程碑执行状态（M1、M2 已合并 main，M3 W00~W12 本地交付与集成门禁全绿，待 Agent A 复审）",
+      "reviewed": "2026-11-22",
+      "basis": "M3 v1.1：M3-W10~W12 本地实施与全量集成验证完成，待 Agent A 复审后重新申请 ACT-008"
     },
     {
       "path": "docs/delivery/traceability.json",
@@ -236,8 +254,8 @@
       "status": "active",
       "owner": "arch-delivery / Agent A",
       "scope": "REQ-*/NFR-* 需求编号 → 设计正本 → 模块规格 → M1~M6 里程碑与 AC-* 验收双向追踪矩阵",
-      "reviewed": "2026-11-20",
-      "basis": "M2 v1.1：关联 M2-A-09 与 M2-A-10 验收用例映射"
+      "reviewed": "2026-11-22",
+      "basis": "M3 v1.1：NFR-09 及 M3-A-19~M3-A-22 追踪状态同步为 verified"
     },
     {
       "path": "docs/design-rules/DESIGN.md",
@@ -245,8 +263,8 @@
       "status": "active",
       "owner": "gov-rules / Agent A",
       "scope": "SPAWN Fluent + DWM Mica 暗色美学、Nodify 引脚色板、144Hz Overlay 与多屏 DPI 视觉规范",
-      "reviewed": "2026-11-20",
-      "basis": "M2 v1.1：同步游戏数据管理面板、220+ 成就 Recycling 虚拟化与托盘 DEV 角标规范"
+      "reviewed": "2026-11-21",
+      "basis": "M3-W08：同步移除顶栏导入胶囊（#16）、成就|游戏数据|修改器三子页签、Tier 徽标语义着色与设置第 6 分类"
     },
     {
       "path": "docs/design/data-model.md",
@@ -254,8 +272,8 @@
       "status": "active",
       "owner": "arch-delivery / Agent A",
       "scope": "spawn.db SQLite WAL Schema、ER 图、SPAWN_Vault 布局、FastCDC 块存储与 32MB SPPK 格式契约",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：统一五大业务域持久化表结构、内容寻址仓库与云端不可变同步清单模型"
+      "reviewed": "2026-11-21",
+      "basis": "M3-W02：同步 SQLite Schema v4 修改器/快照四表、games 扩展列与 vault\\Sandbox\\Trainers / Snapshots\\PreTrainer 布局"
     },
     {
       "path": "docs/design/interaction-and-workflows.md",
@@ -263,17 +281,17 @@
       "status": "active",
       "owner": "arch-delivery / Agent A",
       "scope": "SPAWN 桌面主界面导航、Profile 一键切换、蓝图单步调试、Alt+Z 锁鼠与夜间无人值守交互工作流",
-      "reviewed": "2026-11-20",
-      "basis": "M2 v1.1：补充游戏数据一键可逆清理恢复、--background 托盘与 --quit-for-update 交互时序"
+      "reviewed": "2026-11-21",
+      "basis": "M3-W08：同步移除顶栏胶囊并将扫描收口至「设置 → 常规与游戏库」（#16）及修改器子页签与设置第 6 分类工作流"
     },
     {
       "path": "docs/design/ipc-and-security-contracts.md",
       "kind": "design",
       "status": "active",
       "owner": "arch-delivery / Agent A",
-      "scope": "Named Pipe gRPC SDDL 契约、MMF 环形帧缓冲、PEReader IAT 黑名单、PPID 脱钩与 15s 冷却状态机",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：固化主从跨完整性级别通信安全协议与 Anti-Cheat Guard 强制执行契约"
+      "scope": "NamedPipeJsonRpc ACL 与倒置角色契约、MMF 环形帧缓冲、PEReader IAT 黑名单、PPID 脱钩、15s 冷却、修改器急停与分级按需提权",
+      "reviewed": "2026-11-21",
+      "basis": "M3 v1.0：IPC 对齐零依赖 NamedPipeJsonRpc 倒置跨 IL 角色与双向互验、Worker 门禁、急停看门狗与分级按需 UAC（ADR-0006）"
     },
     {
       "path": "docs/design/system-architecture.md",
@@ -281,8 +299,8 @@
       "status": "active",
       "owner": "arch-delivery / Agent A",
       "scope": "SPAWN 全景多进程物理隔离拓扑、六大宿主/Worker 职责与四级 AntiCheatTier 全局联锁矩阵",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：提炼沉淀前期总纲架构蓝图与 15 大致命工程深坑全局防御体系"
+      "reviewed": "2026-11-21",
+      "basis": "M3-W09：全部 IPC 统一更正为 NamedPipeJsonRpc，BlueprintWorker/WorkflowWorker 提权对齐 D-11 分级按需提权（免 UAC 仅限 LOOP-07）"
     },
     {
       "path": "docs/dev-rules/README.md",
@@ -326,17 +344,17 @@
       "status": "active",
       "owner": "gov-rules / Agent A",
       "scope": "Agent A/B 阶段闭环、Swarm 多 Agent 子工程独占并行协议、连续执行与 7 天冷却依赖盘点",
-      "reviewed": "2026-11-20",
-      "basis": "M2 v1.1：固化交付人工体验前自动执行 package.py --install-dev 更新本机 SPAWN Dev 规则"
+      "reviewed": "2026-11-22",
+      "basis": "M3 v1.1：开发版改为每次本地提交后重装（D-32）"
     },
     {
       "path": "docs/dev-rules/git-workflow.md",
       "kind": "rule",
       "status": "active",
       "owner": "gov-rules / Agent A",
-      "scope": "不可变第一提交 SHA、单阶段单提交 amend -s DCO 规范、远端显式授权表与低频 API 准则",
-      "reviewed": "2026-11-19",
-      "basis": "M2 v1.0：记录 M1 PR #1 合入 main 基线 196faf33fe1c2f18d1e14cfc97caf6f3f91baf16 及 M2 门禁提交流程"
+      "scope": "不可变第一提交 SHA、单阶段单提交 amend -s DCO 规范、远端显式授权表、低频 API 与每周发布流水线",
+      "reviewed": "2026-11-22",
+      "basis": "M3-W11：新增 §4 正式版每周发布流水线与 SPAWN_RELEASE_PUBLISH 开关章节"
     },
     {
       "path": "docs/dev-rules/local-files-and-references.md",
@@ -352,9 +370,9 @@
       "kind": "rule",
       "status": "active",
       "owner": "gov-rules / Agent A",
-      "scope": "两级质量门禁设计（check_docs.py / quick_gate.py / Stage Gate + IAT 审计）与测试前台静音规范",
-      "reviewed": "2026-11-20",
-      "basis": "M2 v1.1：明确自动化打包安装测试仅限使用隔离身份 spawn-dev-test 且零触碰真实 spawn/spawn-dev"
+      "scope": "两级质量门禁设计（check_docs.py / quick_gate.py / Stage Gate + IAT 与每周发布工作流审计）与测试前台静音规范",
+      "reviewed": "2026-11-22",
+      "basis": "M3-W11：新增 §5 ReleaseWorkflowGateTests 每周发布工作流结构门禁与 M3-M-03 not-run 边界"
     },
     {
       "path": "docs/dev-rules/repo-map.md",
@@ -362,17 +380,17 @@
       "status": "active",
       "owner": "gov-rules / Agent A",
       "scope": "仓库顶层目录所有权与 Spawn.sln 多工程单向依赖及高敏 NuGet 隔离地图",
-      "reviewed": "2026-11-20",
-      "basis": "M2 v1.1：纳入 assets/、installer/spawn.iss、scripts/generate_icons.py 与 scripts/package.py"
+      "reviewed": "2026-11-21",
+      "basis": "M3-W09：同步 NamedPipeJsonRpc 措辞、TrainerWorker 职责与 NuGet 隔离红线（SharpCompress/AngleSharp 归属 Progress）"
     },
     {
       "path": "docs/engineering/delivery-plan.md",
       "kind": "plan",
       "status": "active",
       "owner": "arch-delivery / Agent A",
-      "scope": "SPAWN M1~M6 里程碑演进路线图与 AC-* 阶段准出验收门槛定义",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：确立 M2 首发启动器+Steamrip/GOG 成就 Overlay 闭环，接续 M3 存档修改器、M4 Mod 快照、M5 二游 DAG 与 M6 蓝图引擎路线"
+      "scope": "SPAWN M1~M6 里程碑演进路线图与 AC-* 阶段准出验收门槛定义（含 AC-12b）",
+      "reviewed": "2026-11-22",
+      "basis": "M3 v1.1：新增 AC-25 并纳入 M3 准出"
     },
     {
       "path": "docs/engineering/technology-selection.md",
@@ -380,8 +398,8 @@
       "status": "active",
       "owner": "arch-delivery / Agent A",
       "scope": "35+ 活跃开源项目核验矩阵、统一 .NET 10 LTS NuGet 清单、CsWin32 API 映射与本机开发环境安装全表",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：汇总全栈开源选型许可证核验及进入 M2 编码前必备/可选开发工具链清单"
+      "reviewed": "2026-11-21",
+      "basis": "M3-W09：移除 Reloaded.Memory 家族与判红组件，登记 SharpCompress/AngleSharp/CsWin32，并消除残余 gRPC 措辞对齐 NamedPipeJsonRpc"
     },
     {
       "path": "docs/governance/document-registry.json",
@@ -389,8 +407,8 @@
       "status": "active",
       "owner": "gov-rules / Agent A",
       "scope": "SPAWN 全仓自有 Markdown 与受管 JSON 文档唯一权威注册表",
-      "reviewed": "2026-11-20",
-      "basis": "M2 v1.1：同步 M2 阶段内增强涉及的全部治理与交付文档审查基线"
+      "reviewed": "2026-11-22",
+      "basis": "M3 v1.1：同步 M3-W10~W12 全部修改文档审查日期与基线说明"
     },
     {
       "path": "docs/governance/documentation-policy.md",
@@ -407,8 +425,8 @@
       "status": "active",
       "owner": "module-specs / Agent A",
       "scope": "S.P.A.W.N. 五大核心业务领域模块规格总览与 Spawn.sln 子工程映射",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：导航五大领域正式实现规格书与跨模块协同边界"
+      "reviewed": "2026-11-21",
+      "basis": "M3-W09：同步 NamedPipeJsonRpc、D-11 分级按需提权与 Progress M3/M4/M6 分期范围"
     },
     {
       "path": "docs/modules/achievement-and-overlay.md",
@@ -416,8 +434,8 @@
       "status": "active",
       "owner": "module-specs / Agent A",
       "scope": "Achievement 全渠道离线/GOG/Steam 成就解析引擎与 ZBID_UIACCESS 144Hz Overlay 模块规格书",
-      "reviewed": "2026-11-20",
-      "basis": "M2 v1.1：同步嵌套插件目录识别、无目录父级攀升实时跳杯与 ResetGameAchievementStateAsync 规格"
+      "reviewed": "2026-11-21",
+      "basis": "M3-W09：将 OverlayHost IPC 契约注释统一更正为 NamedPipeJsonRpc"
     },
     {
       "path": "docs/modules/nexus-mods-and-utilities.md",
@@ -433,9 +451,9 @@
       "kind": "spec",
       "status": "active",
       "owner": "module-specs / Agent A",
-      "scope": "Progress 存档时间机器、SPPK 云同步与风灵月影零报毒静音管家及二期 .CT 引擎模块规格书",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：涵盖 Ludusavi 规则、FastCDC+BLAKE3+Zstd、Git 祖先链同步、FLiNG A0+A 静音与 CE 逆序指针契约"
+      "scope": "Progress 单机外部修改器安全管家、启动前存档快照与 M4 存档时间机器/SPPK 云同步及 M6 收窄原生后端模块规格书",
+      "reviewed": "2026-11-21",
+      "basis": "M3 v1.0：重写外部修改器安全管家规格（洁净室发现/下载、A0+A、TrainerWorker、启动前快照、UI），时间机器与云同步标注 M4 轨道"
     },
     {
       "path": "docs/modules/spawn-launcher.md",
@@ -452,8 +470,8 @@
       "status": "active",
       "owner": "module-specs / Agent A",
       "scope": "Workflow 二次元外部生态并发 DAG 编排器与 Nodify 类 UE 蓝图可视化脚本引擎模块规格书",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：涵盖 Maa.Framework 内嵌、MaaFgo/BBC 双端口桥接、主流 CLI 矩阵、睡眠唤醒防黑屏与 Kismet 异步蓝图 VM"
+      "reviewed": "2026-11-21",
+      "basis": "M3-W09：同步 NamedPipeJsonRpc 调试通道与按 D-11 分级按需提权破局（免 UAC 仅限 LOOP-07）"
     },
     {
       "path": "docs/product-rules/core-product-principles.md",
@@ -470,8 +488,8 @@
       "status": "active",
       "owner": "gov-rules / Agent A",
       "scope": "SPAWN 项目关键事实、已拍板技术基线、明确不做边界与跨会话恢复入口",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：浓缩 S.P.A.W.N. 定位、四大技术拍板与 Non-Goals 边界"
+      "reviewed": "2026-11-21",
+      "basis": "M3-W09：同步 NamedPipeJsonRpc 倒置双向互验、D-11 分级按需提权与 ADR-0006 修改器基线"
     },
     {
       "path": "docs/requirements/product-requirements.md",
@@ -479,8 +497,8 @@
       "status": "active",
       "owner": "arch-delivery / Agent A",
       "scope": "SPAWN 结构化功能需求（REQ-SPW/PRG/ACH/WFL/NEX/SEC）与非功能需求（NFR）正本",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：定义全生命周期需求编号、优先级与可验证判据"
+      "reviewed": "2026-11-22",
+      "basis": "M3 v1.1：新增 NFR-09 正式版可信分发与签名自动更新"
     },
     {
       "path": "docs/research/01-ui-architecture-and-blueprint.md",

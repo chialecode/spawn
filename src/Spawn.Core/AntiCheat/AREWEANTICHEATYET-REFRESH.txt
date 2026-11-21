@@ -1,0 +1,29 @@
+# AreWeAntiCheatYet Embedded Offline Index (`areweanticheatyet-index.json`)
+
+## Upstream Source & License Notice
+
+- **Source**: [AreWeAntiCheatYet](https://github.com/AreWeAntiCheatYet/AreWeAntiCheatYet) (`games.json`)
+- **License**: MIT License
+- **Copyright**: Copyright (c) AreWeAntiCheatYet Contributors
+
+This file is a compact, read-only offline projection (`SteamAppId -> AntiCheat[]`, plus non-Steam canonical names/aliases and single-player capability hints) embedded inside `Spawn.Core.dll` as `Spawn.Core.AntiCheat.areweanticheatyet-index.json`. It closes Layer 2 of SPAWN's four-layer anti-cheat classification so titles with no local anti-cheat binaries in their install directory (e.g., VAC titles like Counter-Strike 2 or boot-driver titles like VALORANT) are never misclassified as `Tier 0`.
+
+## Schema
+
+Each object in `entries` contains:
+
+| Field | Type | Description |
+| :--- | :--- | :--- |
+| `steamAppId` | `int \| null` | Official Steam AppId when distributed on Steam (`null` for non-Steam titles such as VALORANT / Fortnite / League of Legends). |
+| `name` | `string` | Canonical English title used for exact normalized fallback matching. |
+| `aliases` | `string[]` | Exact normalized aliases (short names, shipping executable stems, localized titles) for non-Steam or standalone imports. |
+| `antiCheats` | `string[]` | Anti-cheat systems reported by AreWeAntiCheatYet (e.g., `VAC`, `Vanguard`, `Easy Anti-Cheat`, `BattlEye`, `ACE`, `Ricochet`, `EA AntiCheat`, `NetEase Anti-Cheat`, `nProtect GameGuard`, `XIGNCODE3`, `Nexon Game Security`). |
+| `minTier` | `int` (`1..3`) | Minimum static `AntiCheatTier` floor (`1` = online-auth client, `2` = light-kernel / VAC / hybrid AC, `3` = strict Ring-0 kernel AC). |
+| `hasSinglePlayer` | `bool \| null` | Whether the title legitimately includes an offline single-player mode (used only to confirm `VerifiedOfflineBypass` eligibility for `Tier 2` hybrid titles when offline). |
+
+## Refresh Procedure
+
+1. Download the latest upstream MIT-licensed `games.json` from `https://github.com/AreWeAntiCheatYet/AreWeAntiCheatYet/blob/master/games.json`.
+2. Project `storeIds.steam` (parsed as integer `steamAppId`), `name`, and `anticheats[]` into `areweanticheatyet-index.json`, preserving curated `aliases`, `minTier`, and `hasSinglePlayer` hints for hybrid single-player `Tier 2` games.
+3. Update `generatedUtc` to the refresh UTC timestamp.
+4. Run `dotnet build Spawn.sln -c Release` and `dotnet test tests/Spawn.Core.UnitTests -c Release --no-build --filter AntiCheatTierAndWatchdog` to verify schema loading and classification assertions.

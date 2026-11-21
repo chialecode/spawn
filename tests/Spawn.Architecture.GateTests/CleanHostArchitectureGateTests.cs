@@ -3,6 +3,7 @@ using System.IO;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using Spawn.Core;
@@ -18,9 +19,9 @@ namespace Spawn.Architecture.GateTests;
 /// </summary>
 public sealed class CleanHostArchitectureGateTests
 {
-    private static readonly HashSet<string> ForbiddenNativeSymbols = new(StringComparer.OrdinalIgnoreCase)
+    private static readonly HashSet<string> TrainerWorkerM3ForbiddenSymbols = new(StringComparer.OrdinalIgnoreCase)
     {
-        // Cross-process memory & remote code execution
+        // Cross-process memory & remote code execution (ipc-and-security-contracts.md §4.1 & §4.2)
         "ReadProcessMemory",
         "WriteProcessMemory",
         "NtReadVirtualMemory",
@@ -37,7 +38,7 @@ public sealed class CleanHostArchitectureGateTests
         "QueueUserAPC2",
         "RtlCreateUserThread",
 
-        // Process debugging, suspension & thread hijacking
+        // Process debugging, suspension & thread hijacking (ipc-and-security-contracts.md §4.1 & §4.2)
         "DebugActiveProcess",
         "NtSuspendProcess",
         "ZwSuspendProcess",
@@ -47,22 +48,47 @@ public sealed class CleanHostArchitectureGateTests
         "SetThreadContext",
         "GetThreadContext",
         "Wow64SetThreadContext",
-
-        // Global low-level hooks & synthetic input injection
-        "SetWindowsHookEx",
-        "SetWindowsHookExA",
-        "SetWindowsHookExW",
-        "SendInput",
-        "keybd_event",
-        "mouse_event",
     };
+
+    private static readonly HashSet<string> ForbiddenNativeSymbols = new(
+        TrainerWorkerM3ForbiddenSymbols.Concat(
+        [
+            // Global low-level hooks & synthetic input injection (forbidden in Clean Host; SendInput allowed in TrainerWorker)
+            "SetWindowsHookEx",
+            "SetWindowsHookExA",
+            "SetWindowsHookExW",
+            "SendInput",
+            "keybd_event",
+            "mouse_event",
+        ]),
+        StringComparer.OrdinalIgnoreCase);
+
+    private static readonly string[] GloballyBannedPackagePrefixes =
+    [
+        "Reloaded",
+        "SevenZipExtractor",
+        "SevenZipSharp",
+        "Squid-Box.SevenZipSharp",
+        "Keystone",
+        "KeystoneEngine",
+        "Memory.dll",
+        "MinHook",
+        "EasyHook",
+        "Squalr",
+    ];
 
     private static readonly string[] ForbiddenAssemblyPrefixes =
     [
         "OpenCvSharp",
         "Sdcb.PaddleOCR",
+        "Reloaded",
         "Reloaded.Memory",
         "Reloaded.Hooks",
+        "SevenZipExtractor",
+        "SevenZipSharp",
+        "Squid-Box.SevenZipSharp",
+        "Keystone",
+        "Memory.dll",
         "MinHook",
         "EasyHook",
         "Iced",
@@ -82,9 +108,16 @@ public sealed class CleanHostArchitectureGateTests
         "Spawn.Core",
         "Spawn.Modules.Launcher",
         "Spawn.Modules.Achievement",
+        "Spawn.Modules.Progress",
         "Spawn.Host",
         "Spawn.OverlayHost",
     ];
+
+    private static readonly HashSet<string> ProgressExclusivePackages = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "SharpCompress",
+        "AngleSharp",
+    };
 
     [Fact]
     public void ProjectGraph_CleanHostProjects_NeverReferenceSensitivePackagesOrWorkers()
@@ -165,6 +198,61 @@ public sealed class CleanHostArchitectureGateTests
             }
         }
 
+        // 3. Spawn.Modules.Progress must not reference other Spawn.Modules.* or any Worker.
+        if (projectMap.TryGetValue("Spawn.Modules.Progress", out var progressInfo))
+        {
+            foreach (string child in progressInfo.ProjectRefs)
+            {
+                if (child.StartsWith("Spawn.Modules.", StringComparison.OrdinalIgnoreCase)
+                    || child.EndsWith("Worker", StringComparison.OrdinalIgnoreCase))
+                {
+                    violations.Add($"Spawn.Modules.Progress must not reference '{child}'.");
+                }
+            }
+        }
+
+        // 4. SharpCompress & AngleSharp may only appear directly in Spawn.Modules.Progress under src/.
+        foreach (var (projName, info) in projectMap)
+        {
+            foreach (string pkg in info.PackageRefs)
+            {
+                if (ProgressExclusivePackages.Contains(pkg)
+                    && !string.Equals(projName, "Spawn.Modules.Progress", StringComparison.OrdinalIgnoreCase))
+                {
+                    violations.Add($"Package '{pkg}' is restricted to Spawn.Modules.Progress but was directly referenced by '{projName}'.");
+                }
+            }
+        }
+
+        if (projectMap.TryGetValue("Spawn.Modules.Progress", out var progCheck))
+        {
+            foreach (string requiredPkg in ProgressExclusivePackages)
+            {
+                if (!progCheck.PackageRefs.Contains(requiredPkg, StringComparer.OrdinalIgnoreCase))
+                {
+                    violations.Add($"Expected Spawn.Modules.Progress to directly reference '{requiredPkg}'.");
+                }
+            }
+        }
+
+        // 5. Spawn.TrainerWorker must exist and stay isolated from Clean Host / domain modules.
+        if (!projectMap.TryGetValue("Spawn.TrainerWorker", out var workerInfo))
+        {
+            violations.Add("Missing expected isolated worker project 'Spawn.TrainerWorker'.");
+        }
+        else
+        {
+            foreach (string child in workerInfo.ProjectRefs)
+            {
+                if (child.Equals("Spawn.Host", StringComparison.OrdinalIgnoreCase)
+                    || child.Equals("Spawn.OverlayHost", StringComparison.OrdinalIgnoreCase)
+                    || child.StartsWith("Spawn.Modules.", StringComparison.OrdinalIgnoreCase))
+                {
+                    violations.Add($"Spawn.TrainerWorker must not reference '{child}'.");
+                }
+            }
+        }
+
         Assert.True(violations.Count == 0, string.Join(Environment.NewLine, violations));
     }
 
@@ -226,6 +314,181 @@ public sealed class CleanHostArchitectureGateTests
     }
 
     [Fact]
+    public void BinaryPeAudit_ProgressModuleOutputClosure_ZeroSensitiveWin32ImportsOrPackages()
+    {
+        string repoRoot = LocateRepositoryRoot();
+        string outputDir = LocateBuildOutputDirectory(repoRoot, "Spawn.Modules.Progress", requireNativeExe: false);
+
+        string mainDll = Path.Combine(outputDir, "Spawn.Modules.Progress.dll");
+        Assert.True(File.Exists(mainDll), $"Expected compiled assembly missing: {mainDll}");
+
+        var binariesToAudit = EnumerateWindowsPeBinariesInOutput(outputDir);
+        Assert.True(binariesToAudit.Count >= 3, $"Expected at least Progress/Core/Contracts binaries in {outputDir}.");
+
+        var violations = new List<string>();
+        int totalExtractedSymbols = 0;
+
+        foreach (string pePath in binariesToAudit)
+        {
+            string fileName = Path.GetFileName(pePath);
+            string baseName = Path.GetFileNameWithoutExtension(pePath);
+
+            if (IsForbiddenAssemblyOrPackage(baseName))
+            {
+                violations.Add($"[Spawn.Modules.Progress] Forbidden binary copied into output directory: {fileName}");
+            }
+
+            PeInspectionReport report = InspectPeBinary(pePath);
+            totalExtractedSymbols += report.ImportedSymbols.Count;
+
+            foreach (string asmRef in report.ReferencedAssemblies)
+            {
+                if (IsForbiddenAssemblyOrPackage(asmRef))
+                {
+                    violations.Add($"[Spawn.Modules.Progress] {fileName} references forbidden assembly '{asmRef}'.");
+                }
+            }
+
+            foreach (var (moduleName, symbolName, sourceKind) in report.ImportedSymbols)
+            {
+                if (ForbiddenNativeSymbols.Contains(symbolName))
+                {
+                    violations.Add(
+                        $"[Spawn.Modules.Progress] {fileName} imports forbidden symbol '{moduleName}!{symbolName}' via {sourceKind}.");
+                }
+            }
+        }
+
+        Assert.True(
+            totalExtractedSymbols > 0,
+            "PEReader must extract non-empty native/PInvoke symbol tables across Spawn.Modules.Progress output closure.");
+        Assert.True(violations.Count == 0, string.Join(Environment.NewLine, violations));
+    }
+
+    [Fact]
+    public void BinaryPeAudit_TrainerWorkerOutputClosure_ZeroCrossProcessMemoryOrDebugImports()
+    {
+        string repoRoot = LocateRepositoryRoot();
+        string outputDir = LocateBuildOutputDirectory(repoRoot, "Spawn.TrainerWorker", requireNativeExe: true);
+
+        string mainDll = Path.Combine(outputDir, "Spawn.TrainerWorker.dll");
+        string mainExe = Path.Combine(outputDir, "Spawn.TrainerWorker.exe");
+        Assert.True(File.Exists(mainDll), $"Expected compiled assembly missing: {mainDll}");
+        Assert.True(File.Exists(mainExe), $"Expected compiled native apphost missing: {mainExe}");
+
+        var binariesToAudit = EnumerateWindowsPeBinariesInOutput(outputDir);
+        Assert.True(binariesToAudit.Count >= 3, $"Expected at least TrainerWorker/Core/Contracts binaries in {outputDir}.");
+
+        var violations = new List<string>();
+        int totalExtractedSymbols = 0;
+
+        foreach (string pePath in binariesToAudit)
+        {
+            string fileName = Path.GetFileName(pePath);
+            string baseName = Path.GetFileNameWithoutExtension(pePath);
+
+            if (IsGloballyBannedPackage(baseName) || baseName.Equals("Iced", StringComparison.OrdinalIgnoreCase))
+            {
+                violations.Add($"[Spawn.TrainerWorker] Forbidden binary copied into M3 worker output directory: {fileName}");
+            }
+
+            PeInspectionReport report = InspectPeBinary(pePath);
+            totalExtractedSymbols += report.ImportedSymbols.Count;
+
+            foreach (string asmRef in report.ReferencedAssemblies)
+            {
+                if (IsGloballyBannedPackage(asmRef) || asmRef.Equals("Iced", StringComparison.OrdinalIgnoreCase))
+                {
+                    violations.Add($"[Spawn.TrainerWorker] {fileName} references forbidden M3 assembly '{asmRef}'.");
+                }
+            }
+
+            foreach (var (moduleName, symbolName, sourceKind) in report.ImportedSymbols)
+            {
+                if (TrainerWorkerM3ForbiddenSymbols.Contains(symbolName))
+                {
+                    violations.Add(
+                        $"[Spawn.TrainerWorker] {fileName} imports forbidden M3 symbol '{moduleName}!{symbolName}' via {sourceKind}.");
+                }
+            }
+        }
+
+        // Also enforce ipc-and-security-contracts.md §4.3: zero PROCESS_VM_* / PROCESS_ALL_ACCESS declarations in M3 worker source.
+        string workerSourceDir = Path.Combine(repoRoot, "src", "Spawn.TrainerWorker");
+        var vmAccessRegex = new Regex(
+            @"\b(?:PROCESS_VM_READ|PROCESS_VM_WRITE|PROCESS_VM_OPERATION|PROCESS_CREATE_THREAD|PROCESS_ALL_ACCESS)\b",
+            RegexOptions.Compiled);
+        foreach (string csFile in Directory.EnumerateFiles(workerSourceDir, "*.cs", SearchOption.AllDirectories))
+        {
+            if (IsUnderIntermediateOrBinDirectory(csFile))
+            {
+                continue;
+            }
+
+            string stripped = StripCSharpComments(File.ReadAllText(csFile, Encoding.UTF8));
+            Match m = vmAccessRegex.Match(stripped);
+            if (m.Success)
+            {
+                string relPath = Path.GetRelativePath(repoRoot, csFile).Replace('\\', '/');
+                violations.Add($"{relPath}: forbidden M3 cross-process VM access right ('{m.Value}')");
+            }
+        }
+
+        Assert.True(
+            totalExtractedSymbols > 0,
+            "PEReader must extract non-empty native/PInvoke symbol tables across Spawn.TrainerWorker output binaries.");
+        Assert.True(violations.Count == 0, string.Join(Environment.NewLine, violations));
+    }
+
+    [Fact]
+    public void PackageAssetsAudit_WholeRepository_ZeroBannedPackagesInTransitiveClosure()
+    {
+        string repoRoot = LocateRepositoryRoot();
+        var projectDirs = Directory.EnumerateFiles(Path.Combine(repoRoot, "src"), "*.csproj", SearchOption.AllDirectories)
+            .Concat(Directory.EnumerateFiles(Path.Combine(repoRoot, "tests"), "*.csproj", SearchOption.AllDirectories))
+            .Select(p => Path.GetDirectoryName(p)!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        Assert.True(projectDirs.Count >= 10, $"Expected at least 10 projects across src/ and tests/, found {projectDirs.Count}.");
+
+        var violations = new List<string>();
+        int auditedAssetsCount = 0;
+
+        foreach (string projDir in projectDirs)
+        {
+            string assetsPath = Path.Combine(projDir, "obj", "project.assets.json");
+            if (!File.Exists(assetsPath))
+            {
+                violations.Add($"Missing restored assets file: {Path.GetRelativePath(repoRoot, assetsPath).Replace('\\', '/')}");
+                continue;
+            }
+
+            auditedAssetsCount++;
+            string relAssets = Path.GetRelativePath(repoRoot, assetsPath).Replace('\\', '/');
+            using var stream = new FileStream(assetsPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var doc = JsonDocument.Parse(stream);
+
+            if (doc.RootElement.TryGetProperty("libraries", out JsonElement libraries)
+                && libraries.ValueKind == JsonValueKind.Object)
+            {
+                foreach (JsonProperty lib in libraries.EnumerateObject())
+                {
+                    string packageId = lib.Name.Split('/')[0];
+                    if (IsGloballyBannedPackage(packageId))
+                    {
+                        violations.Add($"{relAssets}: banned package '{lib.Name}' detected in dependency graph.");
+                    }
+                }
+            }
+        }
+
+        Assert.Equal(projectDirs.Count, auditedAssetsCount);
+        Assert.True(violations.Count == 0, string.Join(Environment.NewLine, violations));
+    }
+
+    [Fact]
     public void BinaryPeAudit_ScannerNonVacuityProof_DetectsRealNativeAndManagedImports()
     {
         string repoRoot = LocateRepositoryRoot();
@@ -264,6 +527,7 @@ public sealed class CleanHostArchitectureGateTests
             Path.Combine(repoRoot, "src", "Spawn.Core"),
             Path.Combine(repoRoot, "src", "Spawn.Modules.Launcher"),
             Path.Combine(repoRoot, "src", "Spawn.Modules.Achievement"),
+            Path.Combine(repoRoot, "src", "Spawn.Modules.Progress"),
             Path.Combine(repoRoot, "src", "Spawn.Host"),
             Path.Combine(repoRoot, "src", "Spawn.OverlayHost"),
         ];
@@ -314,8 +578,37 @@ public sealed class CleanHostArchitectureGateTests
         Assert.True(violations.Count == 0, string.Join(Environment.NewLine, violations));
     }
 
+    private static bool IsGloballyBannedPackage(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return false;
+        }
+
+        if (name.Contains("SevenZipSharp", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        foreach (string prefix in GloballyBannedPackagePrefixes)
+        {
+            if (name.Equals(prefix, StringComparison.OrdinalIgnoreCase)
+                || name.StartsWith(prefix + ".", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static bool IsForbiddenAssemblyOrPackage(string name)
     {
+        if (IsGloballyBannedPackage(name))
+        {
+            return true;
+        }
+
         foreach (string prefix in ForbiddenAssemblyPrefixes)
         {
             if (name.Equals(prefix, StringComparison.OrdinalIgnoreCase)
@@ -344,7 +637,7 @@ public sealed class CleanHostArchitectureGateTests
         throw new DirectoryNotFoundException("Could not locate repository root containing Spawn.sln.");
     }
 
-    private static string LocateBuildOutputDirectory(string repoRoot, string projectName)
+    private static string LocateBuildOutputDirectory(string repoRoot, string projectName, bool requireNativeExe = true)
     {
         string activeConfig = AppContext.BaseDirectory.Contains(
             $"{Path.DirectorySeparatorChar}Release{Path.DirectorySeparatorChar}",
@@ -366,8 +659,9 @@ public sealed class CleanHostArchitectureGateTests
 
             foreach (string tfmDir in Directory.GetDirectories(binConfigDir))
             {
-                if (File.Exists(Path.Combine(tfmDir, $"{projectName}.dll"))
-                    && File.Exists(Path.Combine(tfmDir, $"{projectName}.exe")))
+                bool hasDll = File.Exists(Path.Combine(tfmDir, $"{projectName}.dll"));
+                bool hasExe = !requireNativeExe || File.Exists(Path.Combine(tfmDir, $"{projectName}.exe"));
+                if (hasDll && hasExe)
                 {
                     return tfmDir;
                 }

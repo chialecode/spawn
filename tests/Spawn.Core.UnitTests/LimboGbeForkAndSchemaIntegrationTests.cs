@@ -247,7 +247,9 @@ public sealed class LimboGbeForkAndSchemaIntegrationTests
         };
         await sandbox.Database.UpsertGameAsync(game);
 
-        using var guard = new AntiCheatGuardService();
+        using var guard = new AntiCheatGuardService(
+            residualProcessProbe: static () => [],
+            highRiskEnvironmentProbe: static () => new HighRiskEnvironmentReport([], []));
         var activator = new GbeForkActivatorService(
             sandbox.Paths,
             sandbox.Database,
@@ -388,7 +390,9 @@ public sealed class LimboGbeForkAndSchemaIntegrationTests
         };
         await sandbox.Database.UpsertGameAsync(nestedGame);
 
-        using var guard = new AntiCheatGuardService();
+        using var guard = new AntiCheatGuardService(
+            residualProcessProbe: static () => [],
+            highRiskEnvironmentProbe: static () => new HighRiskEnvironmentReport([], []));
         var activator = new GbeForkActivatorService(
             sandbox.Paths,
             sandbox.Database,

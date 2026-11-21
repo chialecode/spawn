@@ -9,7 +9,7 @@
 1. **范围、需求与决策一致性**：
    - 实际改动是否严格对应当前 `docs/delivery/stage-plan.md`、关联 `REQ-*` 需求、[已确认决策](docs/decisions/confirmed-decisions.md) 与五大模块规格书（`docs/modules/*`），有无擅自缩减核心能力或越界改动无关模块。
 2. **进程物理隔离与 `PEReader` IAT 零污染门禁（一票否决项）**：
-   - `Spawn.Host` 与 `Spawn.OverlayHost` 的 `.csproj` 引用链是否严禁依赖 `OpenCvSharp4`、`Sdcb.PaddleOCR`、`Reloaded.Memory.SigScan`、`Iced`、`Maa.Framework`、`Nefarius.ViGEm.Client` 等高敏或重型 Worker 专属包；
+   - `Spawn.Host` 与 `Spawn.OverlayHost` 的 `.csproj` 引用链是否严禁依赖 `OpenCvSharp4`、`Sdcb.PaddleOCR`、`Iced`、`Maa.Framework`、`Nefarius.ViGEm.Client` 等高敏或重型 Worker 专属包；全仓传递依赖树是否零 `GPL`/`AGPL` 包（`Reloaded.Memory` 家族、`SevenZipExtractor` 等已判红，见 [ADR-0006](docs/decisions/0006-m3-external-trainer-manager-elevation-and-ipc.md)）；
    - `Spawn.Architecture.GateTests`（M2 起启用）是否对编译产出的 `Spawn.Host.exe` 与 `Spawn.OverlayHost.exe` 执行真实 `System.Reflection.Metadata.PEReader` 导入表扫描，确保零 `WriteProcessMemory`、`ReadProcessMemory`、`VirtualAllocEx`、`CreateRemoteThread`、`SetWindowsHookEx`、`NtSuspendProcess` 导入；
    - 常规进程监控是否严格使用 `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION = 0x1000)` + `QueryFullProcessImageNameW`，杜绝读取强反作弊网游 `Process.MainModule` 触发 `PROCESS_VM_READ` 告警；
    - 跨完整性级别 Named Pipe 是否显式通过 `NamedPipeServerStreamAcl` 配置当前用户 SID 授权并拒绝 `NETWORK` SID。
@@ -17,7 +17,7 @@
    - `Tier 0`~`Tier 3` 风险指纹识别、启动前高危进程/驱动（CE、`dbk64`、残留 Worker）熔断清场、`Tier 2/3` Explorer Shell COM 脱钩启动（切断 PPID 血缘）是否闭环；
    - 受保护游戏退出后，是否持续确认 `SGuard64.exe` / `EasyAntiCheat_EOS.exe` / `BEService.exe` 彻底退出并严格执行 **15 秒余温冷却窗口** 后才解除对 `BlueprintWorker` / `TrainerWorker` 的互锁；
    - 游戏生命周期追踪 `JobObject` 是否**严禁设置** `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`，而外部修改器/子脚本托管 `JobObject` 是否**强制设置**该标志；
-   - 外部 FLiNG 修改器静音是否坚持零改 EXE 的 `A0+A`（预写双目录 INI/22B 空 MIDI + 全输出端点 WASAPI 会话监听）方案；二期 CE `.CT` 指针偏移解析是否严格执行 `<Offsets>` `.Reverse()`；WOF 压缩是否在检出 `dstorage.dll` 时强制熔断。
+   - 外部修改器静音是否坚持零改 EXE 的 `A0+A`（`SHGetKnownFolderPath` 双目录 INI + 27 字节 5.0 秒静音 SMF + 专用 MTA 线程全输出端点 WASAPI 会话监听，默认完全静音）方案；`Spawn.TrainerWorker` 是否零跨进程内存 API、倒置管道双向互验、`KILL_ON_JOB_CLOSE` 原子入组且发布于 `Workers\Trainer\`；热键代理是否使用 `MAPVK_VK_TO_VSC_EX` + `EXTENDEDKEY` 且默认不设 `SCANCODE`；二期 CE `.CT` 指针偏移解析是否严格执行 `<Offsets>` `.Reverse()`；WOF 压缩是否在检出 `dstorage.dll` 时强制熔断。
 4. **WAL / NTFS Junction 原子防丢档与云同步安全**：
    - `spawn.db`（`<应用数据根>\db\spawn.db`）是否开启 WAL + `foreign_keys=ON` 且与网盘目录隔离；通道数据根是否严格区分 `spawn` 与 `spawn-dev`，测试是否 100% 落在独立临时目录；
    - 多维 Profile 切换是否具备 5 阶段 `profile_switch_journal` 断电自愈能力；摘除存档槽 NTFS Directory Junction 时是否严格使用非递归 `RemoveDirectoryW` / `DirectoryInfo.Delete(recursive: false)`，杜绝误清空真实存档槽；

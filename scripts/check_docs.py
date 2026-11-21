@@ -92,6 +92,12 @@ FORBIDDEN_FILE_PATTERNS = (
     re.compile(r"(?:^|/)id_(?:rsa|ed25519|ecdsa|dsa)(?:\.pub)?$", re.I),
 )
 
+ALLOWED_PUBLIC_KEY_PEMS = frozenset(
+    {
+        "installer/update-signing-public.pem",
+    }
+)
+
 TEXT_EXTENSIONS = {
     ".md",
     ".json",
@@ -396,7 +402,7 @@ def check_repository(root: Path) -> tuple[list[str], dict[str, int]]:
             errors.append(f"docs/requirements/product-requirements.md: duplicate ID {rid}")
 
     plan_doc = md_docs.get("docs/engineering/delivery-plan.md", "")
-    defined_acs = set(re.findall(r"\bAC-\d+\b", plan_doc))
+    defined_acs = set(re.findall(r"\bAC-\d+[a-z]?\b", plan_doc))
 
     trace_path = root / "docs/delivery/traceability.json"
     if trace_path.is_file():
@@ -476,9 +482,28 @@ def check_repository(root: Path) -> tuple[list[str], dict[str, int]]:
     # 5. Repository file & text hygiene scan.
     scanned_text_count = 0
     for rel, fpath in all_files:
-        for forbidden_pat in FORBIDDEN_FILE_PATTERNS:
-            if forbidden_pat.search(rel):
-                errors.append(f"{rel}: forbidden sensitive, certificate, or database file in repository")
+        if rel in ALLOWED_PUBLIC_KEY_PEMS:
+            try:
+                pem_bytes = fpath.read_bytes()
+                pem_text = pem_bytes.decode("utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                errors.append(f"{rel}: failed to read UTF-8 public key PEM ({exc})")
+            else:
+                if pem_bytes.startswith(b"\xef\xbb\xbf"):
+                    errors.append(f"{rel}: public key PEM must not contain UTF-8 BOM")
+                if "\r" in pem_text:
+                    errors.append(f"{rel}: public key PEM must use LF line endings")
+                if "PRIVATE KEY" in pem_text.upper():
+                    errors.append(f"{rel}: allowed public key PEM must NEVER contain a private key")
+                if not (
+                    pem_text.startswith("-----BEGIN PUBLIC KEY-----\n")
+                    and pem_text.rstrip("\n").endswith("-----END PUBLIC KEY-----")
+                ):
+                    errors.append(f"{rel}: allowed PEM must be a strict SubjectPublicKeyInfo PUBLIC KEY block")
+        else:
+            for forbidden_pat in FORBIDDEN_FILE_PATTERNS:
+                if forbidden_pat.search(rel):
+                    errors.append(f"{rel}: forbidden sensitive, certificate, or database file in repository")
 
         suffix = fpath.suffix.lower()
         is_named_config = fpath.name in {".editorconfig", ".gitattributes", ".gitignore", "LICENSE"}

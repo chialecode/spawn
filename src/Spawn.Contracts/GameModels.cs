@@ -29,6 +29,10 @@ public sealed record GameRecord
     public long TotalAfkSec { get; init; }
     public DateTimeOffset? LastPlayedUtc { get; init; }
     public DateTimeOffset CreatedUtc { get; init; } = DateTimeOffset.UtcNow;
+    public string? SteamBuildId { get; init; }
+    public DateTimeOffset? SteamLastUpdatedUtc { get; init; }
+    public bool VerifiedOfflineBypass { get; init; }
+    public DateTimeOffset? VerifiedOfflineBypassAtUtc { get; init; }
 
     [JsonIgnore]
     public string EffectiveSortTitle => string.IsNullOrWhiteSpace(SortTitle) ? Title : SortTitle;
@@ -60,6 +64,10 @@ public sealed record GameMetadataUpdate
     public string? CoverImagePath { get; init; }
     public string? IconPath { get; init; }
     public string? HeroImagePath { get; init; }
+    public string? SteamBuildId { get; init; }
+    public DateTimeOffset? SteamLastUpdatedUtc { get; init; }
+    public bool? VerifiedOfflineBypass { get; init; }
+    public DateTimeOffset? VerifiedOfflineBypassAtUtc { get; init; }
 }
 
 /// <summary>

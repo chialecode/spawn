@@ -346,6 +346,13 @@ public sealed partial class SynthesizedUnlockSoundPlayer : IDisposable
     }
 
     /// <summary>
+    /// Whether an external clip of <paramref name="preset"/> gets the gentle peak boost before volume scaling.
+    /// The Steam authentic toast is played at the Steam client's original sample level (100% volume == Steam), so it is
+    /// never boosted; user-imported custom WAV files keep the boost because they are often mastered very quietly.
+    /// </summary>
+    public static bool ShouldNormalizeExternalClip(OverlaySoundPreset preset) => preset != OverlaySoundPreset.SteamAuthentic;
+
+    /// <summary>
     /// Pure-memory conditioning pipeline (preserved signature and zero-padding behavior for existing unit tests).
     /// </summary>
     public static float[] PrepareExternalClipForWasapiPlayback(
@@ -624,6 +631,7 @@ public sealed partial class SynthesizedUnlockSoundPlayer : IDisposable
         float gain = (float)Math.Clamp(request.SoundVolume, 0.0, 1.0);
         ChimePreset fallbackPreset = ResolveChimePreset(request);
         DecodedStereoWav? externalClip = TryResolveDecodedExternalClip(request);
+        bool normalizeExternalClip = ShouldNormalizeExternalClip(request.SoundPreset);
 
         string requestedModeLabel = string.IsNullOrWhiteSpace(request.AudioOutputDeviceId)
                                     || string.Equals(request.AudioOutputDeviceId, OverlayAudioOutputModes.SystemDefault, StringComparison.OrdinalIgnoreCase)
@@ -650,6 +658,7 @@ public sealed partial class SynthesizedUnlockSoundPlayer : IDisposable
             (mixFormatSummary, renderedPeak) = await PlayOnSingleWasapiDeviceAsync(
                 targetDevice,
                 externalClip,
+                normalizeExternalClip,
                 fallbackPreset,
                 gain).ConfigureAwait(false);
 
@@ -678,7 +687,7 @@ public sealed partial class SynthesizedUnlockSoundPlayer : IDisposable
 
         try
         {
-            byte[] wavBytes = BuildWakePrimedPcm16FallbackWav(externalClip, fallbackPreset, gain, out renderedPeak);
+            byte[] wavBytes = BuildWakePrimedPcm16FallbackWav(externalClip, normalizeExternalClip, fallbackPreset, gain, out renderedPeak);
             unsafe
             {
                 fixed (byte* pWav = wavBytes)
@@ -806,6 +815,7 @@ public sealed partial class SynthesizedUnlockSoundPlayer : IDisposable
     private static async Task<(string MixFormatSummary, float Peak)> PlayOnSingleWasapiDeviceAsync(
         MMDevice device,
         DecodedStereoWav? externalClip,
+        bool normalizeExternalClip,
         ChimePreset fallbackPreset,
         float gain)
     {
@@ -821,8 +831,8 @@ public sealed partial class SynthesizedUnlockSoundPlayer : IDisposable
 
         if (externalClip is { FrameCount: > 0 } clip)
         {
-            DecodedStereoWav normalized = NormalizeGentlePeak(clip);
-            coreSamples = ResampleStereoFrames(normalized, gain, mixRate, mixChannels);
+            DecodedStereoWav conditioned = normalizeExternalClip ? NormalizeGentlePeak(clip) : clip;
+            coreSamples = ResampleStereoFrames(conditioned, gain, mixRate, mixChannels);
             clipDurationSec = (double)clip.FrameCount / Math.Max(1, clip.SampleRate);
         }
         else
@@ -889,6 +899,7 @@ public sealed partial class SynthesizedUnlockSoundPlayer : IDisposable
 
     private static byte[] BuildWakePrimedPcm16FallbackWav(
         DecodedStereoWav? externalClip,
+        bool normalizeExternalClip,
         ChimePreset fallbackPreset,
         float gain,
         out float peak)
@@ -899,8 +910,8 @@ public sealed partial class SynthesizedUnlockSoundPlayer : IDisposable
         if (externalClip is { FrameCount: > 0 } clip)
         {
             sampleRate = Math.Clamp(clip.SampleRate, 8000, 192000);
-            DecodedStereoWav normalized = NormalizeGentlePeak(clip);
-            coreStereo = ResampleStereoFrames(normalized, gain, sampleRate, DefaultChannels);
+            DecodedStereoWav conditioned = normalizeExternalClip ? NormalizeGentlePeak(clip) : clip;
+            coreStereo = ResampleStereoFrames(conditioned, gain, sampleRate, DefaultChannels);
         }
         else
         {

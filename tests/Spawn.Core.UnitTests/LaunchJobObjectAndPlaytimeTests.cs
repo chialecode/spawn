@@ -182,10 +182,12 @@ public sealed class LaunchJobObjectAndPlaytimeTests
         Assert.False(blockedRes.Succeeded);
         Assert.Equal("ANTICHEAT_COOLDOWN_ACTIVE", blockedRes.ErrorCode);
 
-        // Finish cooldown cleanly
-        for (int i = 0; i < 65; i++)
+        // Finish cooldown cleanly (yield between virtual clock ticks so async continuations never race under parallel load)
+        var deadline = DateTime.UtcNow.AddSeconds(2);
+        while (!exitCooldownTask.IsCompleted && DateTime.UtcNow < deadline)
         {
             clock.Advance(TimeSpan.FromMilliseconds(250));
+            await Task.Delay(5);
         }
 
         await exitCooldownTask.WaitAsync(TimeSpan.FromSeconds(2));

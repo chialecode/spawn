@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "project": "SPAWN",
-  "updatedAt": "2026-11-20",
+  "updatedAt": "2026-11-22",
   "requirements": [
     {
       "id": "REQ-SPW-01",
@@ -141,7 +141,7 @@
       "id": "REQ-PRG-01",
       "priority": "P0",
       "title": "原生 ludusavi-manifest 存档探测与配置剥离",
-      "stage": "M3",
+      "stage": "M4",
       "status": "planned",
       "decisions": [
         "docs/decisions/0004-cas-fastcdc-storage-and-mod-junction-topology.md"
@@ -155,13 +155,14 @@
       "acceptance": [
         "AC-09"
       ],
-      "cases": []
+      "cases": [],
+      "notes": "D-25：自 M3 顺延至 M4 存档时间机器与云同步独立交付轨道"
     },
     {
       "id": "REQ-PRG-02",
       "priority": "P0",
       "title": "基于 FastCDC 的存档时间机器与防撕裂原子回滚",
-      "stage": "M3",
+      "stage": "M4",
       "status": "planned",
       "decisions": [
         "docs/decisions/0004-cas-fastcdc-storage-and-mod-junction-topology.md"
@@ -176,13 +177,14 @@
       "acceptance": [
         "AC-10"
       ],
-      "cases": []
+      "cases": [],
+      "notes": "D-25：自 M3 顺延至 M4 存档时间机器与云同步独立交付轨道"
     },
     {
       "id": "REQ-PRG-03",
       "priority": "P1",
       "title": "32MB SPPK Packfile 自建云同步与血缘合并",
-      "stage": "M3",
+      "stage": "M4",
       "status": "planned",
       "decisions": [
         "docs/decisions/0004-cas-fastcdc-storage-and-mod-junction-topology.md"
@@ -197,19 +199,23 @@
       "acceptance": [
         "AC-11"
       ],
-      "cases": []
+      "cases": [],
+      "notes": "D-25：自 M3 顺延至 M4 存档时间机器与云同步独立交付轨道"
     },
     {
       "id": "REQ-PRG-04",
       "priority": "P1",
-      "title": "FLiNG 外部修改器确定性检索与双语热键解析",
+      "title": "外部单机修改器发现、用户显式触发下载、本地导入与结构化热键解析",
       "stage": "M3",
-      "status": "planned",
+      "status": "verified",
       "decisions": [
-        "docs/decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md"
+        "docs/decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md",
+        "docs/decisions/0006-m3-external-trainer-manager-elevation-and-ipc.md",
+        "docs/decisions/confirmed-decisions.md"
       ],
       "design": [
-        "docs/design/data-model.md"
+        "docs/design/data-model.md",
+        "docs/design/ipc-and-security-contracts.md"
       ],
       "modules": [
         "docs/modules/progress-saves-and-trainer.md"
@@ -217,16 +223,26 @@
       "acceptance": [
         "AC-12"
       ],
-      "cases": []
+      "cases": [
+        "M3-A-06",
+        "M3-A-07",
+        "M3-A-15",
+        "M3-A-16",
+        "M3-M-01",
+        "M3-M-02"
+      ],
+      "notes": "M3 自动化用例 M3-A-06/07/15/16 已全绿通过；人工实机 M3-M-01/02 待 H-002 体验"
     },
     {
       "id": "REQ-PRG-05",
       "priority": "P0",
-      "title": "零杀软误报修改器启动静音与独立音效控制",
+      "title": "零注入修改器静音与提示音控制",
       "stage": "M3",
-      "status": "planned",
+      "status": "verified",
       "decisions": [
-        "docs/decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md"
+        "docs/decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md",
+        "docs/decisions/0006-m3-external-trainer-manager-elevation-and-ipc.md",
+        "docs/decisions/confirmed-decisions.md"
       ],
       "design": [
         "docs/design/system-architecture.md",
@@ -238,17 +254,25 @@
       "acceptance": [
         "AC-12"
       ],
-      "cases": []
+      "cases": [
+        "M3-A-11",
+        "M3-A-12",
+        "M3-A-16",
+        "M3-M-01"
+      ],
+      "notes": "M3 自动化用例 M3-A-11/12/16 及本机 27B SMF/UNV-02 探针已通过；OSS-07 ①③ 待 H-002 实机核验"
     },
     {
       "id": "REQ-PRG-06",
       "priority": "P0",
-      "title": "High IL TrainerWorker 沙箱执行与硬件扫描码热键代理",
+      "title": "Spawn.TrainerWorker 隔离托管与无小键盘热键代理",
       "stage": "M3",
-      "status": "planned",
+      "status": "verified",
       "decisions": [
         "docs/decisions/0003-anti-cheat-guard-and-process-isolation.md",
-        "docs/decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md"
+        "docs/decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md",
+        "docs/decisions/0006-m3-external-trainer-manager-elevation-and-ipc.md",
+        "docs/decisions/confirmed-decisions.md"
       ],
       "design": [
         "docs/design/system-architecture.md",
@@ -260,16 +284,26 @@
       "acceptance": [
         "AC-12"
       ],
-      "cases": []
+      "cases": [
+        "M3-A-01",
+        "M3-A-08",
+        "M3-A-09",
+        "M3-A-10",
+        "M3-A-16",
+        "M3-M-01"
+      ],
+      "notes": "M3 自动化用例 M3-A-01/08/09/10/16 与 Workers\\Trainer\\ 打包隔离已通过；真实 UAC 与 OSS-07 ④ 待 H-002 实机"
     },
     {
       "id": "REQ-PRG-07",
       "priority": "P2",
-      "title": "二期原生 .CT 内存修改引擎扩展契约",
+      "title": "二期原生修改后端扩展契约（目标收窄）",
       "stage": "M6",
       "status": "planned",
       "decisions": [
-        "docs/decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md"
+        "docs/decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md",
+        "docs/decisions/0006-m3-external-trainer-manager-elevation-and-ipc.md",
+        "docs/decisions/confirmed-decisions.md"
       ],
       "design": [
         "docs/design/system-architecture.md",
@@ -281,7 +315,40 @@
       "acceptance": [
         "AC-24"
       ],
-      "cases": []
+      "cases": [
+        "M3-A-02"
+      ],
+      "notes": "M3 已冻结并验证 ITrainerBackend 契约（M3-A-02）；M6 交付收窄原生后端（D-29）"
+    },
+    {
+      "id": "REQ-PRG-08",
+      "priority": "P1",
+      "title": "启动修改器前轻量存档快照与一键回滚",
+      "stage": "M3",
+      "status": "verified",
+      "decisions": [
+        "docs/decisions/confirmed-decisions.md",
+        "docs/decisions/0006-m3-external-trainer-manager-elevation-and-ipc.md"
+      ],
+      "design": [
+        "docs/design/data-model.md",
+        "docs/design/interaction-and-workflows.md"
+      ],
+      "modules": [
+        "docs/modules/progress-saves-and-trainer.md",
+        "docs/modules/spawn-launcher.md"
+      ],
+      "acceptance": [
+        "AC-12b"
+      ],
+      "cases": [
+        "M3-A-02",
+        "M3-A-13",
+        "M3-A-14",
+        "M3-A-16",
+        "M3-M-01"
+      ],
+      "notes": "M3 自动化用例 M3-A-02/13/14/16 已全绿通过；人工实机回滚待 H-002 体验"
     },
     {
       "id": "REQ-ACH-01",
@@ -396,7 +463,8 @@
       ],
       "cases": [
         "M2-A-08",
-        "M2-M-01"
+        "M2-M-01",
+        "M3-A-00"
       ]
     },
     {
@@ -736,7 +804,10 @@
         "AC-02"
       ],
       "cases": [
-        "M2-A-01"
+        "M2-A-01",
+        "M3-A-01",
+        "M3-A-17",
+        "M3-A-22"
       ]
     },
     {
@@ -764,25 +835,35 @@
     {
       "id": "REQ-SEC-03",
       "priority": "P0",
-      "title": "四级 AntiCheatTier 全局联锁矩阵与启动前高危环境清场",
-      "stage": "M2",
+      "title": "四级 AntiCheatTier 全局联锁矩阵、四层 Tier 0 判定与启动前高危环境清场",
+      "stage": "M3",
       "status": "verified",
       "decisions": [
-        "docs/decisions/0003-anti-cheat-guard-and-process-isolation.md"
+        "docs/decisions/0003-anti-cheat-guard-and-process-isolation.md",
+        "docs/decisions/0006-m3-external-trainer-manager-elevation-and-ipc.md",
+        "docs/decisions/confirmed-decisions.md"
       ],
       "design": [
         "docs/design/system-architecture.md",
         "docs/design/ipc-and-security-contracts.md"
       ],
       "modules": [
-        "docs/modules/spawn-launcher.md"
+        "docs/modules/spawn-launcher.md",
+        "docs/modules/progress-saves-and-trainer.md"
       ],
       "acceptance": [
-        "AC-03"
+        "AC-03",
+        "AC-12"
       ],
       "cases": [
-        "M2-A-03"
-      ]
+        "M2-A-03",
+        "M3-A-03",
+        "M3-A-04",
+        "M3-A-05",
+        "M3-A-16",
+        "M3-M-02"
+      ],
+      "notes": "M2 基线（M2-A-03）与 M3 增量（四层判定、VerifiedOfflineBypass、急停看门狗、LOOP-06）自动化用例 M3-A-03/04/05/16 已全绿通过；可选混合单机实机待 M3-M-02"
     },
     {
       "id": "REQ-SEC-04",
@@ -810,7 +891,7 @@
       "id": "REQ-SEC-05",
       "priority": "P0",
       "title": "内核反作弊残影 15 秒强制静默冷却期状态机",
-      "stage": "M2",
+      "stage": "M3",
       "status": "verified",
       "decisions": [
         "docs/decisions/0003-anti-cheat-guard-and-process-isolation.md"
@@ -826,17 +907,20 @@
         "AC-03"
       ],
       "cases": [
-        "M2-A-03"
-      ]
+        "M2-A-03",
+        "M3-A-04"
+      ],
+      "notes": "M2 基线（M2-A-03）与 M3 增量（会话内核驱动卸载确认后再开始 15s 冷却）已通过 M3-A-04 验证"
     },
     {
       "id": "REQ-SEC-06",
       "priority": "P0",
-      "title": "跨完整性级别命名管道 SDDL 授权与本地文件 DPAPI 凭据保护",
-      "stage": "M2",
+      "title": "跨完整性级别命名管道 ACL 授权与本地文件 DPAPI 凭据保护",
+      "stage": "M3",
       "status": "verified",
       "decisions": [
-        "docs/decisions/0003-anti-cheat-guard-and-process-isolation.md"
+        "docs/decisions/0003-anti-cheat-guard-and-process-isolation.md",
+        "docs/decisions/0006-m3-external-trainer-manager-elevation-and-ipc.md"
       ],
       "design": [
         "docs/design/data-model.md",
@@ -847,12 +931,15 @@
         "docs/modules/progress-saves-and-trainer.md"
       ],
       "acceptance": [
-        "AC-02"
+        "AC-02",
+        "AC-12"
       ],
       "cases": [
         "M2-A-02",
-        "M2-A-08"
-      ]
+        "M2-A-08",
+        "M3-A-08"
+      ],
+      "notes": "M2 基线（M2-A-02、M2-A-08）与 M3 增量（倒置单实例会话管道与双向 PID/路径/Nonce 互验）已通过 M3-A-08 验证"
     },
     {
       "id": "NFR-01",
@@ -907,7 +994,7 @@
       "id": "NFR-03",
       "priority": "P0",
       "title": "崩溃与断电幂等自愈",
-      "stage": "M3",
+      "stage": "M4",
       "status": "planned",
       "decisions": [
         "docs/decisions/0004-cas-fastcdc-storage-and-mod-junction-topology.md"
@@ -926,7 +1013,8 @@
         "AC-14",
         "AC-15"
       ],
-      "cases": []
+      "cases": [],
+      "notes": "D-25：自 M3 顺延至 M4 存档时间机器与云同步独立交付轨道"
     },
     {
       "id": "NFR-04",
@@ -949,7 +1037,8 @@
       "cases": [
         "M2-A-01",
         "M2-A-08",
-        "M2-A-10"
+        "M2-A-10",
+        "M3-A-17"
       ]
     },
     {
@@ -974,7 +1063,9 @@
       "cases": [
         "M2-A-02",
         "M2-A-09",
-        "M2-A-10"
+        "M2-A-10",
+        "M3-A-02",
+        "M3-A-19"
       ]
     },
     {
@@ -998,7 +1089,8 @@
       ],
       "cases": [
         "M2-A-05",
-        "M2-A-09"
+        "M2-A-09",
+        "M3-A-22"
       ]
     },
     {
@@ -1008,7 +1100,8 @@
       "stage": "M1",
       "status": "verified",
       "decisions": [
-        "docs/decisions/0001-document-governance-and-collaboration.md"
+        "docs/decisions/0001-document-governance-and-collaboration.md",
+        "docs/decisions/0006-m3-external-trainer-manager-elevation-and-ipc.md"
       ],
       "design": [
         "docs/engineering/technology-selection.md"
@@ -1018,12 +1111,18 @@
       ],
       "acceptance": [
         "AC-01",
-        "AC-24"
+        "AC-24",
+        "AC-12"
       ],
       "cases": [
         "M1-A-01",
-        "M1-A-04"
-      ]
+        "M1-A-04",
+        "M3-A-01",
+        "M3-A-07",
+        "M3-A-17",
+        "M3-A-21"
+      ],
+      "notes": "M1 基线已验证；M3 修订（移除 Reloaded.Memory 家族、禁止移植 GPL/AGPL 参考实现、落盘 THIRD-PARTY-NOTICES.txt、零 Copyleft 传递依赖审计及每周发布工作流 40 位 SHA/Inno 7.1.1 钉扎）已通过 M3-A-01/07/17/21 复验"
     },
     {
       "id": "NFR-08",
@@ -1050,8 +1149,36 @@
         "M1-A-04",
         "M1-A-05",
         "M1-A-06",
-        "M1-M-01"
+        "M1-M-01",
+        "M3-A-18"
       ]
+    },
+    {
+      "id": "NFR-09",
+      "priority": "P1",
+      "title": "正式版可信分发与签名自动更新",
+      "stage": "M3",
+      "status": "verified",
+      "decisions": [
+        "docs/decisions/0007-weekly-release-and-signed-in-app-update.md"
+      ],
+      "design": [
+        "docs/design/system-architecture.md"
+      ],
+      "modules": [
+        "docs/modules/spawn-launcher.md"
+      ],
+      "acceptance": [
+        "AC-25"
+      ],
+      "cases": [
+        "M3-A-19",
+        "M3-A-20",
+        "M3-A-21",
+        "M3-A-22",
+        "M3-M-03"
+      ],
+      "notes": "M3-W10~W12 自动化用例 M3-A-19/20/21/22 已全绿通过（自包含打包、符号剥离、ECDSA P-256 DER 双端验签、每周发布工作流门禁、应用内更新器离线单测与公钥一致性门禁、零新增 NuGet 包）；合入 main 后真实工作流 dry-run 与首个正式版端到端更新 M3-M-03 / H-005 保持 not-run / pending"
     }
   ]
 }

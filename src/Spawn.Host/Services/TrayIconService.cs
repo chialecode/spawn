@@ -4,13 +4,15 @@ using System.Windows.Interop;
 using System.Windows.Media.Imaging;
 using SkiaSharp;
 using Spawn.Contracts;
+using Spawn.Core;
 
 namespace Spawn.Host.Services;
 
 /// <summary>
 /// Pure Win32 <c>Shell_NotifyIconW</c> + <c>SkiaSharp</c> system tray integration for <c>Spawn.Host</c>.
 /// Zero <c>System.Windows.Forms</c> dependency and zero sensitive Win32 imports.
-/// Automatically renders an amber <c>DEV</c> badge for <c>dev</c>/<c>source</c> channels.
+/// Automatically renders an amber <c>DEV</c> badge for <c>dev</c>/<c>source</c> channels and recovers
+/// automatically on Explorer <c>TaskbarCreated</c> broadcasts.
 /// </summary>
 public sealed partial class TrayIconService : IDisposable
 {
@@ -20,6 +22,10 @@ public sealed partial class TrayIconService : IDisposable
     private const int WmLButtonDblClk = 0x0203;
     private const int WmRButtonUp = 0x0205;
     private const int WmContextMenu = 0x007B;
+    private const int NinBalloonUserClick = 0x0405;
+
+    private const int WsExToolWindow = 0x00000080;
+    private const int WsExNoActivate = 0x08000000;
 
     private const uint NimAdd = 0x00000000;
     private const uint NimModify = 0x00000001;
@@ -28,6 +34,11 @@ public sealed partial class TrayIconService : IDisposable
     private const uint NifMessage = 0x00000001;
     private const uint NifIcon = 0x00000002;
     private const uint NifTip = 0x00000004;
+    private const uint NifInfo = 0x00000010;
+
+    private const uint NiifInfo = 0x00000001;
+    private const uint NiifWarning = 0x00000002;
+    private const uint NiifNoSound = 0x00000010;
 
     private const uint MfString = 0x00000000;
     private const uint MfSeparator = 0x00000800;
@@ -38,8 +49,9 @@ public sealed partial class TrayIconService : IDisposable
     private const uint CmdOpenWindow = 1001;
     private const uint CmdExitApp = 1002;
     private const uint CmdTestToast = 1003;
+    private const uint CmdRestartForUpdate = 1004;
+    private const uint CmdOpenUpdateSettings = 1005;
 
-    private static readonly nint HwndMessage = new(-3);
     private static readonly Guid TrayItemGuid = Guid.Empty;
 
     private readonly bool _isHeadless;
@@ -48,20 +60,29 @@ public sealed partial class TrayIconService : IDisposable
 
     private HwndSource? _messageWindow;
     private nint _hIcon;
+    private uint _taskbarCreatedMessage;
+    private string _currentTooltip;
     private bool _iconAdded;
     private int _disposed;
 
     public bool IsActive => _iconAdded && _disposed == 0;
+    public string? ReadyUpdateVersion { get; private set; }
+    public string? LastNotificationTitle { get; private set; }
+    public string? LastNotificationMessage { get; private set; }
+    public int NotificationCount { get; private set; }
 
     public event Action? OpenMainWindowRequested;
     public event Action? TestToastRequested;
+    public event Action? RestartForUpdateRequested;
+    public event Action? OpenUpdateSettingsRequested;
     public event Action? ExitApplicationRequested;
 
     public TrayIconService()
     {
-        _isHeadless = string.Equals(Environment.GetEnvironmentVariable("SPAWN_HEADLESS_TEST"), "1", StringComparison.OrdinalIgnoreCase);
+        _isHeadless = StartupWindowPolicy.IsHeadlessTestEnvironment(SpawnBuildInfo.IsReleaseChannel);
         _isDevChannel = SpawnBuildInfo.IsDevOrSourceChannel;
         _productTitle = SpawnBuildInfo.DisplayProductName;
+        _currentTooltip = $"{_productTitle} · 运行就绪";
     }
 
     public void Initialize()
@@ -73,6 +94,11 @@ public sealed partial class TrayIconService : IDisposable
 
         try
         {
+            _taskbarCreatedMessage = RegisterWindowMessageW("TaskbarCreated");
+
+            // Use a hidden top-level zero-size tool window (NOT HWND_MESSAGE) so we receive
+            // Explorer's broadcast TaskbarCreated message and auto-restore the tray icon after Explorer restarts,
+            // while remaining 100% invisible (no WS_VISIBLE, no taskbar button, no focus).
             var parameters = new HwndSourceParameters("SpawnTrayMessageSink")
             {
                 Width = 0,
@@ -80,7 +106,8 @@ public sealed partial class TrayIconService : IDisposable
                 PositionX = 0,
                 PositionY = 0,
                 WindowStyle = 0,
-                ParentWindow = HwndMessage,
+                ExtendedWindowStyle = WsExToolWindow | WsExNoActivate,
+                ParentWindow = nint.Zero,
             };
 
             _messageWindow = new HwndSource(parameters);
@@ -90,30 +117,100 @@ public sealed partial class TrayIconService : IDisposable
             _hIcon = CreateHIconFromPngBytes(pngBytes, desiredPx: 32);
             if (_hIcon == nint.Zero)
             {
+                CleanupFailedInitialization();
                 return;
             }
 
-            var data = CreateNotifyIconData(_messageWindow.Handle, _hIcon, $"{_productTitle} · 运行就绪");
+            var data = CreateNotifyIconData(_messageWindow.Handle, _hIcon, _currentTooltip);
             _iconAdded = Shell_NotifyIconW(NimAdd, ref data);
+            if (!_iconAdded)
+            {
+                CleanupFailedInitialization();
+            }
         }
         catch
         {
-            // Gracefully degrade on headless / non-interactive desktop sessions.
+            // Gracefully degrade on headless / non-interactive desktop sessions (App falls back to showing MainWindow).
+            CleanupFailedInitialization();
+        }
+    }
+
+    private void CleanupFailedInitialization()
+    {
+        _iconAdded = false;
+
+        if (_hIcon != nint.Zero)
+        {
+            _ = DestroyIcon(_hIcon);
+            _hIcon = nint.Zero;
+        }
+
+        if (_messageWindow is not null)
+        {
+            try
+            {
+                _messageWindow.RemoveHook(WndProc);
+                _messageWindow.Dispose();
+            }
+            catch
+            {
+                // Ignore cleanup failure.
+            }
+
+            _messageWindow = null;
         }
     }
 
     public void UpdateToolTip(string statusSuffix)
     {
+        _currentTooltip = string.IsNullOrWhiteSpace(statusSuffix)
+            ? _productTitle
+            : $"{_productTitle} · {statusSuffix}";
+
         if (!_iconAdded || _messageWindow is null || _hIcon == nint.Zero || _disposed != 0)
         {
             return;
         }
 
-        string tip = string.IsNullOrWhiteSpace(statusSuffix)
-            ? _productTitle
-            : $"{_productTitle} · {statusSuffix}";
+        var data = CreateNotifyIconData(_messageWindow.Handle, _hIcon, _currentTooltip);
+        _ = Shell_NotifyIconW(NimModify, ref data);
+    }
 
-        var data = CreateNotifyIconData(_messageWindow.Handle, _hIcon, tip);
+    public void SetReadyUpdateVersion(string? version)
+    {
+        string? normalized = string.IsNullOrWhiteSpace(version) ? null : version.Trim();
+        if (string.Equals(ReadyUpdateVersion, normalized, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        ReadyUpdateVersion = normalized;
+        UpdateToolTip(normalized is null ? "运行就绪" : $"新版本 v{normalized} 已就绪，重启更新");
+    }
+
+    public void ShowNotification(string title, string message, bool isError = false)
+    {
+        if (string.IsNullOrWhiteSpace(title) && string.IsNullOrWhiteSpace(message))
+        {
+            return;
+        }
+
+        LastNotificationTitle = title;
+        LastNotificationMessage = message;
+        NotificationCount++;
+
+        if (_isHeadless || !_iconAdded || _messageWindow is null || _hIcon == nint.Zero || _disposed != 0)
+        {
+            return;
+        }
+
+        var data = CreateNotifyIconDataWithInfo(
+            _messageWindow.Handle,
+            _hIcon,
+            _currentTooltip,
+            title ?? _productTitle,
+            message ?? string.Empty,
+            isError);
         _ = Shell_NotifyIconW(NimModify, ref data);
     }
 
@@ -176,6 +273,14 @@ public sealed partial class TrayIconService : IDisposable
 
     private nint WndProc(nint hwnd, int msg, nint wParam, nint lParam, ref bool handled)
     {
+        if (_taskbarCreatedMessage != 0 && msg == (int)_taskbarCreatedMessage && _hIcon != nint.Zero && _disposed == 0)
+        {
+            var data = CreateNotifyIconData(hwnd, _hIcon, _currentTooltip);
+            _iconAdded = Shell_NotifyIconW(NimAdd, ref data);
+            handled = true;
+            return nint.Zero;
+        }
+
         if (msg == WmAppTrayCallback)
         {
             int mouseMsg = (int)(lParam.ToInt64() & 0xFFFF);
@@ -188,6 +293,11 @@ public sealed partial class TrayIconService : IDisposable
             {
                 handled = true;
                 ShowNativeContextMenu(hwnd);
+            }
+            else if (mouseMsg == NinBalloonUserClick)
+            {
+                handled = true;
+                OpenUpdateSettingsRequested?.Invoke();
             }
         }
 
@@ -211,6 +321,12 @@ public sealed partial class TrayIconService : IDisposable
         {
             _ = AppendMenuW(hMenu, MfString, CmdOpenWindow, $"打开主界面 ({_productTitle})");
             _ = SetMenuDefaultItem(hMenu, CmdOpenWindow, 0);
+            if (!string.IsNullOrWhiteSpace(ReadyUpdateVersion))
+            {
+                _ = AppendMenuW(hMenu, MfString, CmdRestartForUpdate, $"立即重启更新 (v{ReadyUpdateVersion})");
+            }
+
+            _ = AppendMenuW(hMenu, MfString, CmdOpenUpdateSettings, "更新设置…");
             _ = AppendMenuW(hMenu, MfString, CmdTestToast, "测试跳杯弹窗");
             _ = AppendMenuW(hMenu, MfSeparator, 0, string.Empty);
             _ = AppendMenuW(hMenu, MfString, CmdExitApp, $"退出 {_productTitle}");
@@ -228,6 +344,14 @@ public sealed partial class TrayIconService : IDisposable
             if (cmd == CmdOpenWindow)
             {
                 OpenMainWindowRequested?.Invoke();
+            }
+            else if (cmd == CmdRestartForUpdate)
+            {
+                RestartForUpdateRequested?.Invoke();
+            }
+            else if (cmd == CmdOpenUpdateSettings)
+            {
+                OpenUpdateSettingsRequested?.Invoke();
             }
             else if (cmd == CmdTestToast)
             {
@@ -282,6 +406,36 @@ public sealed partial class TrayIconService : IDisposable
         }
 
         data.SzTip[safeTip.Length] = '\0';
+        return data;
+    }
+
+    private static unsafe NotifyIconDataW CreateNotifyIconDataWithInfo(
+        nint hwnd,
+        nint hIcon,
+        string tooltip,
+        string infoTitle,
+        string infoMessage,
+        bool isError)
+    {
+        NotifyIconDataW data = CreateNotifyIconData(hwnd, hIcon, tooltip);
+        data.UFlags |= NifInfo;
+        data.DwInfoFlags = (isError ? NiifWarning : NiifInfo) | NiifNoSound;
+
+        string safeTitle = infoTitle.Length > 60 ? infoTitle[..60] : infoTitle;
+        for (int i = 0; i < safeTitle.Length; i++)
+        {
+            data.SzInfoTitle[i] = safeTitle[i];
+        }
+
+        data.SzInfoTitle[safeTitle.Length] = '\0';
+
+        string safeBody = infoMessage.Length > 250 ? infoMessage[..250] : infoMessage;
+        for (int i = 0; i < safeBody.Length; i++)
+        {
+            data.SzInfo[i] = safeBody[i];
+        }
+
+        data.SzInfo[safeBody.Length] = '\0';
         return data;
     }
 
@@ -391,4 +545,7 @@ public sealed partial class TrayIconService : IDisposable
     [LibraryImport("user32.dll", EntryPoint = "PostMessageW")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool PostMessageW(nint hWnd, uint Msg, nint wParam, nint lParam);
+
+    [LibraryImport("user32.dll", EntryPoint = "RegisterWindowMessageW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
+    private static partial uint RegisterWindowMessageW(string lpString);
 }

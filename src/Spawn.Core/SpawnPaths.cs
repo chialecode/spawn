@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO.Hashing;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Spawn.Contracts;
@@ -29,20 +30,27 @@ public sealed class SpawnPaths
     public string DatabaseFilePath => Path.Combine(DbDirectory, "spawn.db");
     public string ConfigDirectory => Path.Combine(DataRoot, "config");
     public string AntiCheatGuardStateFilePath => Path.Combine(ConfigDirectory, "anticheat-guard-state.json");
+    public string UpdateRestartStateFilePath => Path.Combine(ConfigDirectory, "update-restart-state.json");
     public string SecretsDirectory => Path.Combine(DataRoot, "secrets");
     public string LogsDirectory => Path.Combine(DataRoot, "logs");
     public string ArtworkDirectory => Path.Combine(DataRoot, "artwork");
     public string CacheDirectory => Path.Combine(DataRoot, "cache");
     public string GbeForkCacheDirectory => Path.Combine(CacheDirectory, "gbe_fork");
+    public string TrainerCacheDirectory => Path.Combine(CacheDirectory, "trainers");
+    public string UpdatesCacheDirectory => Path.Combine(CacheDirectory, "updates");
     public string TrashDir => Path.Combine(DataRoot, "trash");
     public string TrashDirectory => TrashDir;
     public string DevWorkspaceConfigPath => Path.Combine(DataRoot, DevWorkspaceFileName);
     public string AchievementIconsDirectory => Path.Combine(VaultDirectory, "Schemas", "Icons");
+    public string TrainerSandboxDirectory => Path.Combine(VaultDirectory, "Sandbox", "Trainers");
+    public string TrainerStagingDirectory => Path.Combine(TrainerSandboxDirectory, ".staging");
+    public string PreTrainerSnapshotsDirectory => Path.Combine(VaultDirectory, "Snapshots", "PreTrainer");
 
     public string? LocalWorkspaceRoot { get; }
     public string? LocalGamesDirectory { get; }
     public string? LocalSecretsDirectory { get; }
     public string OverlayPipeName { get; }
+    public string TrainerPipeNamePrefix { get; }
 
     public SpawnPaths(
         string? explicitDataDir = null,
@@ -134,7 +142,9 @@ public sealed class SpawnPaths
             }
         }
 
-        OverlayPipeName = ComputeOverlayPipeName();
+        string ipcPrefix = ComputeIpcSessionPrefix();
+        OverlayPipeName = $"{ipcPrefix}-overlay";
+        TrainerPipeNamePrefix = $"{ipcPrefix}-trainer-";
     }
 
     public static SpawnPaths Resolve(
@@ -163,9 +173,14 @@ public sealed class SpawnPaths
         Directory.CreateDirectory(ArtworkDirectory);
         Directory.CreateDirectory(CacheDirectory);
         Directory.CreateDirectory(GbeForkCacheDirectory);
+        Directory.CreateDirectory(TrainerCacheDirectory);
+        Directory.CreateDirectory(UpdatesCacheDirectory);
         Directory.CreateDirectory(TrashDir);
         Directory.CreateDirectory(VaultDirectory);
         Directory.CreateDirectory(AchievementIconsDirectory);
+        Directory.CreateDirectory(TrainerSandboxDirectory);
+        Directory.CreateDirectory(TrainerStagingDirectory);
+        Directory.CreateDirectory(PreTrainerSnapshotsDirectory);
     }
 
     public string GetGameArtworkDirectory(string gameId)
@@ -193,6 +208,100 @@ public sealed class SpawnPaths
         string dir = Path.Combine(AchievementIconsDirectory, safeKey);
         Directory.CreateDirectory(dir);
         return dir;
+    }
+
+    /// <summary>
+    /// Returns <see langword="true"/> when <paramref name="path"/> contains only printable 7-bit ASCII characters.
+    /// </summary>
+    public static bool IsPureAsciiPath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        foreach (char ch in path)
+        {
+            if (ch < 0x20 || ch > 0x7E)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Resolves the active trainer sandbox root directory, defaulting to <see cref="TrainerSandboxDirectory"/>
+    /// or validating an optional user-configured pure-ASCII custom root.
+    /// </summary>
+    public string ResolveTrainerSandboxDirectory(string? customSandboxRoot = null, bool requirePureAscii = true)
+    {
+        if (string.IsNullOrWhiteSpace(customSandboxRoot))
+        {
+            return TrainerSandboxDirectory;
+        }
+
+        string trimmed = customSandboxRoot.Trim();
+        if (!Path.IsPathFullyQualified(trimmed))
+        {
+            throw new ArgumentException("Custom trainer sandbox root must be a fully qualified path.", nameof(customSandboxRoot));
+        }
+
+        string normalized = Path.TrimEndingDirectorySeparator(Path.GetFullPath(trimmed));
+        if (requirePureAscii && !IsPureAsciiPath(normalized))
+        {
+            throw new ArgumentException("Custom trainer sandbox root must contain only pure ASCII characters.", nameof(customSandboxRoot));
+        }
+
+        return normalized;
+    }
+
+    public string GetTrainerStagingDirectory(string? customSandboxRoot = null, bool requirePureAscii = true) =>
+        Path.Combine(ResolveTrainerSandboxDirectory(customSandboxRoot, requirePureAscii), ".staging");
+
+    public string GetTrainerInstallDirectory(
+        string gameId,
+        string trainerId,
+        string? customSandboxRoot = null,
+        bool createDirectory = false)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(gameId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(trainerId);
+
+        string sandboxRoot = ResolveTrainerSandboxDirectory(customSandboxRoot);
+        string dir = Path.Combine(sandboxRoot, SanitizePathSegment(gameId), SanitizePathSegment(trainerId));
+        if (createDirectory)
+        {
+            Directory.CreateDirectory(dir);
+        }
+
+        return dir;
+    }
+
+    public string GetPreTrainerSnapshotDirectory(string gameId, string snapshotId, bool createDirectory = false)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(gameId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(snapshotId);
+
+        string dir = Path.Combine(PreTrainerSnapshotsDirectory, SanitizePathSegment(gameId), SanitizePathSegment(snapshotId));
+        if (createDirectory)
+        {
+            Directory.CreateDirectory(dir);
+        }
+
+        return dir;
+    }
+
+    /// <summary>
+    /// Generates a unique single-session Named Pipe name for <c>Spawn.Host</c> ↔ <c>Spawn.TrainerWorker</c>
+    /// carrying a 128-bit CSPRNG hexadecimal suffix.
+    /// </summary>
+    public string CreateTrainerSessionPipeName()
+    {
+        Span<byte> randomBytes = stackalloc byte[16];
+        RandomNumberGenerator.Fill(randomBytes);
+        return $"{TrainerPipeNamePrefix}{Convert.ToHexStringLower(randomBytes)}";
     }
 
     /// <summary>
@@ -379,7 +488,7 @@ public sealed class SpawnPaths
         }
     }
 
-    private string ComputeOverlayPipeName()
+    private string ComputeIpcSessionPrefix()
     {
         int sessionId;
         try
@@ -395,10 +504,10 @@ public sealed class SpawnPaths
         if (IsIsolatedOverride)
         {
             ulong hash = XxHash64.HashToUInt64(Encoding.UTF8.GetBytes(DataRoot.ToUpperInvariant()));
-            return $"spawn-test-ipc-{sessionId}-{hash:x16}-overlay";
+            return $"spawn-test-ipc-{sessionId}-{hash:x16}";
         }
 
-        return $"{ChannelName}-ipc-{sessionId}-overlay";
+        return $"{ChannelName}-ipc-{sessionId}";
     }
 
     private static string SanitizePathSegment(string raw)

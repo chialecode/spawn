@@ -53,6 +53,16 @@
     <SolidColorBrush x:Key="RareBadgeBorderBrush" Color="#583285" />
     <SolidColorBrush x:Key="InfoBannerBackgroundBrush" Color="#17253B" />
     <SolidColorBrush x:Key="InfoBannerBorderBrush" Color="#26436E" />
+    <SolidColorBrush x:Key="Tier0BadgeForegroundBrush" Color="#10B981" />
+    <SolidColorBrush x:Key="Tier0BadgeBackgroundBrush" Color="#132F26" />
+    <SolidColorBrush x:Key="Tier1BadgeForegroundBrush" Color="#F59E0B" />
+    <SolidColorBrush x:Key="Tier1BadgeBackgroundBrush" Color="#332711" />
+    <SolidColorBrush x:Key="Tier23BadgeForegroundBrush" Color="#DC2626" />
+    <SolidColorBrush x:Key="Tier23BadgeBackgroundBrush" Color="#3B181E" />
+    <SolidColorBrush x:Key="DangerSoftBannerBackgroundBrush" Color="#2C1519" />
+    <SolidColorBrush x:Key="DangerSoftBannerBorderBrush" Color="#7F1D1D" />
+    <SolidColorBrush x:Key="WarningSoftBannerBackgroundBrush" Color="#2D220E" />
+    <SolidColorBrush x:Key="WarningSoftBannerBorderBrush" Color="#78350F" />
     <SolidColorBrush x:Key="ScrollThumbBrush" Color="#374151" />
     <SolidColorBrush x:Key="ScrollThumbHoverBrush" Color="#4B5563" />
 </ResourceDictionary>

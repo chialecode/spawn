@@ -64,6 +64,28 @@ public static class NamedPipeSecurityFactory
             outBufferSize: 65536,
             pipeSecurity: security);
     }
+
+    /// <summary>
+    /// Creates an ACL-hardened, strictly single-instance Named Pipe server stream
+    /// (<c>maxNumberOfServerInstances = 1</c> + <see cref="PipeOptions.FirstPipeInstance"/>)
+    /// to prevent same-user pipe squatting for inverted cross-IL worker sessions.
+    /// </summary>
+    public static NamedPipeServerStream CreateSingleInstanceSecureServerStream(string pipeName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(pipeName);
+        PipeSecurity security = CreateCurrentUserPipeSecurity();
+        string normalizedName = NamedPipeJsonRpcServer.NormalizePipeName(pipeName);
+
+        return NamedPipeServerStreamAcl.Create(
+            normalizedName,
+            PipeDirection.InOut,
+            maxNumberOfServerInstances: 1,
+            PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous | PipeOptions.FirstPipeInstance,
+            inBufferSize: 65536,
+            outBufferSize: 65536,
+            pipeSecurity: security);
+    }
 }
 
 /// <summary>

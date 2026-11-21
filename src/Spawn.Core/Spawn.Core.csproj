@@ -7,6 +7,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="AntiCheat\areweanticheatyet-index.json" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Spawn.Contracts\Spawn.Contracts.csproj" />
   </ItemGroup>
 

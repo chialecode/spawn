@@ -1,0 +1,430 @@
+{
+  "schemaVersion": 1,
+  "project": "SPAWN",
+  "stage": "M3",
+  "planVersion": "1.1",
+  "branch": "feat/m3-trainer",
+  "baseCommit": "5bcd04c26372602d89d5d4e9eb541cec8b526193",
+  "cases": [
+    {
+      "id": "M3-A-00",
+      "kind": "automated",
+      "workItem": "M3-W01",
+      "title": "D-24 成就音效原始响度与 Schema v3 默认音量迁移回归",
+      "requirements": [
+        "REQ-ACH-05"
+      ],
+      "acceptance": [
+        "AC-08"
+      ],
+      "verification": "python -B scripts/quick_gate.py",
+      "expected": "Steam 原版音效不做峰值提振、默认音量 1.0；v3 迁移仅把未改动的旧默认 0.75 提升为 1 且幂等",
+      "status": "verified"
+    },
+    {
+      "id": "M3-A-01",
+      "kind": "automated",
+      "workItem": "M3-W02",
+      "title": "Release 零警告构建、Clean Host（含 Spawn.Modules.Progress）零敏感导入、TrainerWorker 零跨进程内存 API 与零 GPL 依赖门禁",
+      "requirements": [
+        "REQ-SEC-01",
+        "REQ-PRG-06",
+        "NFR-07"
+      ],
+      "acceptance": [
+        "AC-02",
+        "AC-12"
+      ],
+      "verification": "dotnet build Spawn.sln -c Release; dotnet test tests/Spawn.Architecture.GateTests -c Release",
+      "expected": "0 警告 0 错误；Spawn.Host/OverlayHost/Modules.Progress 零敏感导入且不引用 Spawn.TrainerWorker；SharpCompress/AngleSharp 仅出现在 Spawn.Modules.Progress；TrainerWorker 零 ReadProcessMemory/WriteProcessMemory/VirtualAllocEx/CreateRemoteThread 类导入；project.assets.json 无 Reloaded.*/SevenZipExtractor/SevenZipSharp",
+      "status": "verified"
+    },
+    {
+      "id": "M3-A-02",
+      "kind": "automated",
+      "workItem": "M3-W02",
+      "title": "SQLite Schema v3→v4 幂等迁移、修改器四表 CRUD 与 SpawnPaths 沙箱/快照/管道目录隔离",
+      "requirements": [
+        "REQ-PRG-07",
+        "REQ-PRG-08",
+        "NFR-05"
+      ],
+      "acceptance": [
+        "AC-12",
+        "AC-12b"
+      ],
+      "verification": "dotnet test tests/Spawn.Core.UnitTests -c Release --filter TrainerSchemaAndPaths",
+      "expected": "迁移可重复执行且保留既有数据；trainer_catalog/trainer_title_map/trainer_hotkey_bindings/pre_trainer_snapshots 与 games 新列就绪；verified_offline_bypass 不改写 anti_cheat_tier；新目录与管道名在测试覆盖态 100% 落入临时数据根",
+      "status": "verified"
+    },
+    {
+      "id": "M3-A-03",
+      "kind": "automated",
+      "workItem": "M3-W03",
+      "title": "四层 Tier 0 判定：扩展目录/驱动特征、AreWeAntiCheatYet 离线索引与 Steam 分类交叉核验",
+      "requirements": [
+        "REQ-SEC-03"
+      ],
+      "acceptance": [
+        "AC-03",
+        "AC-12"
+      ],
+      "verification": "dotnet test tests/Spawn.Core.UnitTests -c Release --filter AntiCheatTierAndWatchdog",
+      "expected": "扫描深度 6 识别新增 EAC/BE/Vanguard/ACE/NetEase 等特征；CS2（VAC）、Valorant（Vanguard）等无本地 AC 文件游戏不再判为 Tier 0；VAC/MMO/无 Single-player 分类保底 >= Tier 2；离线时保守降级",
+      "status": "verified"
+    },
+    {
+      "id": "M3-A-04",
+      "kind": "automated",
+      "workItem": "M3-W03",
+      "title": "混合单机 VerifiedOfflineBypass 零 AC 硬验票、vgk.sys 策略、2 秒急停看门狗与会话驱动残影冷却",
+      "requirements": [
+        "REQ-SEC-03",
+        "REQ-SEC-05"
+      ],
+      "acceptance": [
+        "AC-03",
+        "AC-12"
+      ],
+      "verification": "dotnet test tests/Spawn.Core.UnitTests -c Release --filter AntiCheatTierAndWatchdog",
+      "expected": "仅具备单人模式的 Tier 2 可启用离线放行且静态 Tier 不变；模拟 AC 进程/驱动存在时拦截、清零确认后放行；vgc.exe 活跃时硬拦、vgk 空闲驻留仅警示、严格模式禁启；看门狗仅在活跃会话期间轮询并在检出时发布急停；驱动卸载确认后才开始 15 秒冷却",
+      "status": "verified"
+    },
+    {
+      "id": "M3-A-05",
+      "kind": "automated",
+      "workItem": "M3-W03",
+      "title": "LOOP-06 Tier 2/3 启动前自动清场与二次复检、改名 CE 驱动 FileVersionInfo 与 CEDRIVER* 检测",
+      "requirements": [
+        "REQ-SEC-03"
+      ],
+      "acceptance": [
+        "AC-03",
+        "AC-12"
+      ],
+      "verification": "dotnet test tests/Spawn.Core.UnitTests -c Release --filter AntiCheatTierAndWatchdog",
+      "expected": "模拟 Tier 2/3 启动时 ISensitiveWorkerShutdownHook 被调用且 2s 预算内完成清场与沙箱路径孤儿复检；改名 dbk64.sys 元数据与 CEDRIVER* 设备名精准命中，普通驱动零误报；用户自启第三方工具不被强杀",
+      "status": "verified"
+    },
+    {
+      "id": "M3-A-06",
+      "kind": "automated",
+      "workItem": "M3-W04",
+      "title": "ACF buildid 与英文标准名、robots.txt 合规发现层、AngleSharp 热键解析与三级版本置信度",
+      "requirements": [
+        "REQ-PRG-04"
+      ],
+      "acceptance": [
+        "AC-12"
+      ],
+      "verification": "dotnet test tests/Spawn.Core.UnitTests -c Release --filter ScannerBuildIdAndEnglishTitle; dotnet test tests/Spawn.Modules.Progress.UnitTests -c Release --filter Catalog",
+      "expected": "buildid/LastUpdated 解析与英文名瀑布正确；请求日志中零 /?s= 与 /attachments/、并发 1、缓存命中复用；静态 HTML 夹具热键提取 >=95%（含 </p> 末项、Num /、toolTips），推广链接被过滤；5 类版本串映射三级置信度",
+      "status": "verified"
+    },
+    {
+      "id": "M3-A-07",
+      "kind": "automated",
+      "workItem": "M3-W04",
+      "title": "用户显式触发下载与本地导入安全流水线：手动重定向、Challenge 回退、魔数分流、Zip-Slip、解压前后字节核对、225/226 与 SHA-256 TOCTOU",
+      "requirements": [
+        "REQ-PRG-04",
+        "NFR-07"
+      ],
+      "acceptance": [
+        "AC-12"
+      ],
+      "verification": "dotnet test tests/Spawn.Modules.Progress.UnitTests -c Release --filter Catalog",
+      "expected": "Mock HTTP 下 10 跳上限、HTTPS 降级拒绝、无 Referer 403、Challenge/HTML 负载即时中止并删除暂存；合成 .zip/.rar(RAR4/RAR5/Solid)/.7z/stub PE 夹具魔数分流正确、Zip-Slip 拒绝、缺失文件判为杀软隔离；钉扎哈希被篡改后启动前复核拒绝；全程零真实网络",
+      "status": "verified"
+    },
+    {
+      "id": "M3-A-08",
+      "kind": "automated",
+      "workItem": "M3-W05",
+      "title": "倒置跨 IL NamedPipeJsonRpc：单实例会话管道与双向 PID/路径/LaunchNonce 互验",
+      "requirements": [
+        "REQ-SEC-06",
+        "REQ-PRG-06"
+      ],
+      "acceptance": [
+        "AC-12"
+      ],
+      "verification": "dotnet test tests/Spawn.Core.UnitTests -c Release --filter TrainerPipeAuth",
+      "expected": "第二个同名服务端实例创建失败；伪造 Nonce、PID 不符或路径非 Worker 的客户端被断开；服务端 PID 非父 Host 时客户端拒绝连接；ACL 仍为当前用户 SID Allow + NetworkSid Deny",
+      "status": "verified"
+    },
+    {
+      "id": "M3-A-09",
+      "kind": "automated",
+      "workItem": "M3-W05",
+      "title": "TrainerWorker KILL_ON_JOB_CLOSE 原子入组、合成桩进程树清零、Host 断连自毁与命令白名单",
+      "requirements": [
+        "REQ-PRG-06"
+      ],
+      "acceptance": [
+        "AC-12"
+      ],
+      "verification": "dotnet test tests/Spawn.TrainerWorker.UnitTests -c Release",
+      "expected": "TestStub 派生的子孙进程在 Worker 被终止或管道断连后全部消亡；Job 标志为 KILL_ON_JOB_CLOSE 且禁止 BREAKAWAY；ACTIVE_PROCESS_ZERO 正确结束会话；沙箱外路径或哈希不符的启动请求被拒；全程无可见窗口",
+      "status": "verified"
+    },
+    {
+      "id": "M3-A-10",
+      "kind": "automated",
+      "workItem": "M3-W05",
+      "title": "热键代理 MAPVK_VK_TO_VSC_EX / KEYEVENTF_EXTENDEDKEY / 无 SCANCODE 映射与交错时序、分级提权级别判定",
+      "requirements": [
+        "REQ-PRG-06"
+      ],
+      "acceptance": [
+        "AC-12"
+      ],
+      "verification": "dotnet test tests/Spawn.TrainerWorker.UnitTests -c Release --filter Hotkey; dotnet test tests/Spawn.Modules.Progress.UnitTests -c Release --filter Runtime",
+      "expected": "Num /、Num Enter、Home、Insert 带 EXTENDEDKEY，Num 1 不带；wVk 与 wScan 同时填充且默认无 SCANCODE；20/HoldMs/20ms 交错序列正确（注入式发送器，零真实 SendInput）；requireAdministrator 清单或 High IL 游戏判定为 Level 2，否则 Level 1",
+      "status": "verified"
+    },
+    {
+      "id": "M3-A-11",
+      "kind": "automated",
+      "workItem": "M3-W06",
+      "title": "A0 双目录 INI 预写/备份/还原与 27 字节 5.0 秒静音 SMF 字节断言及静默播放",
+      "requirements": [
+        "REQ-PRG-05"
+      ],
+      "acceptance": [
+        "AC-12"
+      ],
+      "verification": "dotnet test tests/Spawn.Modules.Progress.UnitTests -c Release --filter Audio",
+      "expected": "SMF 字节序列与长度 27 精确匹配；INI 键改写幂等且保留其他键，关闭 A0 后还原；Documents 经 SHGetKnownFolderPath 解析（测试注入临时目录）；mciSendString 播放与重播 0 错误无忙等（无 MIDI 设备时跳过并报告 not-run）",
+      "status": "verified"
+    },
+    {
+      "id": "M3-A-12",
+      "kind": "automated",
+      "workItem": "M3-W06",
+      "title": "WASAPI 静音策略机：专用 MTA 线程、Register→Enumerator→GetCount 顺序、端点热插拔与 E_ACCESSDENIED 回退",
+      "requirements": [
+        "REQ-PRG-05"
+      ],
+      "acceptance": [
+        "AC-12"
+      ],
+      "verification": "dotnet test tests/Spawn.Modules.Progress.UnitTests -c Release --filter Audio",
+      "expected": "注入式 Core Audio 抽象验证注册顺序、线程单元为 MTA、新增端点自动挂接、子 PID 与沙箱前缀会话被静音；FullMute 为默认；SetMute 返回 E_ACCESSDENIED 时发出 trainer.setAudioFallback；释放后零残留回调",
+      "status": "verified"
+    },
+    {
+      "id": "M3-A-13",
+      "kind": "automated",
+      "workItem": "M3-W07",
+      "title": "PCGamingWiki action=parse 回退解析与 Steam userdata remote 离线规则",
+      "requirements": [
+        "REQ-PRG-08"
+      ],
+      "acceptance": [
+        "AC-12b"
+      ],
+      "verification": "dotnet test tests/Spawn.Core.UnitTests -c Release --filter PcGamingWikiParseAndSteamUserdata",
+      "expected": "离线 wikitext 夹具解析出 Windows 存档路径并写入缓存；cargoquery permissiondenied 时自动回退；页面名未知时 list=search 兜底；Steam userdata\\<uid>\\<AppId>\\remote 被识别；零真实网络",
+      "status": "verified"
+    },
+    {
+      "id": "M3-A-14",
+      "kind": "automated",
+      "workItem": "M3-W07",
+      "title": "启动修改器前轻量存档快照：创建、超阈值/排他锁非阻塞跳过、滚动保留、PreRestoreSafety 与回滚哈希一致",
+      "requirements": [
+        "REQ-PRG-08"
+      ],
+      "acceptance": [
+        "AC-12b"
+      ],
+      "verification": "dotnet test tests/Spawn.Modules.Progress.UnitTests -c Release --filter Snapshots",
+      "expected": "正常快照生成原子 manifest.json；超 256MB 与 ERROR_SHARING_VIOLATION 记为 Skipped 且不阻断；保留 N 份滚动清理只删快照目录自身；回滚前自动创建 PreRestoreSafety、游戏运行中拒绝；回滚后文件与临时 HKCU 测试键导出逐项哈希一致",
+      "status": "verified"
+    },
+    {
+      "id": "M3-A-15",
+      "kind": "automated",
+      "workItem": "M3-W08",
+      "title": "Defender 沙箱单目录排除助手：篡改保护预读、强制回读校验与分类降级（注入式 WMI 抽象）",
+      "requirements": [
+        "REQ-PRG-04"
+      ],
+      "acceptance": [
+        "AC-12"
+      ],
+      "verification": "dotnet test tests/Spawn.Modules.Progress.UnitTests -c Release --filter Security",
+      "expected": "排除路径恒为沙箱根；TPExclusions=1 或回读缺失判为篡改保护拒绝；第三方杀软被动模式、Smart App Control、用户取消 UAC 各自映射到正确降级引导；测试零真实 Defender 写入、零 UAC",
+      "status": "verified"
+    },
+    {
+      "id": "M3-A-16",
+      "kind": "automated",
+      "workItem": "M3-W08",
+      "title": "WPF 修改器子页签、修改器与安全沙箱设置分类、PlacementTarget.Tag 菜单门禁、Tier 徽标着色与 ViewModel 状态转换",
+      "requirements": [
+        "REQ-PRG-04",
+        "REQ-PRG-05",
+        "REQ-PRG-06",
+        "REQ-PRG-08",
+        "REQ-SEC-03"
+      ],
+      "acceptance": [
+        "AC-12",
+        "AC-12b"
+      ],
+      "verification": "dotnet test tests/Spawn.Architecture.GateTests -c Release --filter OverlayAndShellHeadless",
+      "expected": "Column 1 已挂载游戏库/成就中心/修改器/设置 4 项非空壳入口（含修改器活跃绿点），修改器侧栏总览与游戏详情 成就 | 游戏数据 | 修改器 三子页签双向同步且第 6 设置分类存在；所有 Popup 菜单经 PlacementTarget.Tag 桥接；Tier 0/1/2-3 徽标为 #10B981/#F59E0B/#DC2626；Tier 0、混合单机、Tier 2 锁定、15s 冷却、启动前备份与代理开关状态转换正确",
+      "status": "verified"
+    },
+    {
+      "id": "M3-A-17",
+      "kind": "automated",
+      "workItem": "M3-W09",
+      "title": "Workers\\Trainer\\ 打包隔离、spawn-dev-test 隔离安装演练、THIRD-PARTY-NOTICES 与 quick_gate.py 一键门禁",
+      "requirements": [
+        "REQ-SEC-01",
+        "NFR-04",
+        "NFR-07"
+      ],
+      "acceptance": [
+        "AC-02",
+        "AC-12"
+      ],
+      "verification": "python -B scripts/quick_gate.py",
+      "expected": "stage_app 根目录 Clean Host 审计全绿且 Spawn.TrainerWorker 仅位于 Workers\\Trainer\\；spawn-dev-test 安装/卸载全绿且真实 spawn/spawn-dev 零污染；THIRD-PARTY-NOTICES 含新增 MIT 组件；quick_gate.py 5 分钟内全绿且前台零干扰",
+      "status": "verified"
+    },
+    {
+      "id": "M3-A-18",
+      "kind": "automated",
+      "workItem": "M3-W09",
+      "title": "文档治理门禁：check_docs.py、git diff --check、注册表与追踪矩阵一致",
+      "requirements": [
+        "NFR-08"
+      ],
+      "acceptance": [
+        "AC-01"
+      ],
+      "verification": "python -B scripts/check_docs.py; git diff --check",
+      "expected": "PASS 零告警；全部 REQ/NFR 已追踪，m3-stage-cases.json 引用的需求与 AC（含 AC-12b）均有效；无空白错误",
+      "status": "verified"
+    },
+    {
+      "id": "M3-M-01",
+      "kind": "manual",
+      "workItem": "M3-W09",
+      "title": "H-002 实机体验：真实修改器下载/导入、首帧静音、NumLock OFF 热键代理、单次 UAC、随游戏退出与启动前快照回滚",
+      "requirements": [
+        "REQ-PRG-04",
+        "REQ-PRG-05",
+        "REQ-PRG-06",
+        "REQ-PRG-08"
+      ],
+      "acceptance": [
+        "AC-12",
+        "AC-12b"
+      ],
+      "verification": "python -B scripts/package.py --install-dev 后由用户按 USER-ACTIONS.md H-002 指引在本机 SPAWN Dev 体验",
+      "expected": "本机 SPAWN Dev 已更新驻留托盘；用户记录 OSS-07 ①④⑤ 实测结果（INI 冷启动生效、热键触发率、Authenticode 状态）",
+      "status": "pending"
+    },
+    {
+      "id": "M3-M-02",
+      "kind": "manual",
+      "workItem": "M3-W09",
+      "title": "（可选）Defender 排除助手实机、Smart App Control 提示与混合单机离线放行实机核验",
+      "requirements": [
+        "REQ-PRG-04",
+        "REQ-SEC-03"
+      ],
+      "acceptance": [
+        "AC-12"
+      ],
+      "verification": "用户在具备条件的本机按 H-002 可选步骤体验；不具备条件时如实标记 not-run",
+      "expected": "排除写入后回读一致或正确降级引导；SAC 拦截被准确识别并说明；混合单机在反作弊未关闭时被硬拦、确认离线后放行",
+      "status": "pending"
+    },
+    {
+      "id": "M3-A-19",
+      "kind": "automated",
+      "workItem": "M3-W10",
+      "title": "正式版自包含打包、符号剥离与版本号计算",
+      "requirements": [
+        "NFR-09",
+        "NFR-05"
+      ],
+      "acceptance": [
+        "AC-25"
+      ],
+      "verification": "python -B scripts/release.py 单测 + spawn-test 隔离安装演练",
+      "expected": "正式版 app 与 Workers\\Trainer 均为自包含且零 *.pdb；开发版零原生 *.pdb；符号包生成；版本线最高补丁号 +1、首发取 NEXT_BASE_VERSION、无新合入返回 release=false；安装包体积如实记录",
+      "status": "verified"
+    },
+    {
+      "id": "M3-A-20",
+      "kind": "automated",
+      "workItem": "M3-W10",
+      "title": "更新清单生成、ECDSA P-256 签名与 SHA256SUMS",
+      "requirements": [
+        "NFR-09"
+      ],
+      "acceptance": [
+        "AC-25"
+      ],
+      "verification": "签名工具与清单单测（测试密钥，零真实私钥）",
+      "expected": "清单字段完整、URL 前缀为 releases/download/v<版本>/；DER 签名可被 .NET 与 openssl 双端验证；篡改任一字节验签失败；私钥路径与内容从不进入日志",
+      "status": "verified"
+    },
+    {
+      "id": "M3-A-21",
+      "kind": "automated",
+      "workItem": "M3-W11",
+      "title": "每周发布工作流结构门禁",
+      "requirements": [
+        "NFR-09",
+        "NFR-07"
+      ],
+      "acceptance": [
+        "AC-25"
+      ],
+      "verification": "dotnet test tests/Spawn.Architecture.GateTests（解析 .github/workflows/release.yml）",
+      "expected": "只有 schedule 与 workflow_dispatch 触发；plan 任务与 publish 任务均以 github.ref == 'refs/heads/main' 守卫仅限 main 运行（publish 守卫后无顶层 ||）；顶层 permissions 为空；仅 publish 任务 contents: write 且受 vars.SPAWN_RELEASE_PUBLISH 控制；签名 Secret 仅在 build 任务的 release 环境中使用；全部 uses 为 40 位 SHA；Inno Setup 7.1.1 下载钉扎 SHA-256",
+      "status": "verified"
+    },
+    {
+      "id": "M3-A-22",
+      "kind": "automated",
+      "workItem": "M3-W12",
+      "title": "应用内更新器：验签、版本、白名单、校验、通道与空闲安装",
+      "requirements": [
+        "NFR-09",
+        "NFR-06",
+        "REQ-SEC-01"
+      ],
+      "acceptance": [
+        "AC-25",
+        "AC-02"
+      ],
+      "verification": "dotnet test（注入假 HTTP 与假安装器启动器，零真实网络、零真实安装）",
+      "expected": "有效签名通过、篡改/错误公钥拒绝；降级与同版本拒绝；非白名单主机、超限重定向、超大清单/安装包、SHA-256 不符均拒绝；开发版与源码运行从不发起请求；游戏/修改器/快照进行中不自动安装；安装前持锁复核并写入 reason=update 重启标记；更新记录最多 20 条；清单请求或安装包下载因内部超时挂起时结果为 DeferredOffline、.partial 已删除且状态不停留在 Checking/Downloading，调用方取消时状态恢复为 Idle 或 ReadyToInstall 并重新抛出，其它意外异常走失败记录路径；UpdateViewModel 检查与重启更新命令遇服务异常只反馈提示、不外泄到 Dispatcher；Clean Host IAT 门禁全绿",
+      "status": "verified"
+    },
+    {
+      "id": "M3-M-03",
+      "kind": "manual",
+      "workItem": "M3-W11",
+      "title": "合入 main 后手动 dry-run 一次每周发布，并在首个正式版发布后体验应用内更新",
+      "requirements": [
+        "NFR-09"
+      ],
+      "acceptance": [
+        "AC-25"
+      ],
+      "verification": "workflow_dispatch（publish=false）；ACT-009/ACT-010 完成后观察下一次定时发布与 H-005",
+      "expected": "dry-run 构建与演练全绿；首个 Release 资产齐全；已安装正式版在下一版本发布后 24 小时内自动更新并恢复原窗口状态（未具备条件前保持 not-run）",
+      "status": "pending"
+    }
+  ]
+}

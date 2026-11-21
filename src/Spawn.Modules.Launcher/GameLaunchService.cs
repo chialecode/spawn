@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Spawn.Contracts;
 using Spawn.Core;
+using Spawn.Core.AntiCheat;
 
 namespace Spawn.Modules.Launcher;
 
@@ -22,6 +23,11 @@ public sealed class GameLaunchOptions
     public double DefaultAfkTimeoutSeconds { get; set; } = PlaytimeTracker.DefaultAfkTimeoutSeconds;
 
     /// <summary>
+    /// Upper-bound time budget for LOOP-06 pre-launch sensitive worker shutdown hooks before launching a Tier 2/3 game.
+    /// </summary>
+    public TimeSpan SensitiveWorkerShutdownBudget { get; set; } = TimeSpan.FromSeconds(2);
+
+    /// <summary>
     /// Forces <c>CREATE_NO_WINDOW</c> when launching child executables (used by headless automated tests).
     /// </summary>
     public bool ForceCreateNoWindow { get; set; }
@@ -35,7 +41,7 @@ public sealed class GameLaunchOptions
 /// <summary>
 /// Dual-engine game lifecycle orchestrator (<see cref="IGameLaunchService"/>):
 /// <list type="number">
-/// <item><description>Pre-launch <see cref="IAntiCheatGuardService"/> tier inspection &amp; 15s residual cooldown gate.</description></item>
+/// <item><description>Pre-launch four-layer anti-cheat inspection, independent <c>VerifiedOfflineBypass</c> evaluation, LOOP-06 sensitive worker purge, &amp; 15s residual cooldown gate.</description></item>
 /// <item><description>Tier 0/1 direct launch bound to a non-killing Windows Job Object + IOCP (<c>JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO</c>, zero <c>KILL_ON_JOB_CLOSE</c>).</description></item>
 /// <item><description>Tier 2/3 PPID-decoupled launch via Explorer Shell COM + <c>0x1000</c> directory-prefix shell-breaking catch-all.</description></item>
 /// <item><description>1Hz <c>Active / Background / AFK</c> playtime tracking with atomic SQLite session &amp; cumulative ledger persistence.</description></item>
@@ -51,6 +57,10 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
     private readonly TimeProvider _timeProvider;
     private readonly GameLaunchOptions _options;
     private readonly ILogger<GameLaunchService> _logger;
+    private readonly ISensitiveWorkerShutdownHook[] _sensitiveWorkerShutdownHooks;
+    private readonly ITrainerSafetyGate? _trainerSafetyGate;
+    private readonly SpawnPaths? _paths;
+    private readonly Func<string, IReadOnlyList<string>>? _sandboxOrphanProbe;
 
     private readonly ConcurrentDictionary<string, ActiveGameSession> _activeSessions = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, RunningSessionContext> _runningContexts = new(StringComparer.OrdinalIgnoreCase);
@@ -69,7 +79,11 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
         IGameProcessStarter? processStarter = null,
         TimeProvider? timeProvider = null,
         GameLaunchOptions? options = null,
-        ILogger<GameLaunchService>? logger = null)
+        ILogger<GameLaunchService>? logger = null,
+        IEnumerable<ISensitiveWorkerShutdownHook>? sensitiveWorkerShutdownHooks = null,
+        ITrainerSafetyGate? trainerSafetyGate = null,
+        SpawnPaths? paths = null,
+        Func<string, IReadOnlyList<string>>? sandboxOrphanProbe = null)
     {
         ArgumentNullException.ThrowIfNull(database);
         ArgumentNullException.ThrowIfNull(antiCheatGuard);
@@ -83,6 +97,12 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
         _processStarter = processStarter ?? new DefaultGameProcessStarter();
         _options = options ?? new GameLaunchOptions();
         _logger = logger ?? NullLogger<GameLaunchService>.Instance;
+        _sensitiveWorkerShutdownHooks = sensitiveWorkerShutdownHooks is not null
+            ? sensitiveWorkerShutdownHooks.Where(static h => h is not null).ToArray()
+            : [];
+        _trainerSafetyGate = trainerSafetyGate ?? antiCheatGuard as ITrainerSafetyGate;
+        _paths = paths;
+        _sandboxOrphanProbe = sandboxOrphanProbe;
     }
 
     public ActiveGameSession? GetActiveSession(string gameId) =>
@@ -154,9 +174,10 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
             return GameLaunchResult.Failure("EXECUTABLE_NOT_FOUND", $"找不到游戏可执行文件：{exeFullPath}");
         }
 
-        // 1. Live Anti-Cheat Guard directory verification & 15s residual cooldown enforcement.
-        var liveAc = _antiCheatGuard.InspectGameDirectory(game.InstallDir);
-        var effectiveTier = liveAc.Tier > game.AntiCheatTier ? liveAc.Tier : game.AntiCheatTier;
+        // 1. Four-layer static anti-cheat determination (fixes Layer-1-only Math.Max stacking)
+        //    plus independent VerifiedOfflineBypass evaluation without altering static anti_cheat_tier.
+        var (staticTier, resolvedSignature, isProtectedLaunch) = await ResolveLaunchProtectionAsync(game, cancellationToken)
+            .ConfigureAwait(false);
 
         var guardSnap = _antiCheatGuard.CurrentSnapshot;
         if (guardSnap.Phase is AntiCheatGuardPhase.ResidualGuardWatch or AntiCheatGuardPhase.CooldownLocked)
@@ -174,27 +195,41 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
                 "当前已有受反作弊保护的网游正在运行，为保障账号安全已阻止并发启动。");
         }
 
-        // 2. Tier 2/3 pre-launch high-risk sweep: Cheat Engine processes, dbk64/dbk32 kernel driver and SPAWN sensitive
-        //    Workers must be absent. SPAWN never kills the user's own tools; it refuses the launch and explains why.
-        if (effectiveTier >= AntiCheatTier.Tier2)
+        // 2. LOOP-06: Tier 2/3 pre-launch automatic sensitive Worker purge (2s budget) + secondary clean-field re-check
+        //    (including sandbox path prefix orphan check, Cheat Engine, renamed CE drivers, CEDRIVER*, WinRing0).
+        //    SPAWN NEVER kills user-launched third-party tools; it refuses the launch and explains why.
+        if (isProtectedLaunch)
         {
+            var hookResidue = await PurgeSensitiveWorkersBeforeProtectedLaunchAsync(cancellationToken)
+                .ConfigureAwait(false);
+
             var envReport = _antiCheatGuard.InspectHighRiskEnvironment();
-            if (!envReport.IsClean)
+            var sandboxOrphans = await DetectConfiguredSandboxOrphansAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            var blockingProcesses = new List<string>(envReport.BlockingProcesses.Count + hookResidue.Count + sandboxOrphans.Count);
+            AddDistinct(blockingProcesses, envReport.BlockingProcesses);
+            AddDistinct(blockingProcesses, hookResidue);
+            AddDistinct(blockingProcesses, sandboxOrphans);
+
+            var blockingDrivers = envReport.BlockingDrivers;
+
+            if (blockingProcesses.Count > 0 || blockingDrivers.Count > 0)
             {
                 var parts = new List<string>();
-                if (envReport.BlockingProcesses.Count > 0)
+                if (blockingProcesses.Count > 0)
                 {
-                    parts.Add($"高危进程：{string.Join("、", envReport.BlockingProcesses)}");
+                    parts.Add($"高危进程：{string.Join("、", blockingProcesses)}");
                 }
 
-                if (envReport.BlockingDrivers.Count > 0)
+                if (blockingDrivers.Count > 0)
                 {
-                    parts.Add($"高危内核驱动：{string.Join("、", envReport.BlockingDrivers)}（需关闭相关工具并重启系统卸载驱动）");
+                    parts.Add($"高危内核驱动：{string.Join("、", blockingDrivers)}（需关闭相关工具并重启系统卸载驱动）");
                 }
 
                 return GameLaunchResult.Failure(
                     "HIGH_RISK_ENVIRONMENT_BLOCKED",
-                    $"检测到与反作弊网游冲突的高危环境，已阻止启动 {effectiveTier} 受保护游戏以保护账号安全。{string.Join("；", parts)}。");
+                    $"检测到与反作弊网游冲突的高危环境，已阻止启动 {staticTier} 受保护游戏以保护账号安全。{string.Join("；", parts)}。");
             }
         }
 
@@ -204,10 +239,13 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
 
         var sessionCtx = new RunningSessionContext(
             sessionId,
-            game with { AntiCheatTier = effectiveTier, AntiCheatSignature = liveAc.Signature ?? game.AntiCheatSignature },
+            game with { AntiCheatTier = staticTier, AntiCheatSignature = resolvedSignature },
             startedUtc,
             afkTimeoutSec,
-            new PlaytimeTracker(_activityProbe));
+            new PlaytimeTracker(_activityProbe))
+        {
+            IsProtectedLaunch = isProtectedLaunch,
+        };
 
         if (!_runningContexts.TryAdd(game.GameId, sessionCtx))
         {
@@ -235,10 +273,10 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
 
             ActiveGameSession initialSession;
 
-            if (effectiveTier >= AntiCheatTier.Tier2)
+            if (isProtectedLaunch)
             {
                 // Tier 2 / Tier 3: Explorer Shell COM PPID-decoupled launch + 0x1000 directory tracking.
-                _antiCheatGuard.NotifyProtectedGameStarted(game.GameId, effectiveTier);
+                _antiCheatGuard.NotifyProtectedGameStarted(game.GameId, staticTier);
                 await _processStarter.StartExplorerDecoupledAsync(startRequest, cancellationToken).ConfigureAwait(false);
 
                 sessionCtx.IsExplorerDecoupled = true;
@@ -250,7 +288,7 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
                     GameId = game.GameId,
                     GameTitle = game.Title,
                     InstallDir = game.InstallDir,
-                    AntiCheatTier = effectiveTier,
+                    AntiCheatTier = staticTier,
                     State = PlaySessionActivityState.ShellBreakingWatch,
                     RootProcessId = 0,
                     TrackedProcessIds = [],
@@ -259,7 +297,7 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
             }
             else
             {
-                // Tier 0 / Tier 1: Direct start + Non-Killing JobObject + IOCP tree tracking.
+                // Tier 0 / Tier 1 (or verified offline-bypassed Tier 2 non-AC executable): Direct start + Non-Killing JobObject + IOCP tree tracking.
                 var jobTracker = new JobObjectProcessTracker();
                 sessionCtx.JobTracker = jobTracker;
 
@@ -280,7 +318,7 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
                     GameId = game.GameId,
                     GameTitle = game.Title,
                     InstallDir = game.InstallDir,
-                    AntiCheatTier = effectiveTier,
+                    AntiCheatTier = staticTier,
                     State = PlaySessionActivityState.Active,
                     RootProcessId = rootPid,
                     TrackedProcessIds = initialPids,
@@ -314,9 +352,9 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
             _runningContexts.TryRemove(game.GameId, out _);
             _activeSessions.TryRemove(game.GameId, out _);
 
-            if (effectiveTier >= AntiCheatTier.Tier2)
+            if (isProtectedLaunch)
             {
-                _ = _antiCheatGuard.NotifyProtectedGameExitedAsync(game.GameId, effectiveTier, CancellationToken.None);
+                _ = _antiCheatGuard.NotifyProtectedGameExitedAsync(game.GameId, staticTier, CancellationToken.None);
             }
 
             sessionCtx.Dispose();
@@ -547,9 +585,9 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
                 }
             }
 
-            if (ctx.Game.AntiCheatTier >= AntiCheatTier.Tier2)
+            if (ctx.IsProtectedLaunch)
             {
-                // Run daemon exit verification + mandatory 15s post-exit cooldown asynchronously.
+                // Run daemon + session kernel AC driver exit verification + mandatory 15s post-exit cooldown asynchronously.
                 _ = Task.Run(() => _antiCheatGuard.NotifyProtectedGameExitedAsync(
                     ctx.Game.GameId,
                     ctx.Game.AntiCheatTier,
@@ -770,6 +808,186 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
         }
 
         return false;
+    }
+
+    private async Task<(AntiCheatTier StaticTier, string? Signature, bool IsProtectedLaunch)> ResolveLaunchProtectionAsync(
+        GameRecord game,
+        CancellationToken cancellationToken)
+    {
+        AntiCheatTier staticTier;
+        string? signature;
+        bool? hasSinglePlayer = null;
+
+        if (_trainerSafetyGate is not null)
+        {
+            var fourLayer = await _trainerSafetyGate.InspectGameFourLayerAsync(
+                game,
+                allowOnlineLookup: false,
+                ct: cancellationToken).ConfigureAwait(false);
+            staticTier = fourLayer.EffectiveTier > game.AntiCheatTier ? fourLayer.EffectiveTier : game.AntiCheatTier;
+            signature = fourLayer.PrimarySignature ?? game.AntiCheatSignature;
+            hasSinglePlayer = fourLayer.HasSinglePlayerCategory;
+        }
+        else
+        {
+            var liveAc = _antiCheatGuard.InspectGameDirectory(game.InstallDir);
+            var awacy = AreWeAntiCheatYetIndex.Default.Inspect(game);
+            staticTier = liveAc.Tier > game.AntiCheatTier ? liveAc.Tier : game.AntiCheatTier;
+            if (awacy is not null && awacy.Tier > staticTier)
+            {
+                staticTier = awacy.Tier;
+            }
+
+            signature = liveAc.Signature ?? awacy?.PrimarySignature ?? game.AntiCheatSignature;
+            hasSinglePlayer = awacy?.HasSinglePlayerHint;
+        }
+
+        bool verifiedOfflineBypassActive = false;
+        if (staticTier == AntiCheatTier.Tier2
+            && game.VerifiedOfflineBypass
+            && hasSinglePlayer == true
+            && !AntiCheatFeatureCatalog.IsAntiCheatLauncherExecutable(game.ExecutableRelPath))
+        {
+            var liveProbe = _trainerSafetyGate is not null
+                ? await _trainerSafetyGate.ProbeLiveAntiCheatAsync(cancellationToken).ConfigureAwait(false)
+                : AntiCheatLiveEvaluator.Evaluate(
+                    DefaultAntiCheatSystemProbe.Instance,
+                    _timeProvider.GetUtcNow(),
+                    resolveFullPaths: false,
+                    out _);
+            verifiedOfflineBypassActive = liveProbe.IsClearForTrainer;
+        }
+
+        bool isProtectedLaunch = staticTier >= AntiCheatTier.Tier2 && !verifiedOfflineBypassActive;
+        return (staticTier, signature, isProtectedLaunch);
+    }
+
+    private async Task<List<string>> PurgeSensitiveWorkersBeforeProtectedLaunchAsync(CancellationToken cancellationToken)
+    {
+        var residue = new List<string>();
+        if (_sensitiveWorkerShutdownHooks.Length == 0)
+        {
+            return residue;
+        }
+
+        TimeSpan totalBudget = _options.SensitiveWorkerShutdownBudget > TimeSpan.Zero
+            ? _options.SensitiveWorkerShutdownBudget
+            : TimeSpan.FromSeconds(2);
+        var sw = Stopwatch.StartNew();
+
+        foreach (var hook in _sensitiveWorkerShutdownHooks)
+        {
+            TimeSpan remaining = totalBudget - sw.Elapsed;
+            if (remaining <= TimeSpan.Zero)
+            {
+                AddDistinct(residue, ["敏感 Worker 预清场超出 2 秒预算"]);
+                break;
+            }
+
+            try
+            {
+                using var budgetCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                budgetCts.CancelAfter(remaining);
+
+                var report = await hook.ShutdownAllForProtectedLaunchAsync(remaining, budgetCts.Token)
+                    .ConfigureAwait(false);
+
+                if (report is null)
+                {
+                    AddDistinct(residue, ["敏感 Worker 清场钩子返回空报告"]);
+                    continue;
+                }
+
+                if (report.RemainingSandboxProcesses.Count > 0)
+                {
+                    AddDistinct(residue, report.RemainingSandboxProcesses);
+                }
+
+                if (!report.Succeeded)
+                {
+                    AddDistinct(residue, [string.IsNullOrWhiteSpace(report.Message) ? "敏感 Worker 清场未确认完成" : report.Message!]);
+                }
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                AddDistinct(residue, ["敏感 Worker 预清场超时（2 秒预算）"]);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                if (_logger.IsEnabled(LogLevel.Warning))
+                {
+                    _logger.LogWarning(ex, "Sensitive worker shutdown hook failed during protected launch pre-flight.");
+                }
+
+                AddDistinct(residue, [$"敏感 Worker 预清场失败：{ex.GetType().Name}"]);
+            }
+        }
+
+        return residue;
+    }
+
+    private async Task<IReadOnlyList<string>> DetectConfiguredSandboxOrphansAsync(CancellationToken cancellationToken)
+    {
+        var sandboxRoots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        if (_paths is not null && !string.IsNullOrWhiteSpace(_paths.TrainerSandboxDirectory))
+        {
+            sandboxRoots.Add(_paths.TrainerSandboxDirectory);
+        }
+
+        try
+        {
+            var settings = await _database.GetTrainerSettingsAsync(cancellationToken).ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(settings.CustomSandboxRoot))
+            {
+                sandboxRoots.Add(settings.CustomSandboxRoot);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            // Ignore settings lookup failure; default sandbox root (if present) is still swept.
+        }
+
+        if (sandboxRoots.Count == 0 && _sandboxOrphanProbe is null)
+        {
+            return [];
+        }
+
+        var found = new List<string>();
+        if (sandboxRoots.Count == 0 && _sandboxOrphanProbe is not null)
+        {
+            AddDistinct(found, _sandboxOrphanProbe(string.Empty));
+            return found;
+        }
+
+        foreach (string root in sandboxRoots)
+        {
+            IReadOnlyList<string> orphans = _sandboxOrphanProbe is not null
+                ? _sandboxOrphanProbe(root)
+                : HighRiskEnvironmentProbe.DetectSandboxOrphanProcesses(root);
+            AddDistinct(found, orphans);
+        }
+
+        return found;
+    }
+
+    private static void AddDistinct(List<string> sink, IEnumerable<string> items)
+    {
+        foreach (string item in items)
+        {
+            if (!string.IsNullOrWhiteSpace(item) && !sink.Contains(item, StringComparer.OrdinalIgnoreCase))
+            {
+                sink.Add(item);
+            }
+        }
     }
 
     private async Task<double> ResolveAfkTimeoutSecondsAsync(CancellationToken cancellationToken)
@@ -1048,6 +1266,7 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
         public JobAttachOutcome JobAttachOutcome { get; set; }
         public int RootProcessId { get; set; }
         public bool IsExplorerDecoupled { get; set; }
+        public bool IsProtectedLaunch { get; set; }
         public volatile bool UseDirectoryTrackingOnly;
         public IReadOnlyList<int> LastPublishedPids { get; set; } = [];
 

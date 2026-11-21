@@ -12,7 +12,7 @@ SPAWN 的顶层系统架构围绕三大不可妥协的工程准则构建：
 
 1. **物理进程与完整性级别（Integrity Level）强隔离**：将常驻桌面管理外壳（`Medium IL`）与按需运行的特权/敏感执行器（`UIAccess IL`、`High IL`）从可执行文件边界彻底切开。常驻宿主永远不加载、不引用任何可能引发内核反作弊警觉的 Win32 API 或第三方库。
 2. **数据不可变与预写日志自愈（Crash-Only Durability）**：无论是存档时间机器、Mod 硬链接与顶层 NTFS Junction 切换，还是 HDR/分辨率系统环境接管，一切副作用变更必先持久化回滚/前滚事务日志，任意时刻断电重启均可幂等恢复一致态。
-3. **单一真相源与跨模块事件联动**：以本地 `spawn.db`（SQLite WAL）与内容寻址仓库 `SPAWN_Vault` 为底座，通过强类型领域事件总线与 `gRPC over Named Pipes` 将启动器、存档、成就、自动化工作流与 Mod Profile 编织为一个有机协同整体。
+3. **单一真相源与跨模块事件联动**：以本地 `spawn.db`（SQLite WAL）与内容寻址仓库 `SPAWN_Vault` 为底座，通过强类型领域事件总线与 `NamedPipeJsonRpc` 将启动器、存档、成就、自动化工作流与 Mod Profile 编织为一个有机协同整体。
 
 ---
 
@@ -32,8 +32,8 @@ flowchart TB
 
     subgraph OnDemandWorkers["按需启停特权执行域 (停用即销毁 · Tier 2/3 硬熔断)"]
         BPWorker["Spawn.BlueprintWorker.exe<br/>(Medium / High IL)<br/>Kismet 异步蓝图虚拟机 · 单步断点引擎<br/>WGC 捕获 · OpenCV / PaddleOCR<br/>L1~L4 可插拔输入执行器"]
-        TRWorker["Spawn.TrainerWorker.exe<br/>(High IL 0x3000 · 仅限 Tier 0)<br/>KILL_ON_JOB_CLOSE 修改器沙箱<br/>35ms 硬件扫描码代理 · 二期原生 .CT 引擎"]
-        WFWorker["Spawn.WorkflowWorker.exe<br/>(High IL 0x3000)<br/>四维资源锁并发 DAG 调度器<br/>Maa.Framework C# 内嵌 · MaaFgo 双端口桥接<br/>RTC 唤醒 · OLED 幕布 · 战报渲染推送"]
+        TRWorker["Spawn.TrainerWorker.exe<br/>(按需 Medium / High IL · 仅限 Tier 0 与已核验离线态)<br/>KILL_ON_JOB_CLOSE 修改器沙箱<br/>MAPVK_VK_TO_VSC_EX 热键代理 · M6 收窄原生后端"]
+        WFWorker["Spawn.WorkflowWorker.exe<br/>(按 D-11 分级按需提权 · Medium/High IL)<br/>四维资源锁并发 DAG 调度器<br/>Maa.Framework C# 内嵌 · MaaFgo 双端口桥接<br/>RTC 唤醒 · OLED 幕布 · 战报渲染推送"]
     end
 
     subgraph OptionalHelper["可选远古兼容隔离域 (默认禁用)"]
@@ -45,10 +45,10 @@ flowchart TB
         Vault[("SPAWN_Vault<br/>Blobs / Chunks / Profiles / Sandbox")]
     end
 
-    Host <-->|"gRPC Named Pipes (SDDL)"| Overlay
-    Host <-->|"gRPC Named Pipes + MMF 帧环"| BPWorker
-    Host <-->|"gRPC Named Pipes (SDDL)"| TRWorker
-    Host <-->|"gRPC Named Pipes (SDDL)"| WFWorker
+    Host <-->|"NamedPipeJsonRpc (SDDL)"| Overlay
+    Host <-->|"NamedPipeJsonRpc + MMF 帧环"| BPWorker
+    Host <-->|"NamedPipeJsonRpc (倒置跨 IL · SDDL)"| TRWorker
+    Host <-->|"NamedPipeJsonRpc (SDDL)"| WFWorker
     Overlay -.->|"MMF 位图共享 (仅手动开启时)"| LegacyOSD
 
     Host --> DB
@@ -63,9 +63,9 @@ flowchart TB
 | :--- | :--- | :--- | :--- | :--- |
 | `Spawn.Host.exe` | `Medium IL (0x2000)` | 主窗口 UI、海报墙、蓝图画布编辑、`spawn.db` 唯一写端、Mod 硬链接与 Junction 事务、存档 `FastCDC` 备份与 `SPPK` 云同步、`0x1000` 进程追踪、WASAPI 会话静音、反作弊守卫 | **严禁**出现 `ReadProcessMemory`、`WriteProcessMemory`、`VirtualAllocEx`、`CreateRemoteThread`、`NtSuspendProcess`、`SetWindowsHookEx`、`SendInput`、`mouse_event` 及任何 Hook/虚拟驱动库 | 随桌面会话常驻或最小化至原生 XAML 系统托盘；支持资源管理器直接拖拽导入 Mod/存档包 |
 | `Spawn.OverlayHost.exe` | `Medium + UIAccess IL (0x2010)` | 游戏内 144Hz 成就解锁弹窗队列渲染、`Alt+Z` 与手柄呼出交互式面板、防穿透遮罩与 `ClipCursor` 光标边界软接管 | 与 `Spawn.Host.exe` 执行同等严格的 CI `PEReader` 黑名单门禁；**严禁向任何游戏进程打开句柄或注入模块** | 游戏运行态按需驻留（无弹窗时零重绘休眠），全部游戏退出后可自动回收释放显存 |
-| `Spawn.BlueprintWorker.exe` | `Medium IL`（目标管理员游戏时经计划任务静默拉起 `High IL`） | 解析执行 `.spbp` 蓝图 AST、异步 Kismet 循环与断点挂起、`WGC` 帧捕获、`OpenCvSharp4` / `PaddleOCR` 推理、`RawInput` 监听及 `L1~L4` 输入动作投递 | 允许引用 `SendInput`、`ViGEmClient` 与视觉推理库；严禁内存篡改 API | 仅在用户激活蓝图运行或调试时拉起；停止脚本或触发 `Tier 2/3` 游戏启动前立即销毁 |
-| `Spawn.TrainerWorker.exe` | `High IL (0x3000)` | 管理 `SPAWN_Vault\Sandbox\Trainers\` 隔离目录、通过 `KILL_ON_JOB_CLOSE` 作业对象托管外部 FLiNG 进程、发送小键盘硬件扫描码代理、承载二期 `.CT` 内存后端 | 允许在 `Tier 0` 单机授权下调用硬件扫描码输入及二期受控进程内存 API | **仅在 `AntiCheatTier == Tier 0` 且全域无 `Tier 2/3` 进程/冷却锁时允许存在**；游戏退出同步连带销毁整个沙箱作业树 |
-| `Spawn.WorkflowWorker.exe` | `High IL (0x3000)` | 二次元四维资源锁并发 DAG 调度、内嵌 `Maa.Framework` C#、`MAA` 配置预写、`MaaFgo+BBChannel` 双端口桥接、PC 二次元 CLI 统管、RTC 唤醒与战报推送 | 允许调用模拟器 ADB、标准进程 I/O 重定向与电源唤醒 API | 定时收菜计划触发或手动执行流水线时拉起；流水线全部收尾后自动优雅退出 |
+| `Spawn.BlueprintWorker.exe` | 按 `D-11` 分级按需提权（默认 `Medium IL`，目标管理员游戏时按需拉起 `High IL`；免 UAC 仅限 `LOOP-07`） | 解析执行 `.spbp` 蓝图 AST、异步 Kismet 循环与断点挂起、`WGC` 帧捕获、`OpenCvSharp4` / `PaddleOCR` 推理、`RawInput` 监听及 `L1~L4` 输入动作投递 | 允许引用 `SendInput`、`ViGEmClient` 与视觉推理库；严禁内存篡改 API | 仅在用户激活蓝图运行或调试时拉起；停止脚本或触发 `Tier 2/3` 游戏启动前立即销毁 |
+| `Spawn.TrainerWorker.exe` | 按需 `Medium IL`；修改器需管理员权限时每会话 1 次 `runas` UAC 升为 `High IL (0x3000)`（`D-11`） | 托管 `vault\Sandbox\Trainers\` 内经 SHA-256 复核的外部修改器（`PROC_THREAD_ATTRIBUTE_JOB_LIST` 原子入组 `KILL_ON_JOB_CLOSE` 作业对象）、发送 `MAPVK_VK_TO_VSC_EX` 交错按键代理、显隐修改器原窗口；作为倒置 `NamedPipeJsonRpc` 客户端连入 `Spawn.Host`；`M6` 承载收窄原生修改后端 | `M3` 仅允许作业对象、IOCP、`SendInput` 与只读进程查询，**零跨进程内存读写 API**；`M6` 受控进程内存 API 须经门禁白名单登记 | **仅在 `Tier 0`（或已通过零 AC 硬验票的 `VerifiedOfflineBypass` 混合单机）且全域无 `Tier 2/3` 进程/冷却锁时允许存在**；2 秒急停看门狗、Host 断连或游戏退出时连带销毁整个沙箱作业树 |
+| `Spawn.WorkflowWorker.exe` | 按 `D-11` 分级按需提权（需管理员权限时按需拉起 `High IL 0x3000`；免 UAC 仅限 `LOOP-07`） | 二次元四维资源锁并发 DAG 调度、内嵌 `Maa.Framework` C#、`MAA` 配置预写、`MaaFgo+BBChannel` 双端口桥接、PC 二次元 CLI 统管、RTC 唤醒与战报推送 | 允许调用模拟器 ADB、标准进程 I/O 重定向与电源唤醒 API | 定时收菜计划触发或手动执行流水线时拉起；流水线全部收尾后自动优雅退出 |
 | `Spawn.LegacyHook.Helper.exe` | 按目标进程位宽隔离 | 针对 `<5%` 不支持 DWM 合成的远古 DirectX 9 硬件独占全屏离线游戏提供可选共享纹理叠层 | 物理隔离于独立可选组件目录，默认安装包不启用 | 默认禁用；仅用户在特定 `Tier 0` 老游戏属性页显式勾选确认风险后单次伴生运行 |
 
 ---
@@ -133,7 +133,7 @@ sequenceDiagram
 
     Host->>Overlay: 4. 命名管道下发当前游戏 Schema 与主题，进入 144Hz 待命态
     opt 仅当 Tier 0 且 Profile 启用伴生修改器/蓝图
-        Host->>Worker: 唤醒 A0+A 静音监听并经计划任务静默拉起 TrainerWorker / BlueprintWorker
+        Host->>Worker: 唤醒 A0+A 静音监听并按 D-11 分级按需提权拉起 TrainerWorker / BlueprintWorker
     end
 
     loop 游戏运行期

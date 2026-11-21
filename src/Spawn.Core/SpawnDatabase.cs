@@ -9,7 +9,7 @@ namespace Spawn.Core;
 /// Asynchronous SQLite WAL repository (<c>spawn.db</c>) managing schema migrations, games, play sessions,
 /// achievement schemas/definitions/unlocks, and application settings.
 /// </summary>
-public sealed class SpawnDatabase : IDisposable, IAsyncDisposable
+public sealed partial class SpawnDatabase : IDisposable, IAsyncDisposable
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -88,7 +88,9 @@ public sealed class SpawnDatabase : IDisposable, IAsyncDisposable
                     achievement_capture_mode, achievement_channel_label,
                     cover_image_path, icon_path, hero_image_path, launch_arguments,
                     total_active_sec, total_background_sec, total_afk_sec,
-                    last_played_utc, created_utc
+                    last_played_utc, created_utc,
+                    steam_build_id, steam_last_updated,
+                    verified_offline_bypass, verified_offline_bypass_at_utc
                 ) VALUES (
                     $game_id, $title, $sort_title, $install_dir, $executable_rel_path,
                     $platform_source, $anti_cheat_tier, $anti_cheat_signature,
@@ -96,7 +98,9 @@ public sealed class SpawnDatabase : IDisposable, IAsyncDisposable
                     $achievement_capture_mode, $achievement_channel_label,
                     $cover_image_path, $icon_path, $hero_image_path, $launch_arguments,
                     $total_active_sec, $total_background_sec, $total_afk_sec,
-                    $last_played_utc, $created_utc
+                    $last_played_utc, $created_utc,
+                    $steam_build_id, $steam_last_updated,
+                    $verified_offline_bypass, $verified_offline_bypass_at_utc
                 )
                 ON CONFLICT(game_id) DO UPDATE SET
                     title = excluded.title,
@@ -118,7 +122,9 @@ public sealed class SpawnDatabase : IDisposable, IAsyncDisposable
                     total_active_sec = excluded.total_active_sec,
                     total_background_sec = excluded.total_background_sec,
                     total_afk_sec = excluded.total_afk_sec,
-                    last_played_utc = excluded.last_played_utc;
+                    last_played_utc = excluded.last_played_utc,
+                    steam_build_id = COALESCE(excluded.steam_build_id, games.steam_build_id),
+                    steam_last_updated = COALESCE(excluded.steam_last_updated, games.steam_last_updated);
                 """;
 
             string normalizedInstallDir = NormalizeDirectoryPath(game.InstallDir);
@@ -146,6 +152,10 @@ public sealed class SpawnDatabase : IDisposable, IAsyncDisposable
             cmd.Parameters.AddWithValue("$total_afk_sec", game.TotalAfkSec);
             cmd.Parameters.AddWithValue("$last_played_utc", FormatNullableUtc(game.LastPlayedUtc));
             cmd.Parameters.AddWithValue("$created_utc", FormatUtc(game.CreatedUtc));
+            cmd.Parameters.AddWithValue("$steam_build_id", (object?)game.SteamBuildId ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$steam_last_updated", FormatNullableUtc(game.SteamLastUpdatedUtc));
+            cmd.Parameters.AddWithValue("$verified_offline_bypass", game.VerifiedOfflineBypass ? 1 : 0);
+            cmd.Parameters.AddWithValue("$verified_offline_bypass_at_utc", FormatNullableUtc(game.VerifiedOfflineBypassAtUtc));
 
             await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -1040,7 +1050,7 @@ public sealed class SpawnDatabase : IDisposable, IAsyncDisposable
         double vol = all.TryGetValue(AppSettingKeys.OverlaySoundVolume, out string? rawVol)
                      && double.TryParse(rawVol, NumberStyles.Float, CultureInfo.InvariantCulture, out double parsedVol)
             ? Math.Clamp(parsedVol, 0.0, 1.0)
-            : 0.75;
+            : 1.0;
 
         bool mute = all.TryGetValue(AppSettingKeys.OverlayMuteSound, out string? rawMute)
                     && bool.TryParse(rawMute, out bool parsedMute) && parsedMute;
@@ -1508,9 +1518,21 @@ public sealed class SpawnDatabase : IDisposable, IAsyncDisposable
 
             INSERT OR IGNORE INTO schema_migrations (version, applied_at_utc)
             VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+
+            -- v3 (one-shot): the overlay volume default moved from 75% to 100% (Steam original playback level).
+            -- Only the untouched legacy default is migrated; any later user choice (including 75%) is kept.
+            UPDATE app_settings
+               SET setting_value = '1', updated_at_utc = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE setting_key = 'overlay.sound_volume'
+               AND setting_value = '0.75'
+               AND NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = 3);
+
+            INSERT OR IGNORE INTO schema_migrations (version, applied_at_utc)
+            VALUES (3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
             """;
 
         await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        await ApplyV4TrainerMigrationsAsync(conn, cancellationToken).ConfigureAwait(false);
     }
 
     private static GameDataRuleCacheRecord MapGameDataRuleRecord(SqliteDataReader reader) =>
@@ -1562,6 +1584,10 @@ public sealed class SpawnDatabase : IDisposable, IAsyncDisposable
             TotalAfkSec = reader.GetInt64(reader.GetOrdinal("total_afk_sec")),
             LastPlayedUtc = ParseNullableUtc(reader, "last_played_utc"),
             CreatedUtc = ParseUtc(reader.GetString(reader.GetOrdinal("created_utc"))),
+            SteamBuildId = GetNullableString(reader, "steam_build_id"),
+            SteamLastUpdatedUtc = ParseNullableUtc(reader, "steam_last_updated"),
+            VerifiedOfflineBypass = GetNullableInt32(reader, "verified_offline_bypass") is > 0,
+            VerifiedOfflineBypassAtUtc = ParseNullableUtc(reader, "verified_offline_bypass_at_utc"),
         };
 
     private static AchievementDefinitionDto MapAchievementDefinition(SqliteDataReader reader) =>

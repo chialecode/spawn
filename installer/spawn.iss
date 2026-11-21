@@ -2,9 +2,11 @@
 ; Invoked by `python scripts/package.py`, which supplies channel/identity defines via /D.
 ; Strict invariants:
 ;   1. PrivilegesRequired=lowest -> installs per-user under %LOCALAPPDATA%\Programs\<Identity> (zero UAC prompt).
-;   2. Isolated AppId, mutex, shortcuts, and directory per identity (spawn / spawn-dev / spawn-dev-test).
+;   2. Isolated AppId, mutex, shortcuts, and directory per identity (spawn / spawn-dev / spawn-test / spawn-dev-test).
 ;   3. Zero [UninstallDelete] on %LOCALAPPDATA%\spawn* data directories -> uninstall never deletes user saves or DB.
 ;   4. Never force-kills running instances -> requests graceful `--quit-for-update` and aborts if busy after timeout.
+;   5. Isolates Spawn.TrainerWorker under `{app}\Workers\Trainer\` (never flattened into `{app}`) and ships `THIRD-PARTY-NOTICES.txt`.
+;   6. Recognizes `/SPAWNRELAUNCH` during silent install to launch `{app}\{#DesktopExe} --after-update` (unchanged when absent).
 
 #ifndef Identity
   #error Identity must be defined via /DIdentity=...
@@ -47,6 +49,9 @@
 #endif
 #ifndef DesktopOnUpdate
   #define DesktopOnUpdate "1"
+#endif
+#ifndef StripAllPdbs
+  #define StripAllPdbs "0"
 #endif
 
 #define AppIdValue "{{" + AppGuid + "}"
@@ -98,8 +103,27 @@ english.CreateStartMenuIcon=Create a &Start Menu shortcut
 Name: "startmenuicon"; Description: "{cm:CreateStartMenuIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Check: AllowShortcuts
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Check: AllowShortcuts
 
+[InstallDelete]
+Type: files; Name: "{app}\libSkiaSharp.pdb"
+Type: files; Name: "{app}\Workers\Trainer\libSkiaSharp.pdb"
+#if StripAllPdbs == "1"
+Type: files; Name: "{app}\*.pdb"
+Type: files; Name: "{app}\Workers\Trainer\*.pdb"
+#endif
+
 [Files]
-Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "Workers\*,THIRD-PARTY-NOTICES.txt,e_sqlite3.dll,libSkiaSharp.dll"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}\THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
+#if FileExists(SourceDir + "\e_sqlite3.dll")
+Source: "{#SourceDir}\e_sqlite3.dll"; DestDir: "{app}"; Flags: ignoreversion; Check: NeedsReplaceFile('{app}\e_sqlite3.dll', '{#GetSHA256OfFile(SourceDir + "\e_sqlite3.dll")}')
+#endif
+#if FileExists(SourceDir + "\libSkiaSharp.dll")
+Source: "{#SourceDir}\libSkiaSharp.dll"; DestDir: "{app}"; Flags: ignoreversion; Check: NeedsReplaceFile('{app}\libSkiaSharp.dll', '{#GetSHA256OfFile(SourceDir + "\libSkiaSharp.dll")}')
+#endif
+Source: "{#SourceDir}\Workers\Trainer\*"; DestDir: "{app}\Workers\Trainer"; Excludes: "e_sqlite3.dll"; Flags: ignoreversion recursesubdirs createallsubdirs
+#if FileExists(SourceDir + "\Workers\Trainer\e_sqlite3.dll")
+Source: "{#SourceDir}\Workers\Trainer\e_sqlite3.dll"; DestDir: "{app}\Workers\Trainer"; Flags: ignoreversion; Check: NeedsReplaceFile('{app}\Workers\Trainer\e_sqlite3.dll', '{#GetSHA256OfFile(SourceDir + "\Workers\Trainer\e_sqlite3.dll")}')
+#endif
 
 [Icons]
 Name: "{autoprograms}\{#DisplayName}"; Filename: "{app}\{#DesktopExe}"; IconFilename: "{app}\{#DesktopExe}"; AppUserModelID: "{#Aumid}"; Check: WantStartMenuIcon
@@ -107,6 +131,7 @@ Name: "{autodesktop}\{#DisplayName}"; Filename: "{app}\{#DesktopExe}"; IconFilen
 
 [Run]
 Filename: "{app}\{#DesktopExe}"; Description: "{cm:LaunchProgram,{#DisplayName}}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#DesktopExe}"; Parameters: "--after-update"; WorkingDir: "{app}"; Flags: nowait skipifnotsilent; Check: WantSilentRelaunch
 
 [Code]
 const
@@ -130,6 +155,26 @@ var
 function AllowShortcuts: Boolean;
 begin
   Result := ShortcutsEnabled;
+end;
+
+function HasCommandLineSwitch(SwitchName: String): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 1 to ParamCount do
+  begin
+    if CompareText(ParamStr(I), SwitchName) = 0 then
+    begin
+      Result := True;
+      exit;
+    end;
+  end;
+end;
+
+function WantSilentRelaunch: Boolean;
+begin
+  Result := WizardSilent and HasCommandLineSwitch('/SPAWNRELAUNCH');
 end;
 
 function StartMenuIconPath: String;
@@ -177,10 +222,29 @@ begin
     WizardSelectTasks('!desktopicon');
 end;
 
+function NeedsReplaceFile(DestPathExpr, ExpectedSha256: String): Boolean;
+var
+  FullDest: String;
+begin
+  FullDest := ExpandConstant(DestPathExpr);
+  if not FileExists(FullDest) then
+  begin
+    Result := True;
+    exit;
+  end;
+  try
+    Result := CompareText(GetSHA256OfFile(FullDest), ExpectedSha256) <> 0;
+  except
+    Result := True;
+  end;
+  if not Result then
+    Log('SPAWN Setup: skipping unchanged native binary (SHA-256 match): ' + FullDest);
+end;
+
 procedure RetireLockedBinariesInDir(DirPath, RetireRoot: String);
 var
   FindRec: TFindRec;
-  FullPath, SubRetire: String;
+  FullPath, SubRetire, RetiredDest: String;
   ProbeStream: TFileStream;
 begin
   if not DirExists(DirPath) then
@@ -206,8 +270,11 @@ begin
             ProbeStream.Free;
           except
             ForceDirectories(RetireRoot);
-            RenameFile(FullPath, AddBackslash(RetireRoot) + FindRec.Name + '.' + GetDateTimeString('yyyymmddhhnnss', #0, #0));
-            Log('SPAWN Setup: retired kernel-cached binary ' + FullPath);
+            RetiredDest := AddBackslash(RetireRoot) + FindRec.Name + '.' + GetDateTimeString('yyyymmddhhnnss', #0, #0);
+            if RenameFile(FullPath, RetiredDest) then
+              Log('SPAWN Setup: retired kernel-cached binary ' + FullPath)
+            else
+              Log('SPAWN Setup: could not retire externally locked binary (will skip if SHA-256 unchanged): ' + FullPath);
           end;
         end;
       until not FindNext(FindRec);

@@ -26,6 +26,16 @@ public sealed class GameScanOptions
 }
 
 /// <summary>
+/// Parsed Steam <c>appmanifest_&lt;appid&gt;.acf</c> identity and version build metadata.
+/// </summary>
+public sealed record SteamAppManifestMetadata(
+    int? AppId,
+    string? Name,
+    string? InstallDir,
+    string? BuildId,
+    DateTimeOffset? LastUpdatedUtc);
+
+/// <summary>
 /// Intermediate scan result produced by <see cref="GameDirectoryScanner"/> before persistence.
 /// </summary>
 public sealed record ScannedGameDescriptor
@@ -45,6 +55,10 @@ public sealed record ScannedGameDescriptor
     public string? CoverImagePath { get; init; }
     public string? IconPath { get; init; }
     public string? HeroImagePath { get; init; }
+    public string? SteamBuildId { get; init; }
+    public DateTimeOffset? SteamLastUpdatedUtc { get; init; }
+    public string? EnglishTitle { get; init; }
+    public TrainerTitleSource EnglishTitleSource { get; init; } = TrainerTitleSource.Unknown;
 }
 
 /// <summary>
@@ -133,6 +147,12 @@ public sealed partial class GameDirectoryScanner
 
     [GeneratedRegex(@"""name""\s+""([^""]+)""", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex AcfNameRegex();
+
+    [GeneratedRegex(@"""buildid""\s+""([^""]+)""", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex AcfBuildIdRegex();
+
+    [GeneratedRegex(@"""LastUpdated""\s+""([^""]+)""", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex AcfLastUpdatedRegex();
 
     private readonly IAntiCheatGuardService _antiCheatGuard;
     private readonly GameArtworkExtractor _artworkExtractor;
@@ -367,6 +387,13 @@ public sealed partial class GameDirectoryScanner
 
         var (captureMode, channelLabel) = ClassifyGogAchievementChannel(installDir, gogInfo.GameId);
 
+        string? englishTitle = !string.IsNullOrWhiteSpace(gogInfo.Name)
+            ? gogInfo.Name.Trim()
+            : GameTitleCleaner.CleanEnglishTitle(Path.GetFileName(installDir));
+        TrainerTitleSource englishSource = !string.IsNullOrWhiteSpace(gogInfo.Name)
+            ? TrainerTitleSource.GogInfo
+            : (!string.IsNullOrWhiteSpace(englishTitle) ? TrainerTitleSource.Cleaner : TrainerTitleSource.Unknown);
+
         return new ScannedGameDescriptor
         {
             InstallDir = installDir,
@@ -384,6 +411,8 @@ public sealed partial class GameDirectoryScanner
             CoverImagePath = artwork.CoverImagePath,
             IconPath = artwork.IconPath,
             HeroImagePath = artwork.HeroImagePath,
+            EnglishTitle = englishTitle,
+            EnglishTitleSource = englishSource,
         };
     }
 
@@ -494,6 +523,43 @@ public sealed partial class GameDirectoryScanner
                 cancellationToken).ConfigureAwait(false);
         }
 
+        // Resolve canonical English title without disturbing localized (Chinese) display Title.
+        string? englishTitle = null;
+        TrainerTitleSource englishSource = TrainerTitleSource.Unknown;
+
+        if (!string.IsNullOrWhiteSpace(steamProbe.AcfGameName) && GameTitleCleaner.IsLikelyEnglishTitle(steamProbe.AcfGameName))
+        {
+            englishTitle = steamProbe.AcfGameName.Trim();
+            englishSource = TrainerTitleSource.AcfName;
+        }
+        else if (steamAppId.HasValue && _options.AllowOnlineMetadataLookup && GameTitleCleaner.ContainsCjkCharacters(title))
+        {
+            string? fetchedEnglish = await TryFetchSteamEnglishTitleAsync(steamAppId.Value, _options.OnlineLookupTimeout, cancellationToken)
+                .ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(fetchedEnglish))
+            {
+                englishTitle = fetchedEnglish;
+                englishSource = TrainerTitleSource.SteamAppDetails;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(englishTitle))
+        {
+            string? cleanedEnglish = !string.IsNullOrWhiteSpace(steamProbe.AcfGameName)
+                ? steamProbe.AcfGameName.Trim()
+                : (GameTitleCleaner.CleanEnglishTitle(title)
+                    ?? GameTitleCleaner.CleanEnglishTitle(Path.GetFileName(installDir))
+                    ?? searchCandidates.FirstOrDefault(GameTitleCleaner.IsLikelyEnglishTitle));
+
+            if (!string.IsNullOrWhiteSpace(cleanedEnglish))
+            {
+                englishTitle = cleanedEnglish;
+                englishSource = !string.IsNullOrWhiteSpace(steamProbe.AcfGameName)
+                    ? TrainerTitleSource.AcfName
+                    : TrainerTitleSource.Cleaner;
+            }
+        }
+
         return new ScannedGameDescriptor
         {
             InstallDir = installDir,
@@ -511,7 +577,138 @@ public sealed partial class GameDirectoryScanner
             CoverImagePath = artwork.CoverImagePath,
             IconPath = artwork.IconPath,
             HeroImagePath = artwork.HeroImagePath,
+            SteamBuildId = steamProbe.SteamBuildId,
+            SteamLastUpdatedUtc = steamProbe.SteamLastUpdatedUtc,
+            EnglishTitle = englishTitle,
+            EnglishTitleSource = englishSource,
         };
+    }
+
+    /// <summary>
+    /// Applies scanned Steam ACF build fingerprint metadata (<c>buildid</c> and <c>LastUpdated</c>) onto a <see cref="GameRecord"/>
+    /// while preserving existing values when the rescan did not observe an ACF manifest.
+    /// </summary>
+    public static GameRecord ApplySteamBuildFingerprint(GameRecord game, ScannedGameDescriptor scanned)
+    {
+        ArgumentNullException.ThrowIfNull(game);
+        ArgumentNullException.ThrowIfNull(scanned);
+
+        return game with
+        {
+            SteamBuildId = scanned.SteamBuildId ?? game.SteamBuildId,
+            SteamLastUpdatedUtc = scanned.SteamLastUpdatedUtc ?? game.SteamLastUpdatedUtc,
+        };
+    }
+
+    /// <summary>
+    /// Lazily resolves a game's canonical English title following the M3 waterfall
+    /// (User override → cached <c>trainer_title_map</c> → Steam ACF <c>"name"</c> →
+    /// <c>appdetails?appids=&lt;id&gt;&amp;l=english&amp;filters=basic</c> → GOG <c>goggame-*.info</c> <c>"name"</c> →
+    /// <see cref="GameTitleCleaner"/> fallback) and permanently caches the result in <c>trainer_title_map</c>.
+    /// Never modifies <see cref="GameRecord.Title"/> so Chinese display titles remain intact.
+    /// </summary>
+    public async Task<TrainerTitleMapRecord> ResolveAndCacheEnglishTitleAsync(
+        GameRecord game,
+        SpawnDatabase database,
+        string? userSearchOverride = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(game);
+        ArgumentNullException.ThrowIfNull(database);
+
+        var existingMap = await database.GetTrainerTitleMapAsync(game.GameId, cancellationToken).ConfigureAwait(false);
+        string? trimmedOverride = string.IsNullOrWhiteSpace(userSearchOverride) ? null : userSearchOverride.Trim();
+
+        // 1. Explicit user search override takes highest precedence and is persisted.
+        if (!string.IsNullOrWhiteSpace(trimmedOverride))
+        {
+            var overrideRecord = new TrainerTitleMapRecord
+            {
+                GameId = game.GameId,
+                EnglishTitle = !string.IsNullOrWhiteSpace(existingMap?.EnglishTitle) ? existingMap.EnglishTitle : trimmedOverride,
+                TitleSource = existingMap is not null && existingMap.TitleSource != TrainerTitleSource.Unknown
+                    ? existingMap.TitleSource
+                    : TrainerTitleSource.User,
+                UserSearchOverride = trimmedOverride,
+                FlingPageUrl = existingMap?.FlingPageUrl,
+                UpdatedAtUtc = DateTimeOffset.UtcNow,
+            };
+            await database.UpsertTrainerTitleMapAsync(overrideRecord, cancellationToken).ConfigureAwait(false);
+            return overrideRecord;
+        }
+
+        // 2. Reuse permanent cache when present (including previously saved user override).
+        if (existingMap is not null
+            && (!string.IsNullOrWhiteSpace(existingMap.UserSearchOverride)
+                || (!string.IsNullOrWhiteSpace(existingMap.EnglishTitle)
+                    && existingMap.TitleSource is TrainerTitleSource.AcfName
+                        or TrainerTitleSource.SteamAppDetails
+                        or TrainerTitleSource.GogInfo
+                        or TrainerTitleSource.User)))
+        {
+            return existingMap;
+        }
+
+        string? resolvedEnglish = null;
+        TrainerTitleSource resolvedSource = TrainerTitleSource.Cleaner;
+
+        // 3. Steam appmanifest_<id>.acf "name".
+        var acf = TryFindAppManifestForInstallDir(game.InstallDir, game.SteamAppId);
+        if (!string.IsNullOrWhiteSpace(acf?.Name) && GameTitleCleaner.IsLikelyEnglishTitle(acf.Name))
+        {
+            resolvedEnglish = acf.Name.Trim();
+            resolvedSource = TrainerTitleSource.AcfName;
+        }
+
+        // 4. Lazy Steam appdetails?appids=<id>&l=english&filters=basic query (permanently cached once fetched).
+        if (string.IsNullOrWhiteSpace(resolvedEnglish)
+            && game.SteamAppId.HasValue
+            && _options.AllowOnlineMetadataLookup)
+        {
+            string? steamEnglish = await TryFetchSteamEnglishTitleAsync(
+                game.SteamAppId.Value,
+                _options.OnlineLookupTimeout,
+                cancellationToken).ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(steamEnglish))
+            {
+                resolvedEnglish = steamEnglish;
+                resolvedSource = TrainerTitleSource.SteamAppDetails;
+            }
+        }
+
+        // 5. GOG goggame-*.info "name".
+        if (string.IsNullOrWhiteSpace(resolvedEnglish) && Directory.Exists(game.InstallDir))
+        {
+            var gogInfo = TryParseGogInfo(game.InstallDir);
+            if (!string.IsNullOrWhiteSpace(gogInfo?.Name))
+            {
+                resolvedEnglish = gogInfo.Name.Trim();
+                resolvedSource = TrainerTitleSource.GogInfo;
+            }
+        }
+
+        // 6. GameTitleCleaner fallback (folder name / PE ProductName / game.Title).
+        if (string.IsNullOrWhiteSpace(resolvedEnglish))
+        {
+            resolvedEnglish = GameTitleCleaner.CleanEnglishTitle(Path.GetFileName(Path.TrimEndingDirectorySeparator(game.InstallDir)))
+                ?? GameTitleCleaner.CleanEnglishTitle(GameTitleCleaner.TryGetCleanPeProductName(game.ExecutableFullPath))
+                ?? GameTitleCleaner.CleanEnglishTitle(game.Title)
+                ?? (!string.IsNullOrWhiteSpace(acf?.Name) ? acf.Name.Trim() : null)
+                ?? GameTitleCleaner.CleanTitle(game.Title);
+            resolvedSource = TrainerTitleSource.Cleaner;
+        }
+
+        var persisted = new TrainerTitleMapRecord
+        {
+            GameId = game.GameId,
+            EnglishTitle = resolvedEnglish,
+            TitleSource = resolvedSource,
+            UserSearchOverride = existingMap?.UserSearchOverride,
+            FlingPageUrl = existingMap?.FlingPageUrl,
+            UpdatedAtUtc = DateTimeOffset.UtcNow,
+        };
+        await database.UpsertTrainerTitleMapAsync(persisted, cancellationToken).ConfigureAwait(false);
+        return persisted;
     }
 
     // -------------------------------------------------------------------------
@@ -674,7 +871,9 @@ public sealed partial class GameDirectoryScanner
         string? EmulatorChannelLabel,
         bool HasGbeForkActivatedBackup,
         bool IsSteamAppsLibraryLayout,
-        string? AcfGameName);
+        string? AcfGameName,
+        string? SteamBuildId,
+        DateTimeOffset? SteamLastUpdatedUtc);
 
     private static LocalSteamProbeResult ProbeLocalSteamIdentity(string installDir)
     {
@@ -683,8 +882,7 @@ public sealed partial class GameDirectoryScanner
 
         // Check parent Steam library appmanifest_<appid>.acf when inside .../steamapps/common/<Folder>.
         bool isSteamAppsLayout = false;
-        string? acfName = null;
-        int? acfAppId = null;
+        SteamAppManifestMetadata? acfMetadata = null;
         var parentDir = Directory.GetParent(installDir);
         if (parentDir is not null && string.Equals(parentDir.Name, "common", StringComparison.OrdinalIgnoreCase))
         {
@@ -693,11 +891,11 @@ public sealed partial class GameDirectoryScanner
             {
                 isSteamAppsLayout = true;
                 string gameFolderName = Path.GetFileName(installDir);
-                (acfAppId, acfName) = TryFindMatchingAppManifest(steamAppsDir.FullName, gameFolderName);
+                acfMetadata = TryFindMatchingAppManifest(steamAppsDir.FullName, gameFolderName, inspectedAppId);
             }
         }
 
-        int? finalAppId = inspectedAppId ?? acfAppId;
+        int? finalAppId = inspectedAppId ?? acfMetadata?.AppId;
 
         return new LocalSteamProbeResult(
             SteamAppId: finalAppId,
@@ -706,7 +904,9 @@ public sealed partial class GameDirectoryScanner
             EmulatorChannelLabel: emuInfo?.ChannelLabel,
             HasGbeForkActivatedBackup: hasGbeForkBackup,
             IsSteamAppsLibraryLayout: isSteamAppsLayout,
-            AcfGameName: acfName);
+            AcfGameName: acfMetadata?.Name,
+            SteamBuildId: acfMetadata?.BuildId,
+            SteamLastUpdatedUtc: acfMetadata?.LastUpdatedUtc);
     }
 
     private static (AchievementCaptureMode Mode, string Label) ClassifySteamOrStandaloneChannel(
@@ -934,7 +1134,28 @@ public sealed partial class GameDirectoryScanner
         return bestOverall;
     }
 
-    private async Task<string?> TryFetchSteamOfficialTitleAsync(
+    private Task<string?> TryFetchSteamOfficialTitleAsync(
+        int appId,
+        TimeSpan timeout,
+        CancellationToken cancellationToken) =>
+        TryFetchSteamAppDetailsNameAsync(
+            $"https://store.steampowered.com/api/appdetails?appids={appId}&l=schinese",
+            appId,
+            timeout,
+            cancellationToken);
+
+    private Task<string?> TryFetchSteamEnglishTitleAsync(
+        int appId,
+        TimeSpan timeout,
+        CancellationToken cancellationToken) =>
+        TryFetchSteamAppDetailsNameAsync(
+            $"https://store.steampowered.com/api/appdetails?appids={appId}&l=english&filters=basic",
+            appId,
+            timeout,
+            cancellationToken);
+
+    private async Task<string?> TryFetchSteamAppDetailsNameAsync(
+        string url,
         int appId,
         TimeSpan timeout,
         CancellationToken cancellationToken)
@@ -944,7 +1165,6 @@ public sealed partial class GameDirectoryScanner
 
         try
         {
-            string url = $"https://store.steampowered.com/api/appdetails?appids={appId}&l=schinese";
             using var resp = await _httpClient.GetAsync(url, linkedCts.Token).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
             {
@@ -976,27 +1196,142 @@ public sealed partial class GameDirectoryScanner
     // Static Filesystem & Parsing Utilities
     // -------------------------------------------------------------------------
 
-    private static (int? AppId, string? Name) TryFindMatchingAppManifest(string steamAppsDir, string gameFolderName)
+    /// <summary>
+    /// Parses Steam VDF <c>appmanifest_&lt;id&gt;.acf</c> text to extract <c>appid</c>, <c>name</c>,
+    /// <c>installdir</c>, <c>buildid</c>, and <c>LastUpdated</c> (Unix epoch seconds to UTC).
+    /// </summary>
+    public static SteamAppManifestMetadata? TryParseAppManifestText(string? acfText)
+    {
+        if (string.IsNullOrWhiteSpace(acfText))
+        {
+            return null;
+        }
+
+        var idMatch = AcfAppIdRegex().Match(acfText);
+        var nameMatch = AcfNameRegex().Match(acfText);
+        var installMatch = AcfInstallDirRegex().Match(acfText);
+        var buildMatch = AcfBuildIdRegex().Match(acfText);
+        var updatedMatch = AcfLastUpdatedRegex().Match(acfText);
+
+        int? appId = idMatch.Success
+                     && int.TryParse(idMatch.Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out int parsedId)
+                     && parsedId > 0
+            ? parsedId
+            : null;
+
+        string? name = nameMatch.Success && !string.IsNullOrWhiteSpace(nameMatch.Groups[1].Value)
+            ? nameMatch.Groups[1].Value.Trim()
+            : null;
+
+        string? installDir = installMatch.Success && !string.IsNullOrWhiteSpace(installMatch.Groups[1].Value)
+            ? installMatch.Groups[1].Value.Trim()
+            : null;
+
+        string? rawBuildId = buildMatch.Success ? buildMatch.Groups[1].Value.Trim() : null;
+        string? buildId = !string.IsNullOrWhiteSpace(rawBuildId) && !string.Equals(rawBuildId, "0", StringComparison.Ordinal)
+            ? rawBuildId
+            : null;
+
+        DateTimeOffset? lastUpdatedUtc = null;
+        if (updatedMatch.Success)
+        {
+            string rawUpdated = updatedMatch.Groups[1].Value.Trim();
+            if (long.TryParse(rawUpdated, NumberStyles.Integer, CultureInfo.InvariantCulture, out long unixSec) && unixSec > 0)
+            {
+                try
+                {
+                    lastUpdatedUtc = DateTimeOffset.FromUnixTimeSeconds(unixSec);
+                }
+                catch (ArgumentOutOfRangeException)
+                {
+                    // Ignore out-of-range timestamps.
+                }
+            }
+            else if (DateTimeOffset.TryParse(
+                rawUpdated,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out DateTimeOffset parsedDto))
+            {
+                lastUpdatedUtc = parsedDto;
+            }
+        }
+
+        if (appId is null && name is null && installDir is null && buildId is null && lastUpdatedUtc is null)
+        {
+            return null;
+        }
+
+        return new SteamAppManifestMetadata(appId, name, installDir, buildId, lastUpdatedUtc);
+    }
+
+    /// <summary>
+    /// Locates and parses the Steam <c>appmanifest_&lt;id&gt;.acf</c> corresponding to <paramref name="installDir"/>
+    /// when the game resides inside a <c>steamapps\common\&lt;Folder&gt;</c> library layout.
+    /// </summary>
+    public static SteamAppManifestMetadata? TryFindAppManifestForInstallDir(string? installDir, int? expectedAppId = null)
+    {
+        if (string.IsNullOrWhiteSpace(installDir))
+        {
+            return null;
+        }
+
+        try
+        {
+            string normalized = Path.TrimEndingDirectorySeparator(Path.GetFullPath(installDir));
+            var parentDir = Directory.GetParent(normalized);
+            if (parentDir is null || !string.Equals(parentDir.Name, "common", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            var steamAppsDir = parentDir.Parent;
+            if (steamAppsDir is null || !string.Equals(steamAppsDir.Name, "steamapps", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            return TryFindMatchingAppManifest(steamAppsDir.FullName, Path.GetFileName(normalized), expectedAppId);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static SteamAppManifestMetadata? TryFindMatchingAppManifest(
+        string steamAppsDir,
+        string gameFolderName,
+        int? expectedAppId = null)
     {
         try
         {
+            if (expectedAppId.HasValue && expectedAppId.Value > 0)
+            {
+                string directAcf = Path.Combine(steamAppsDir, $"appmanifest_{expectedAppId.Value.ToString(CultureInfo.InvariantCulture)}.acf");
+                if (File.Exists(directAcf))
+                {
+                    var directMeta = TryParseAppManifestText(File.ReadAllText(directAcf));
+                    if (directMeta is not null
+                        && (string.IsNullOrWhiteSpace(directMeta.InstallDir)
+                            || string.Equals(directMeta.InstallDir, gameFolderName, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        return directMeta;
+                    }
+                }
+            }
+
             foreach (string acfPath in Directory.EnumerateFiles(steamAppsDir, "appmanifest_*.acf", SearchOption.TopDirectoryOnly))
             {
-                string text = File.ReadAllText(acfPath);
-                var installMatch = AcfInstallDirRegex().Match(text);
-                if (!installMatch.Success
-                    || !string.Equals(installMatch.Groups[1].Value, gameFolderName, StringComparison.OrdinalIgnoreCase))
+                var meta = TryParseAppManifestText(File.ReadAllText(acfPath));
+                if (meta is null
+                    || string.IsNullOrWhiteSpace(meta.InstallDir)
+                    || !string.Equals(meta.InstallDir, gameFolderName, StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
                 }
 
-                var idMatch = AcfAppIdRegex().Match(text);
-                var nameMatch = AcfNameRegex().Match(text);
-                int? appId = idMatch.Success && int.TryParse(idMatch.Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out int parsed)
-                    ? parsed
-                    : null;
-                string? name = nameMatch.Success ? nameMatch.Groups[1].Value.Trim() : null;
-                return (appId, name);
+                return meta;
             }
         }
         catch
@@ -1004,7 +1339,7 @@ public sealed partial class GameDirectoryScanner
             // Ignore inaccessible Steam library manifests.
         }
 
-        return (null, null);
+        return null;
     }
 
     private static string? ResolveValidatedExeRelPath(string installDir, string? candidateRelPath)

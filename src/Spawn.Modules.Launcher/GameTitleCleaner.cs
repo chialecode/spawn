@@ -63,6 +63,158 @@ public static partial class GameTitleCleaner
     [GeneratedRegex(@"^(?:The|A|An)\s+", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex LeadingArticleRegex();
 
+    [GeneratedRegex(@"^v?(?:20\d{2}\.\d+(?:\.\d+)*(?:[abfp]\d+)?|6000\.\d+(?:\.\d+)*(?:[abfp]\d+)?)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex UnityEngineVersionRegex();
+
+    [GeneratedRegex(@"^v?(?:4\.27\.\d+(?:\.\d+)*|5\.\d+\.\d+(?:\.\d+)*)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex UnrealEngineVersionRegex();
+
+    [GeneratedRegex(@"^v?0+(?:\.0+)*$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex AllZeroVersionRegex();
+
+    [GeneratedRegex(@"[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF]", RegexOptions.CultureInvariant)]
+    private static partial Regex CjkCharacterRegex();
+
+    [GeneratedRegex(@"[A-Za-z]", RegexOptions.CultureInvariant)]
+    private static partial Regex LatinLetterRegex();
+
+    /// <summary>
+    /// Returns <see langword="true"/> when <paramref name="versionText"/> is an engine runtime version noise
+    /// string (Unity <c>20xx.x.*</c> / <c>6000.x.*</c> or Unreal <c>4.27.*</c> / <c>5.x.*</c>) or an empty/zero placeholder.
+    /// </summary>
+    public static bool IsEngineVersionNoise(string? versionText)
+    {
+        if (string.IsNullOrWhiteSpace(versionText))
+        {
+            return true;
+        }
+
+        string normalized = NormalizeVersionToken(versionText);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return true;
+        }
+
+        return AllZeroVersionRegex().IsMatch(normalized)
+            || UnityEngineVersionRegex().IsMatch(normalized)
+            || UnrealEngineVersionRegex().IsMatch(normalized);
+    }
+
+    /// <summary>
+    /// Extracts a non-noise PE <c>ProductVersion</c>/<c>FileVersion</c> string from <paramref name="exeFullPath"/>,
+    /// filtering Unity (<c>20xx.x.*</c>) and Unreal (<c>4.27.*</c>/<c>5.x.*</c>) engine runtime version noise.
+    /// </summary>
+    public static string? TryGetUsefulPeGameVersion(string? exeFullPath)
+    {
+        if (string.IsNullOrWhiteSpace(exeFullPath) || !File.Exists(exeFullPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            var info = FileVersionInfo.GetVersionInfo(exeFullPath);
+            foreach (string? raw in new[] { info.ProductVersion, info.FileVersion })
+            {
+                string normalized = NormalizeVersionToken(raw);
+                if (!string.IsNullOrWhiteSpace(normalized) && !IsEngineVersionNoise(normalized))
+                {
+                    return normalized;
+                }
+            }
+        }
+        catch
+        {
+            // Ignore unreadable or malformed PE version blocks.
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Returns <see langword="true"/> when <paramref name="text"/> contains CJK ideographs, Kana, or Hangul characters.
+    /// </summary>
+    public static bool ContainsCjkCharacters(string? text) =>
+        !string.IsNullOrWhiteSpace(text) && CjkCharacterRegex().IsMatch(text);
+
+    /// <summary>
+    /// Returns <see langword="true"/> when <paramref name="title"/> is suitable as a canonical English search title
+    /// (contains Latin letters and does not contain CJK characters).
+    /// </summary>
+    public static bool IsLikelyEnglishTitle(string? title) =>
+        !string.IsNullOrWhiteSpace(title)
+        && LatinLetterRegex().IsMatch(title)
+        && !CjkCharacterRegex().IsMatch(title);
+
+    /// <summary>
+    /// Extracts and cleans a canonical English title candidate from a raw folder name, executable stem, or bilingual display title.
+    /// Returns <see langword="null"/> if no usable English title remains after denoising.
+    /// </summary>
+    public static string? CleanEnglishTitle(string? rawName)
+    {
+        if (string.IsNullOrWhiteSpace(rawName))
+        {
+            return null;
+        }
+
+        // Handle bilingual display strings like "黑神话：悟空 / Black Myth: Wukong" or "艾尔登法环 | ELDEN RING".
+        string working = rawName.Trim();
+        string[] bilingualParts = working.Split(['/', '|'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (bilingualParts.Length > 1)
+        {
+            foreach (string part in bilingualParts)
+            {
+                string cleanedPart = CleanTitle(part);
+                if (IsLikelyEnglishTitle(cleanedPart) && !string.Equals(cleanedPart, "Unknown Game", StringComparison.OrdinalIgnoreCase))
+                {
+                    return cleanedPart;
+                }
+            }
+        }
+
+        string cleaned = CleanTitle(working);
+        if (string.Equals(cleaned, "Unknown Game", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        if (IsLikelyEnglishTitle(cleaned))
+        {
+            return cleaned;
+        }
+
+        // Strip residual CJK runs (e.g., "蔚蓝 Celeste" -> "Celeste") while preserving English words/digits.
+        string strippedCjk = CjkCharacterRegex().Replace(cleaned, " ");
+        strippedCjk = MultiSpaceRegex().Replace(strippedCjk, " ").Trim(' ', '-', '_', '.', ':', '：', '–', '—', '(', ')', '[', ']', '【', '】');
+        return IsLikelyEnglishTitle(strippedCjk) && strippedCjk.Length >= 2
+            ? strippedCjk
+            : null;
+    }
+
+    private static string NormalizeVersionToken(string? rawVersion)
+    {
+        if (string.IsNullOrWhiteSpace(rawVersion))
+        {
+            return string.Empty;
+        }
+
+        string trimmed = rawVersion.Trim();
+        int spaceIdx = trimmed.IndexOf(' ');
+        if (spaceIdx > 0 && !trimmed.Contains(','))
+        {
+            trimmed = trimmed[..spaceIdx];
+        }
+
+        // Convert comma-formatted Win32 FILEVERSION strings ("1, 0, 2, 0") to dotted form.
+        if (trimmed.Contains(','))
+        {
+            string[] parts = trimmed.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            trimmed = string.Join('.', parts);
+        }
+
+        return trimmed.Trim();
+    }
+
     /// <summary>
     /// Extracts a DLsite work code (e.g. <c>RJ01123456</c>, <c>RJ398765</c>) if present in the path or folder name.
     /// </summary>

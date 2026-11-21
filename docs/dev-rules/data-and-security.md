@@ -10,13 +10,14 @@
 
 全仓路径、通道标识、目录名与凭据命名空间统一采用小写 **`spawn`**（产品展示名称仍为大写 **SPAWN**）。正式版、开发版与自动化门禁测试必须保持 100% 物理隔离，支持同机并存且互不干扰：
 
-| 运行通道 | 程序安装目录 | 应用数据根目录（数据库/凭据/配置） | 默认本地内容寻址库（分卷库为 `<目标盘根>\SPAWN_Vault\`） | 独立实例锁与命名管道前缀 |
+| 运行通道 / 身份 | 程序安装目录（Inno Setup `PrivilegesRequired=lowest`） | 应用数据根目录（数据库/凭据/配置/回收站） | 默认本地内容寻址库（分卷库为 `<目标盘根>\SPAWN_Vault\`） | 独立实例锁与控制/IPC 管道前缀 |
 | :--- | :--- | :--- | :--- | :--- |
-| **`release`（正式安装版）** | `%ProgramFiles%\spawn`（UIAccess 宿主：`%ProgramFiles%\spawn\Overlay\Spawn.OverlayHost.exe`）或 `%LOCALAPPDATA%\Programs\spawn` | `%LOCALAPPDATA%\spawn` | `%LOCALAPPDATA%\spawn\vault` | `Global\spawn-instance` / `spawn-ipc-*` |
-| **`dev`（开发版与源码运行）** | `%LOCALAPPDATA%\Programs\spawn-dev`（源码 `dotnet run` 免安装） | `%LOCALAPPDATA%\spawn-dev` | `%LOCALAPPDATA%\spawn-dev\vault` | `Global\spawn-dev-instance` / `spawn-dev-ipc-*` |
-| **`test`（自动化测试与门禁）** | 本次运行独占随机临时目录 | `%TEMP%\spawn-gate-<run-id>\data` | `%TEMP%\spawn-gate-<run-id>\vault` | `spawn-test-<run-id>-*` |
+| **`release`（`spawn` 正式版）** | `%LOCALAPPDATA%\Programs\spawn\spawn.exe`（可选受保护 UIAccess 目录 `%ProgramFiles%\spawn\Overlay\`） | `%LOCALAPPDATA%\spawn` | `%LOCALAPPDATA%\spawn\vault` | `spawn-instance` / `spawn-control` / `spawn-ipc-*` |
+| **`dev`（`spawn-dev` 开发版与源码运行）** | `%LOCALAPPDATA%\Programs\spawn-dev\spawn-dev.exe`（琥珀色 `DEV` 角标图标） | `%LOCALAPPDATA%\spawn-dev`（含 `dev-workspace.json` 桥接） | `%LOCALAPPDATA%\spawn-dev\vault` | `spawn-dev-instance` / `spawn-dev-control` / `spawn-dev-ipc-*` |
+| **`test`（`spawn-dev-test` / 单元测试）** | `%TEMP%\spawn-tests-<id>`（打包演练用独立身份 `spawn-dev-test`） | `%TEMP%\spawn-tests-<id>\data` | `%TEMP%\spawn-tests-<id>\vault` | `spawn-dev-test-instance` / 随机测试管道名 |
 
-- **环境变量覆盖与门禁保护**：`SPAWN_DATA_DIR` 与 `SPAWN_VAULT_DIR` 可显式覆盖数据根与仓库根（手工调试推荐指向仓库内已忽略的 `.local/dev-data`）。**源码构建与所有自动化测试严禁回退读写 `%LOCALAPPDATA%\spawn` 正式版目录**；门禁测试结束时必须校验临时目录外未产生任何残留文件，且单实例文件锁 `spawn.lock` 采用 `FileShare.None` 独占保护，拿不到锁立即明确报错退出。
+- **环境变量覆盖、开发桥接与门禁保护**：`SPAWN_DATA_DIR` 可显式覆盖数据根目录；`install-dev` 向 `%LOCALAPPDATA%\spawn-dev\dev-workspace.json` 写入当前代码仓库根路径，使从快捷方式启动的 `SPAWN Dev` 同样能只读发现仓库 `.local\games` 与 `.local\secrets`（正式版 `spawn` 严禁读取该文件）。**源码构建与所有自动化测试严禁回退读写 `%LOCALAPPDATA%\spawn` 或 `%LOCALAPPDATA%\spawn-dev` 真实目录**；安装包卸载程序严禁配置 `[UninstallDelete]` 删除用户数据目录。
+- **游戏数据清理围栏与可逆回收站（`TrashDir`）**：`GameDataManagementService` 清理存档、离线成就文件或 `HKCU` 注册表项前，游戏运行中必须拒绝执行；严禁删除游戏安装根目录 `<GameDir>` 本体、任何 `.exe`/`.dll`、`*_Data`、`Engine` 或系统根目录，注册表仅允许操作 `HKCU\Software\<Vendor>\<Game>`（深度 ≥ 3，严禁触碰 `HKLM`）；安装目录以外的清理目标一律走白名单：必须位于 `AppData` / `LocalAppData` / `LocalLow` / 文档 / 公用文档 / `Saved Games` / `ProgramData` / Steam 安装目录等已知数据根之下，且相对该根的路径中至少含一个游戏专属片段（标题、`AppID`、GOG ID、引擎产品名或 `厂商\游戏`），`My Games`、`AppData\Roaming`、`LocalLow\<厂商>` 等共享父目录永不可清理，PCGamingWiki 通配符（`*` / `{{p|uid}}`）展开结果同样受此约束、不得扩大为共享父目录；默认先将待清理文件与导出的注册表 JSON 快照移入 `<应用数据根>\trash\<GameId>\<timestamp>\`，且在删除任何数据前先原子写入 `pending` 撤销清单、每备份/删除一项即增量更新，断电或崩溃中断后仍可一键完整恢复。
 - **已知系统目录解析红线**：读取用户“文档”“公用文档”等系统特殊目录（如定位离线模拟器存档或 `FLiNGTrainer` 配置）时，必须通过 `Environment.GetFolderPath` 或 Win32 `SHGetKnownFolderPath` 获取真实注册路径（兼容用户将文档盘符迁移或 OneDrive 重定向场景），**严禁硬编码拼接 `%USERPROFILE%\Documents`**。
 
 ---

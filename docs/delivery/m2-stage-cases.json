@@ -1,0 +1,199 @@
+{
+  "schemaVersion": 1,
+  "project": "SPAWN",
+  "stage": "M2",
+  "planVersion": "1.1",
+  "branch": "feat/m2-launcher-achievement",
+  "baseCommit": "196faf33fe1c2f18d1e14cfc97caf6f3f91baf16",
+  "cases": [
+    {
+      "id": "M2-A-01",
+      "kind": "automated",
+      "workItem": "M2-W01",
+      "title": ".NET 10 Spawn.sln Release 零警告构建与 PEReader IAT 敏感 API 零导入静态门禁",
+      "requirements": [
+        "REQ-SEC-01",
+        "REQ-SEC-02",
+        "NFR-01",
+        "NFR-04"
+      ],
+      "acceptance": [
+        "AC-02"
+      ],
+      "verification": "dotnet test tests/Spawn.Architecture.GateTests -c Release",
+      "expected": "Spawn.Host 与 Spawn.OverlayHost 编译产物及本地依赖程序集经 PEReader 扫描确认 0 敏感内存/注入/钩子 Win32 API 导入，0 重型敏感包引用，进程路径查询严格限定 0x1000",
+      "status": "verified"
+    },
+    {
+      "id": "M2-A-02",
+      "kind": "automated",
+      "workItem": "M2-W01",
+      "title": "SpawnPaths 双通道物理隔离、dev-workspace.json 桥接、SQLite WAL 与 DPAPI/.local 凭据验证",
+      "requirements": [
+        "REQ-SEC-06",
+        "NFR-05"
+      ],
+      "acceptance": [
+        "AC-02"
+      ],
+      "verification": "dotnet test tests/Spawn.Core.UnitTests -c Release --filter SpawnPaths|Database|Credential",
+      "expected": "SPAWN_DATA_DIR 100% 重定向至临时目录且不触碰真实 spawn/spawn-dev 目录；dev-workspace.json 在 dev/source 通道准确桥接仓库 .local 资源；SQLite WAL 与 DPAPI 密文往返通过",
+      "status": "verified"
+    },
+    {
+      "id": "M2-A-03",
+      "kind": "automated",
+      "workItem": "M2-W02",
+      "title": "Anti-Cheat Guard 四级风险识别、高危拦截、Explorer COM 血缘脱钩与 15 秒反作弊残影冷却锁测试",
+      "requirements": [
+        "REQ-SEC-03",
+        "REQ-SEC-04",
+        "REQ-SEC-05"
+      ],
+      "acceptance": [
+        "AC-03"
+      ],
+      "verification": "dotnet test tests/Spawn.Core.UnitTests -c Release --filter AntiCheat",
+      "expected": "准确判定 Tier 0..3 反作弊等级；Tier 2/3 启动前检出 Cheat Engine 进程或 dbk64/dbk32 等高危驱动即阻断启动；守卫启动及每次高敏操作前实时探测残留反作弊守护进程并进入冷却流程，SPAWN 重启后锁定状态持续有效；退出后严格走完 15 秒静默冷却状态机方可解锁",
+      "status": "verified"
+    },
+    {
+      "id": "M2-A-04",
+      "kind": "automated",
+      "workItem": "M2-W02",
+      "title": "无强杀标志 JobObject IOCP 生命周期追踪、破壳续接与 Active/Background/AFK 三态时长统计测试",
+      "requirements": [
+        "REQ-SPW-01",
+        "REQ-SPW-02"
+      ],
+      "acceptance": [
+        "AC-04"
+      ],
+      "verification": "dotnet test tests/Spawn.Core.UnitTests -c Release --filter Launch|JobObject|Playtime",
+      "expected": "JobObject 绝不携带 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE，静默无窗口子进程退出准确触发 ACTIVE_PROCESS_ZERO 回调并持久化 Active/Background/AFK 三态时长",
+      "status": "verified"
+    },
+    {
+      "id": "M2-A-05",
+      "kind": "automated",
+      "workItem": "M2-W02",
+      "title": "深度嵌套子目录扫描识别与 .local/games 全部 3 款真实游戏（LIMBO / Stanley Parable CODEX / Vampire Survivors RUNE）只读验证",
+      "requirements": [
+        "REQ-SPW-06",
+        "NFR-06"
+      ],
+      "acceptance": [
+        "AC-05"
+      ],
+      "verification": "dotnet test tests/Spawn.Core.UnitTests -c Release --filter Scanner|Library|Limbo",
+      "expected": "深度扫描 *_Data/Plugins/x86_64 识别 steam_api64.cdx (CODEX 1703340) 与 steam_api64.rne (RUNE 1794680) 及 app.info；对 .local/games 下 3 款真实游戏 100% 只读提取主程序、封面与通道且绝不运行游戏 EXE（本机无 .local/games 时对应只读段落自动跳过）",
+      "status": "verified"
+    },
+    {
+      "id": "M2-A-06",
+      "kind": "automated",
+      "workItem": "M2-W03",
+      "title": "16+ Steam 模拟器、Steam Binary VDF、GOG Comet 回环、LIMBO 原生存档及清理后无目录首次新建实时跳杯测试",
+      "requirements": [
+        "REQ-ACH-01",
+        "REQ-ACH-02"
+      ],
+      "acceptance": [
+        "AC-06"
+      ],
+      "verification": "dotnet test tests/Spawn.Core.UnitTests -c Release --filter Achievement|Comet|Limbo",
+      "expected": "16+ 模拟器与 Binary VDF 黄金夹具 100% 解析通过；模拟清理删除目录后从无到有新建 CODEX/RUNE achievements.ini 及 LIMBO savegame.txt 均在 <1s 内触发实时跳杯通知",
+      "status": "verified"
+    },
+    {
+      "id": "M2-A-07",
+      "kind": "automated",
+      "workItem": "M2-W03",
+      "title": "固定版本 gbe_fork（SHA-256 校验）无损激活/SHA-256 原子还原与离线夹具中文成就 Schema/隐藏描述/Rec.709 灰图合成验证",
+      "requirements": [
+        "REQ-ACH-03",
+        "REQ-ACH-04"
+      ],
+      "acceptance": [
+        "AC-07"
+      ],
+      "verification": "dotnet test tests/Spawn.Core.UnitTests -c Release --filter GbeFork|Schema",
+      "expected": "支持根与嵌套 Plugins/x86_64 目录 Tier 0 无损激活并按 SHA-256 100% 还原原版 DLL；gbe_fork 固定 release-2026_09_27 + 资产 SHA-256，测试经 IGbeForkBinarySource 注入 DLL 来源（生产代码零假 PE 分支）；离线 HTTP 夹具驱动的中文 Schema（含 220+ 项成就与隐藏描述）及 SkiaSharp 灰锁图标合成准确，测试零真实网络访问",
+      "status": "verified"
+    },
+    {
+      "id": "M2-A-08",
+      "kind": "automated",
+      "workItem": "M2-W04",
+      "title": "NamedPipe SDDL 双向 IPC、三栏主壳虚拟化列表、OverlayHost 零抢焦点队列与 quick_gate.py 静默门禁验证",
+      "requirements": [
+        "REQ-ACH-05",
+        "NFR-02",
+        "NFR-04"
+      ],
+      "acceptance": [
+        "AC-08",
+        "AC-02"
+      ],
+      "verification": "python -B scripts/quick_gate.py",
+      "expected": "NamedPipeJsonRpc 双向投递成功；Steam/PS5 白金连发/Xbox 三主题队列与三栏虚拟化列表状态联动无误；quick_gate.py 全程低优先级静默零错误通过，GBK 控制台不崩溃，测试步骤启用离线网络绊线（HTTP(S)_PROXY 指向本地死端口），连续 3 次全绿",
+      "status": "verified"
+    },
+    {
+      "id": "M2-A-09",
+      "kind": "automated",
+      "workItem": "M2-W06",
+      "title": "PCGamingWiki / Unity LocalLow / HKCU / 模拟器游戏数据管理、白名单防误删围栏、增量撤销日志与可逆回收站一键恢复测试",
+      "requirements": [
+        "REQ-SPW-06",
+        "NFR-05",
+        "NFR-06"
+      ],
+      "acceptance": [
+        "AC-05",
+        "AC-06"
+      ],
+      "verification": "dotnet test tests/Spawn.Core.UnitTests -c Release --filter GameData|Clean|Undo",
+      "expected": "准确推断 Unity LocalLow 冒号转下划线目录、HKCU 注册表与模拟器存档；安全围栏强制拦截删除游戏安装根目录/EXE/DLL，安装目录外仅允许已知数据根下含游戏专属片段（标题/AppID/厂商\\游戏）的路径，拦截 My Games / AppData / LocalLow\\厂商 等共享父目录且通配符不扩大；清理前先写 pending 撤销清单并逐项增量更新，清理移入 trash 并重置 SPAWN 进度后支持一键完整恢复文件、注册表与成就记录",
+      "status": "verified"
+    },
+    {
+      "id": "M2-A-10",
+      "kind": "automated",
+      "workItem": "M2-W06",
+      "title": "SingleInstanceCoordinator --quit-for-update 优雅退出握手与 spawn-dev-test 隔离打包/静默安装/卸载演练",
+      "requirements": [
+        "NFR-04",
+        "NFR-05"
+      ],
+      "acceptance": [
+        "AC-02"
+      ],
+      "verification": "dotnet test tests/Spawn.Core.UnitTests -c Release --filter SingleInstance|Package|Installer",
+      "expected": "--quit-for-update 通过同用户 SDDL 控制管道优雅唤醒/退出主实例且零强杀；spawn-dev-test 独立身份打包（MSBUILDDISABLENODEREUSE + -nr:false，零残留 MSBuild 节点）、/VERYSILENT 安装与卸载全绿且真实 spawn/spawn-dev 零被测污染",
+      "status": "verified"
+    },
+    {
+      "id": "M2-M-01",
+      "kind": "manual",
+      "workItem": "M2-W06",
+      "title": "H-001 实机体验：桌面/托盘直接唤醒 SPAWN Dev、3 款真实游戏扫描、游戏数据清理恢复与全屏实时跳杯体验",
+      "requirements": [
+        "REQ-SPW-01",
+        "REQ-SPW-06",
+        "REQ-ACH-01",
+        "REQ-ACH-05",
+        "NFR-02"
+      ],
+      "acceptance": [
+        "AC-04",
+        "AC-05",
+        "AC-06",
+        "AC-08"
+      ],
+      "verification": "按 USER-ACTIONS.md H-001 指引直接双击本机已自动安装的 SPAWN Dev 图标体验三栏交互、3 款游戏扫描、游戏数据清理恢复与跳杯表现",
+      "expected": "SPAWN Dev 托盘与快捷方式开箱即用，一键扫入全部 3 款游戏（含 220+ 项虚拟化成就），游戏数据清理与一键恢复可靠，游戏内实时跳杯零抢焦点",
+      "status": "pending_user"
+    }
+  ]
+}

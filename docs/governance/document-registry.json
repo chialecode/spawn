@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "currentStage": "M1",
+  "currentStage": "M2",
   "documents": [
     {
       "path": ".github/PULL_REQUEST_TEMPLATE.md",
@@ -44,8 +44,8 @@
       "status": "active",
       "owner": "gov-rules / Agent A",
       "scope": "SPAWN 仓库级 AI Agent 与开发者最高工作指令唯一正本",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：定义启动检查、按变更必读表、A/B + Swarm 并行隔离协议、Clean Host 红线与单阶段 DCO 提交规范"
+      "reviewed": "2026-11-20",
+      "basis": "M2 v1.1：补充本机 SPAWN Dev 交付自动安装 (package.py --install-dev) 与测试身份物理隔离红线"
     },
     {
       "path": "CLAUDE.md",
@@ -71,17 +71,17 @@
       "status": "active",
       "owner": "gov-rules / Agent A",
       "scope": "SPAWN 根级视觉与交互设计入口",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：指向 docs/design-rules/DESIGN.md 与交互工作流正本"
+      "reviewed": "2026-11-20",
+      "basis": "M2 v1.1：同步双子标签（成就 | 游戏数据）、回收虚拟化与系统托盘设计入口"
     },
     {
       "path": "README.md",
       "kind": "entry",
       "status": "active",
       "owner": "gov-rules / Agent A",
-      "scope": "SPAWN 项目门面：五大核心域、纯原生技术栈定位、物理隔离基座与全局导航",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：建立 S.P.A.W.N. 纯原生 C# WPF 定位、仓库地图与快速门禁入口"
+      "scope": "SPAWN 项目门面：五大核心域、三栏无边框原生 WPF 架构、Spawn.sln 目录地图与 quick_gate.py 入口",
+      "reviewed": "2026-11-20",
+      "basis": "M2 v1.1：同步双通道图标、Inno Setup 7 打包、游戏数据可逆清理与 SPAWN Dev 自动安装入口"
     },
     {
       "path": "REVIEW.md",
@@ -106,9 +106,9 @@
       "kind": "status",
       "status": "active",
       "owner": "gov-rules / Agent A",
-      "scope": "全仓唯一用户待办台账（ACT-001 .NET 10 SDK 已就绪、ACT-002 M1 远端授权、ACT-006 Steamrip/GOG 可选配置及实机检查）",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：结合本机环境实测快照与保守远端推进边界建立唯一用户操作台账"
+      "scope": "全仓唯一用户待办台账（ACT-001/002/006 已完成、ACT-007 M2 远端授权与 H-001 三栏启动器及 LIMBO 体验指引）",
+      "reviewed": "2026-11-20",
+      "basis": "M2 v1.1：更新 .local/games 3 款真实样本就位、SPAWN Dev 自动装妥免命令体验指引与 ACT-007 请求"
     },
     {
       "path": "docs/README.md",
@@ -178,9 +178,9 @@
       "kind": "decision",
       "status": "active",
       "owner": "arch-delivery / Agent A",
-      "scope": "SPAWN 已确认核心产品与技术决策台账（D-01~D-18）及可逆设计默认值",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：沉淀用户明确拍板的技术栈、安全隔离、修改器/二游策略与协作规范"
+      "scope": "SPAWN 已确认核心产品与技术决策台账（D-01~D-23）及可逆设计默认值",
+      "reviewed": "2026-11-20",
+      "basis": "M2 v1.1：新增 PCGamingWiki 多源游戏数据可逆清理 (D-22) 与 Inno Setup 7 install-dev 自动安装决策 (D-23)"
     },
     {
       "path": "docs/decisions/open-questions.md",
@@ -192,43 +192,43 @@
       "basis": "M1 v1.0：记录 M2~M6 待实机锁定的非阻塞工程验证项与触发阶段"
     },
     {
-      "path": "docs/delivery/m1-stage-cases.json",
+      "path": "docs/delivery/m2-stage-cases.json",
       "kind": "plan",
       "status": "active",
-      "owner": "arch-delivery / Agent A",
-      "scope": "M1 基础建设阶段可执行检查与验收用例清单",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：定义 M1 文档治理、GitHub 配置同步与追溯完整性验证用例",
-      "retireAfter": "M1"
+      "owner": "git-github / Agent A",
+      "scope": "M2 启动器与单机成就首发闭环阶段可执行检查与验收用例清单",
+      "reviewed": "2026-11-20",
+      "basis": "M2 v1.1：扩充 M2-A-09 (PCGamingWiki/引擎数据清理恢复) 与 M2-A-10 (单实例及隔离打包演练)",
+      "retireAfter": "M2"
     },
     {
       "path": "docs/delivery/stage-plan.md",
       "kind": "plan",
       "status": "active",
-      "owner": "arch-delivery / Agent A",
-      "scope": "M1 基础建设阶段完整执行计划、工作包拆分与验收标准",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：涵盖 Git 第一提交、GitHub 保护规则、全套治理/架构/模块正本与环境盘点计划",
-      "retireAfter": "M1"
+      "owner": "git-github / Agent A",
+      "scope": "M2 启动器与单机成就首发闭环阶段完整实施计划、工作包与验收映射",
+      "reviewed": "2026-11-20",
+      "basis": "M2 v1.1：纳入 3 款真实游戏深度适配、游戏数据管理清理与 Inno Setup 7 install-dev 闭环",
+      "retireAfter": "M2"
     },
     {
       "path": "docs/delivery/stage-report.md",
       "kind": "evidence",
       "status": "active",
-      "owner": "arch-delivery / Agent B & Verifier",
-      "scope": "M1 基础建设阶段执行与门禁验证报告",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：如实记录远端同步事实、check_docs.py 实跑结果、本机 .NET 10 SDK 10.0.404 就绪及 M1 未建 C# 工程 not-run 边界",
-      "retireAfter": "M1"
+      "owner": "git-github / Agent B & Verifier",
+      "scope": "M2 启动器与单机成就首发闭环阶段执行与自动化门禁验证报告",
+      "reviewed": "2026-11-20",
+      "basis": "M2 v1.1：记录全套 M2.1 增强功能、隔离门禁验证与本机 SPAWN Dev 自动上机实证",
+      "retireAfter": "M2"
     },
     {
       "path": "docs/delivery/status.md",
       "kind": "status",
       "status": "active",
       "owner": "arch-delivery / Agent A",
-      "scope": "SPAWN 项目当前里程碑执行状态、分支基点与下一阶段就绪条件",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：记录 M1 本地分支 feat/m1-foundation 就绪待审阅及 M2 启动前置条件"
+      "scope": "SPAWN 项目当前里程碑执行状态（M1 已合并 main，M2 本地完成待 ACT-007 授权）",
+      "reviewed": "2026-11-20",
+      "basis": "M2 v1.1：更新本机 SPAWN Dev 已自动装妥运行与 M2 单提交待 ACT-007 授权状态"
     },
     {
       "path": "docs/delivery/traceability.json",
@@ -236,8 +236,8 @@
       "status": "active",
       "owner": "arch-delivery / Agent A",
       "scope": "REQ-*/NFR-* 需求编号 → 设计正本 → 模块规格 → M1~M6 里程碑与 AC-* 验收双向追踪矩阵",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：建立全量功能需求与非功能需求机器可读双向追溯契约"
+      "reviewed": "2026-11-20",
+      "basis": "M2 v1.1：关联 M2-A-09 与 M2-A-10 验收用例映射"
     },
     {
       "path": "docs/design-rules/DESIGN.md",
@@ -245,8 +245,8 @@
       "status": "active",
       "owner": "gov-rules / Agent A",
       "scope": "SPAWN Fluent + DWM Mica 暗色美学、Nodify 引脚色板、144Hz Overlay 与多屏 DPI 视觉规范",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：定义桌面主界面、蓝图节点画布与游戏内覆盖层的统一视觉与防抢焦点交互约束"
+      "reviewed": "2026-11-20",
+      "basis": "M2 v1.1：同步游戏数据管理面板、220+ 成就 Recycling 虚拟化与托盘 DEV 角标规范"
     },
     {
       "path": "docs/design/data-model.md",
@@ -263,8 +263,8 @@
       "status": "active",
       "owner": "arch-delivery / Agent A",
       "scope": "SPAWN 桌面主界面导航、Profile 一键切换、蓝图单步调试、Alt+Z 锁鼠与夜间无人值守交互工作流",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：定义跨子系统端到端用户交互时序与异常状态反馈闭环"
+      "reviewed": "2026-11-20",
+      "basis": "M2 v1.1：补充游戏数据一键可逆清理恢复、--background 托盘与 --quit-for-update 交互时序"
     },
     {
       "path": "docs/design/ipc-and-security-contracts.md",
@@ -317,8 +317,8 @@
       "status": "active",
       "owner": "gov-rules / Agent A",
       "scope": "spawn vs spawn-dev 通道隔离、SQLite WAL 禁放网盘、非递归卸载 Junction 与 DPAPI 凭据规则",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：固化存档防误删、硬链接防写污染、DirectStorage 熔断与脱敏日志红线"
+      "reviewed": "2026-11-20",
+      "basis": "M2 v1.1：同步四身份物理隔离、dev-workspace.json 桥接、TrashDir 可逆清理与防误删围栏规则"
     },
     {
       "path": "docs/dev-rules/development-workflow.md",
@@ -326,8 +326,8 @@
       "status": "active",
       "owner": "gov-rules / Agent A",
       "scope": "Agent A/B 阶段闭环、Swarm 多 Agent 子工程独占并行协议、连续执行与 7 天冷却依赖盘点",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：建立单会话与多智能体集群无碰撞并行研发与阶段清理标准"
+      "reviewed": "2026-11-20",
+      "basis": "M2 v1.1：固化交付人工体验前自动执行 package.py --install-dev 更新本机 SPAWN Dev 规则"
     },
     {
       "path": "docs/dev-rules/git-workflow.md",
@@ -335,8 +335,8 @@
       "status": "active",
       "owner": "gov-rules / Agent A",
       "scope": "不可变第一提交 SHA、单阶段单提交 amend -s DCO 规范、远端显式授权表与低频 API 准则",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：固化第一提交 ad7454c1ab58bb2019e0f0ba6810c5928f8a335e 锚点与保守远端边界"
+      "reviewed": "2026-11-19",
+      "basis": "M2 v1.0：记录 M1 PR #1 合入 main 基线 196faf33fe1c2f18d1e14cfc97caf6f3f91baf16 及 M2 门禁提交流程"
     },
     {
       "path": "docs/dev-rules/local-files-and-references.md",
@@ -353,8 +353,8 @@
       "status": "active",
       "owner": "gov-rules / Agent A",
       "scope": "两级质量门禁设计（check_docs.py / quick_gate.py / Stage Gate + IAT 审计）与测试前台静音规范",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：启用文档卫生门禁并定义 M2+ PEReader 导入表审计与零弹窗低优先级测试纪律"
+      "reviewed": "2026-11-20",
+      "basis": "M2 v1.1：明确自动化打包安装测试仅限使用隔离身份 spawn-dev-test 且零触碰真实 spawn/spawn-dev"
     },
     {
       "path": "docs/dev-rules/repo-map.md",
@@ -362,8 +362,8 @@
       "status": "active",
       "owner": "gov-rules / Agent A",
       "scope": "仓库顶层目录所有权与 Spawn.sln 多工程单向依赖及高敏 NuGet 隔离地图",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：从项目引用图层面锁定 Contracts -> Core -> Modules -> Host/Workers 物理边界"
+      "reviewed": "2026-11-20",
+      "basis": "M2 v1.1：纳入 assets/、installer/spawn.iss、scripts/generate_icons.py 与 scripts/package.py"
     },
     {
       "path": "docs/engineering/delivery-plan.md",
@@ -389,8 +389,8 @@
       "status": "active",
       "owner": "gov-rules / Agent A",
       "scope": "SPAWN 全仓自有 Markdown 与受管 JSON 文档唯一权威注册表",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：受 scripts/check_docs.py 双向完整性校验保护"
+      "reviewed": "2026-11-20",
+      "basis": "M2 v1.1：同步 M2 阶段内增强涉及的全部治理与交付文档审查基线"
     },
     {
       "path": "docs/governance/documentation-policy.md",
@@ -416,8 +416,8 @@
       "status": "active",
       "owner": "module-specs / Agent A",
       "scope": "Achievement 全渠道离线/GOG/Steam 成就解析引擎与 ZBID_UIACCESS 144Hz Overlay 模块规格书",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：涵盖 15+ 模拟器字节/INI 规则、Comet 9977、gbe_fork 激活器、隐藏成就补全与 Alt+Z 锁鼠面板"
+      "reviewed": "2026-11-20",
+      "basis": "M2 v1.1：同步嵌套插件目录识别、无目录父级攀升实时跳杯与 ResetGameAchievementStateAsync 规格"
     },
     {
       "path": "docs/modules/nexus-mods-and-utilities.md",
@@ -443,8 +443,8 @@
       "status": "active",
       "owner": "module-specs / Agent A",
       "scope": "Spawn 启动环境自愈管线、双引擎进程追踪、三态有效时长与三级漏斗离线刮削模块规格书",
-      "reviewed": "2026-11-15",
-      "basis": "M1 v1.0：涵盖 JobObject IOCP + 0x1000 破壳追踪、CCD HDR/转区/CPU Sets 自愈与多源元数据融合"
+      "reviewed": "2026-11-20",
+      "basis": "M2 v1.1：同步 4 层子目录 .cdx/.rne 扫描与 PCGamingWiki/引擎 GameDataManagementService 规格"
     },
     {
       "path": "docs/modules/workflow-and-blueprint.md",

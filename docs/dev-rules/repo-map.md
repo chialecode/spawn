@@ -13,8 +13,9 @@
 | `docs/governance/`、`docs/product-rules/`、`docs/design-rules/`、`docs/dev-rules/`、`docs/templates/` | `M1` 已建立 | 文档治理政策、`document-registry.json` 注册表、五大产品不变量、WPF/Nodify/Overlay 视觉规范、工程协作规则与写作模板 |
 | `docs/requirements/`、`docs/decisions/`、`docs/design/`、`docs/engineering/`、`docs/delivery/` | `M1` 已建立 | 产品需求正本、ADR-0001~0005 与决策台账、系统架构/数据/IPC 契约、开源选型与环境清单、里程碑路线图与追踪矩阵 |
 | `docs/modules/`、`docs/research/` | `M1` 已建立 | S.P.A.W.N. 五大领域模块正式实现规格书（`active`）及前期源码级深度调研档案（`reference`） |
-| `scripts/` | `M1` 已建 `check_docs.py` | 零外部依赖 Python 3.12+ 工程门禁脚本（`M2` 起扩充 `quick_gate.py`、`deps.py` 等） |
-| `src/`、`tests/`、`Directory.Build.props`、`Directory.Packages.props`、`Spawn.sln` | `M2` 起按阶段创建 | 纯原生 `.NET 10`（LTS）多进程物理隔离源码树、中央包版本管理（CPM）与 `PEReader` 架构门禁测试 |
+| `assets/`、`installer/` | `M2` 已建立 | 双通道应用图标（矢量正本 `icon.svg` / `icon-dev.svg` 与栅格产物 `icon.ico|png`、带琥珀色 `DEV` 角标的 `icon-dev.ico|png`，规格见 [DESIGN.md](../design-rules/DESIGN.md)）及 Inno Setup 7 按用户免提权安装包模板（`installer/spawn.iss`） |
+| `scripts/` | `M1`~`M2` 已建立 | 零外部依赖 Python 3.12+ 门禁与打包脚本（`check_docs.py`、`quick_gate.py`、`generate_icons.py`、`package.py --install-dev`） |
+| `src/`、`tests/`、`Directory.Build.props`、`Directory.Packages.props`、`global.json`、`Spawn.sln` | `M2` 已建立并按阶段扩充 | 纯原生 `.NET 10`（LTS）多进程物理隔离源码树、中央包版本管理（CPM）与 `PEReader` 架构门禁测试 |
 | `.local/`、`SPAWN_Vault/`、`bin/`、`obj/`、`dist/` | `.gitignore` 忽略 | 本地隔离开发数据、门禁测试原始日志、构建中间产物与安装包暂存目录（严禁提交入库） |
 
 ---
@@ -45,9 +46,9 @@ Spawn.sln
 │   └── Spawn.LegacyHook.Helper/         # ⚪ 默认不加载可选包：仅面向极少数纯离线老独占全屏单机的 RTSS OSD / Vulkan Layer 辅助
 └── tests/
     ├── Spawn.Architecture.GateTests/    # ★ 一票否决门禁：校验 csproj 引用图 + PEReader 静态扫描 Host/OverlayHost 导入表零敏感 Win32 API！
-    ├── Spawn.Core.Tests/                # 核心底座测试：FastCDC 确定性切块、5 阶段 WAL 断电恢复、Junction 防递归误删、CE .CT 逆序指针、祖先链三路合并
-    ├── Spawn.Achievement.Tests/         # 成就专项测试：15+ 离线模拟器黄金样本集、GOG Comet 9977 回环协议、Steam Binary VDF 解析与防抖状态机
-    └── Spawn.Integration.Tests/         # 跨进程契约测试：Named Pipe SDDL 跨权限通信、Anti-Cheat Guard 15s 冷却联锁与静音无窗口端到端集成
+    ├── Spawn.Core.UnitTests/            # M2 核心与领域全量单测：SpawnPaths/SQLite/DPAPI、16+ 模拟器、GOG Comet、LIMBO 原生存档、进程追踪与 IPC
+    ├── Spawn.Achievement.Tests/         # (M3+ 按需拆分专项) 扩展成就样本回归与高刷压力夹具
+    └── Spawn.Integration.Tests/         # (M3+ 按需扩充) 多 Worker 跨进程端到端集成测试
 ```
 
 ---

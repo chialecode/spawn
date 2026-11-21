@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 1024 1024" fill="none">
+  <!-- SPAWN: a white geometric "S" on a flat dark-gray rounded square. Letter height 250-780, stroke 110, terminal corner radius 28.
+       Rasterized by scripts/generate_icons.py; Spawn.Host BrandIconGeometry carries the same path data. icon-dev.svg adds the "DEV" badge. -->
+  <rect x="48" y="48" width="928" height="928" rx="200" fill="#3C4043" />
+  <path d="M724 250A28 28 0 0 1 752 278V332A28 28 0 0 1 724 360H432A50 50 0 0 0 432 460H592A160 160 0 0 1 592 780H300A28 28 0 0 1 272 752V698A28 28 0 0 1 300 670H592A50 50 0 0 0 592 570H432A160 160 0 0 1 432 250Z" fill="#FFFFFF" />
+</svg>

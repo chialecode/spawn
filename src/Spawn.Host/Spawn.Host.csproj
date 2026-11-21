@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>Spawn.Host</RootNamespace>
+    <AssemblyName Condition="'$(SpawnHostAssemblyName)' != ''">$(SpawnHostAssemblyName)</AssemblyName>
+    <AssemblyName Condition="'$(SpawnHostAssemblyName)' == ''">Spawn.Host</AssemblyName>
+    <PackageId>Spawn.Host</PackageId>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Spawn.Contracts\Spawn.Contracts.csproj" />
+    <ProjectReference Include="..\Spawn.Core\Spawn.Core.csproj" />
+    <ProjectReference Include="..\Spawn.Modules.Launcher\Spawn.Modules.Launcher.csproj" />
+    <ProjectReference Include="..\Spawn.Modules.Achievement\Spawn.Modules.Achievement.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <PackageReference Include="Microsoft.Extensions.Http" />
+    <PackageReference Include="Microsoft.Extensions.Logging" />
+    <PackageReference Include="NAudio.Wasapi" />
+  </ItemGroup>
+</Project>

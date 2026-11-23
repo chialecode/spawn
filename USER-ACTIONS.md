@@ -49,7 +49,7 @@
   - 仅推送与建 PR：**“授权 ACT-008：推送 feat/m3-trainer 并创建 PR”**；
   - CI（`docs`、`DCO`、`dotnet-windows`）全绿后直接 Squash 合并并清理分支：**“授权 ACT-008：推送 feat/m3-trainer、创建 PR，CI 通过后 squash 合并入 main 并清理分支”**。
 - **说明**：`H-001` / `H-002` / `H-005` 人工体验与远端集成相互独立，可顺延，不阻塞 `ACT-008`；未获你明确回复前 Agent 绝不执行 `git push` 或建 PR。
-- **当前状态**：待你授权。Agent A 已于 2026-11-22 复审通过 `F-01` ~ `F-03` 返工（`reviewed`，0 遗留项，见 [阶段报告 §4.2](docs/delivery/stage-report.md)），当前最终提交 SHA：以 `git rev-parse HEAD` 为准（阶段提交收束后回填）。
+- **当前状态**：待你授权。Agent A 已于 2026-11-22 复审通过 `F-01` ~ `F-03` 返工（`reviewed`，0 遗留项，见 [阶段报告 §4.2](docs/delivery/stage-report.md)），当前最终提交 SHA：`5490c03abc18a42133fc1eed4e95be4375a9a77d`。
 
 ### `ACT-007` / done（2026-11-21 已执行）：`M2` 阶段分支推送、PR #2 合并与分支清理
 

@@ -759,6 +759,7 @@ public sealed class TrainerRuntimeAndShutdownHookTests
     private sealed class InProcessRejectingWorkerLauncher(Func<TrainerLaunchRequest, TrainerLaunchResponse> onLaunch)
         : ITrainerWorkerLauncher
     {
+        private readonly TaskCompletionSource<bool> _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private Task? _clientTask;
 
         public string? ResolveWorkerExecutablePath() => Environment.ProcessPath;
@@ -784,6 +785,8 @@ public sealed class TrainerRuntimeAndShutdownHookTests
                 });
 
                 var handled = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var hostGone = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                client.Disconnected += () => hostGone.TrySetResult(true);
                 client.RegisterHandler<TrainerLaunchRequest, TrainerLaunchResponse>(
                     TrainerIpcMethods.Launch,
                     (req, _) =>
@@ -795,7 +798,9 @@ public sealed class TrainerRuntimeAndShutdownHookTests
 
                 await client.ConnectAndAuthenticateAsync(TimeSpan.FromSeconds(5), CancellationToken.None).ConfigureAwait(false);
                 _ = await handled.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-                await Task.Delay(50, CancellationToken.None).ConfigureAwait(false);
+                // Stay connected until the host has read the reply and let go, or the test is done: closing a fixed
+                // 50 ms after the handler ran raced the reply on slow CI runners.
+                await Task.WhenAny(hostGone.Task, _release.Task).WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
             }, CancellationToken.None);
 
             return Task.FromResult(new WorkerProcessLaunchResult(
@@ -806,6 +811,10 @@ public sealed class TrainerRuntimeAndShutdownHookTests
 
         public void TryTerminateWorkerProcess(int workerProcessId) { }
 
-        public Task WaitForCompletionAsync() => _clientTask ?? Task.CompletedTask;
+        public Task WaitForCompletionAsync()
+        {
+            _release.TrySetResult(true);
+            return _clientTask ?? Task.CompletedTask;
+        }
     }
 }

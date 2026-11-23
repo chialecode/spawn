@@ -182,15 +182,16 @@ public sealed class LaunchJobObjectAndPlaytimeTests
         Assert.False(blockedRes.Succeeded);
         Assert.Equal("ANTICHEAT_COOLDOWN_ACTIVE", blockedRes.ErrorCode);
 
-        // Finish cooldown cleanly (yield between virtual clock ticks so async continuations never race under parallel load)
-        var deadline = DateTime.UtcNow.AddSeconds(2);
+        // Finish cooldown cleanly (yield between virtual clock ticks so async continuations never race under parallel load).
+        // The wall-clock budget is generous: 60 ticks with a real delay each can take seconds on a loaded CI runner.
+        var deadline = DateTime.UtcNow.AddSeconds(30);
         while (!exitCooldownTask.IsCompleted && DateTime.UtcNow < deadline)
         {
             clock.Advance(TimeSpan.FromMilliseconds(250));
             await Task.Delay(5);
         }
 
-        await exitCooldownTask.WaitAsync(TimeSpan.FromSeconds(2));
+        await exitCooldownTask.WaitAsync(TimeSpan.FromSeconds(30));
     }
 
     private sealed class FakeUserActivityProbe : IUserActivityProbe

@@ -202,7 +202,7 @@ public sealed class TrainerSandboxJobAndWorkerTests
         Assert.Equal("SHA256_MISMATCH", badHash.ErrorCode);
     }
 
-    [Fact]
+    [NonElevatedFact]
     public async Task RealWorkerProcess_ForceKilled_KernelKillOnJobCloseWipesEntireTestStubTree()
     {
         using var temp = new TempWorkerSandbox();
@@ -264,7 +264,7 @@ public sealed class TrainerSandboxJobAndWorkerTests
         }
     }
 
-    [Fact]
+    [NonElevatedFact]
     public async Task RealWorkerProcess_HostDisconnectsPipe_WorkerSelfDestructsAndPurgesTestStubTree()
     {
         using var temp = new TempWorkerSandbox();
@@ -484,8 +484,17 @@ public sealed class TrainerSandboxJobAndWorkerTests
             ["--host-pid", "1234", "--pipe", testPipe, "--nonce", nonce, "--test-expected-host-path", @"C:\Fake\testhost.exe", "--test-skip-live-ac-probe"],
             out TrainerWorkerCliOptions? testOpts));
         Assert.NotNull(testOpts);
-        Assert.Equal(@"C:\Fake\testhost.exe", testOpts!.ExpectedHostExecutablePath);
-        Assert.True(testOpts.SkipLiveAntiCheatProbeForTest);
+        if (WorkerIntegrityHelper.IsCurrentProcessElevated())
+        {
+            // Elevated (High IL) processes must refuse the test-only flags even on a test pipe.
+            Assert.Null(testOpts!.ExpectedHostExecutablePath);
+            Assert.False(testOpts.SkipLiveAntiCheatProbeForTest);
+        }
+        else
+        {
+            Assert.Equal(@"C:\Fake\testhost.exe", testOpts!.ExpectedHostExecutablePath);
+            Assert.True(testOpts.SkipLiveAntiCheatProbeForTest);
+        }
 
         // Non-test pipe MUST strip BOTH --test-expected-host-path and --test-skip-live-ac-probe!
         Assert.True(TrainerWorkerApplication.TryParseArguments(

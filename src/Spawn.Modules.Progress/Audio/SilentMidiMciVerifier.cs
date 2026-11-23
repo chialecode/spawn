@@ -25,14 +25,17 @@ public sealed record SilentMidiMciVerificationResult
 /// </summary>
 public static partial class SilentMidiMciVerifier
 {
-    // Standard MMSYSERR / MCIERR codes indicating no MIDI device or sequencer driver is present/usable.
+    // MMSYSERR / MCIERR codes (mmsystem.h, MCIERR_BASE = 256) meaning no MIDI device or sequencer driver is usable.
     private const uint MmsysErrNoDriver = 6;
-    private const uint MciErrCannotLoadDriver = 266;
-    private const uint MciErrDeviceNotInstalled = 274;
-    private const uint MciErrHardware = 287;
-    private const uint MciErrSeqPortNonExistent = 336;
-    private const uint MciErrSeqPortInUse = 337;
-    private const uint MciErrSeqNoMidiPresent = 342;
+    private const uint MciErrHardware = 262;            // MCIERR_BASE + 6
+    private const uint MciErrCannotLoadDriver = 266;    // MCIERR_BASE + 10
+    private const uint MciErrInvalidDeviceName = 287;   // "the specified device was not found"
+    private const uint MciErrDeviceNotInstalled = 306;  // MCIERR_BASE + 50
+    private const uint MciErrSeqPortInUse = 337;        // MCIERR_BASE + 81
+    private const uint MciErrSeqPortNonExistent = 338;  // MCIERR_BASE + 82
+    private const uint MciErrSeqPortMapNoDevice = 339;  // MCIERR_BASE + 83
+    private const uint MciErrSeqPortUnspecified = 342;  // MCIERR_BASE + 86
+    private const uint MciErrSeqNoMidiPresent = 343;    // MCIERR_BASE + 87
 
     /// <summary>
     /// Returns the number of MIDI output devices currently reported by Windows Multimedia (<c>midiOutGetNumDevs</c>).
@@ -184,11 +187,14 @@ public static partial class SilentMidiMciVerifier
 
     private static bool IsNoMidiDeviceError(uint errorCode) =>
         errorCode is MmsysErrNoDriver
-            or MciErrCannotLoadDriver
-            or MciErrDeviceNotInstalled
             or MciErrHardware
-            or MciErrSeqPortNonExistent
+            or MciErrCannotLoadDriver
+            or MciErrInvalidDeviceName
+            or MciErrDeviceNotInstalled
             or MciErrSeqPortInUse
+            or MciErrSeqPortNonExistent
+            or MciErrSeqPortMapNoDevice
+            or MciErrSeqPortUnspecified
             or MciErrSeqNoMidiPresent;
 
     private static unsafe uint SendCommand(string command, out string response)

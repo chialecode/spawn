@@ -739,6 +739,8 @@ public sealed class CatalogDownloadAndImportPipelineTests
         byte[] syntheticPe = SyntheticFixtureFactory.CreateSyntheticPeExecutable(is64Bit: true, requireAdmin: false, salt: 9);
         const string pageUrl = "https://flingtrainer.com/trainer/black-myth-wukong-trainer/";
         const string hop0Url = "https://flingtrainer.com/downloads/J0ZX9_hiI3QYHi9EG5A7vw,,";
+        // RFC1123 Expires dates contain commas; keep them in the future so the cookie jar never drops them as expired.
+        string cookieExpires = DateTimeOffset.UtcNow.AddDays(1).ToString("R", System.Globalization.CultureInfo.InvariantCulture);
 
         using var handler = new RecordingMockHttpHandler(req =>
         {
@@ -754,8 +756,8 @@ public sealed class CatalogDownloadAndImportPipelineTests
                 var r0 = new HttpResponseMessage(HttpStatusCode.Found);
                 r0.Headers.Location = new Uri("https://flingtrainer.com/download-trainer.php?path=%2Fwp-content%2Fuploads%2F2024%2F08%2FGame.zip", UriKind.Absolute);
                 // Real FLiNG WordPress Set-Cookie headers with commas in RFC1123 Expires dates.
-                r0.Headers.TryAddWithoutValidation("Set-Cookie", "slHoIPaRtqAhj=n68PkLXN9Jt%5Dxzq4; expires=Sun, 22 Nov 2026 17:31:31 GMT; Max-Age=86400; path=/; secure");
-                r0.Headers.TryAddWithoutValidation("Set-Cookie", "pVyAsTbi=%40lqSt0vc_%2AH; expires=Sun, 22 Nov 2026 17:31:31 GMT; Max-Age=86400; path=/; secure");
+                r0.Headers.TryAddWithoutValidation("Set-Cookie", $"slHoIPaRtqAhj=n68PkLXN9Jt%5Dxzq4; expires={cookieExpires}; Max-Age=86400; path=/; secure");
+                r0.Headers.TryAddWithoutValidation("Set-Cookie", $"pVyAsTbi=%40lqSt0vc_%2AH; expires={cookieExpires}; Max-Age=86400; path=/; secure");
                 return r0;
             }
 

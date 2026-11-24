@@ -2,7 +2,7 @@
 
 - **状态**：`proposed` | `accepted` | `superseded by ADR-XXXX`
 - **日期**：`YYYY-MM-DD`
-- **维护角色**：Agent A / 系统架构师
+- **维护角色**：维护者
 - **关联决策与需求**：`D-XX`、`REQ-XXX-NN`
 
 ---

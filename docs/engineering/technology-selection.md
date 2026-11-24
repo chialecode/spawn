@@ -2,7 +2,7 @@
 
 > **文档状态**：Active（M1 基线锁定 — `.NET 10 LTS`；M3 v1.0 规划同步：移除 `Reloaded.Memory` 家族，登记 `SharpCompress 0.50.9` / `AngleSharp 1.10.3` / `CsWin32 0.3.371`，IPC 对齐 `NamedPipeJsonRpc`）
 > **适用范围**：38+ 活跃开源项目调研与 `Apache-2.0` 许可证合规矩阵、按进程隔离域划分的 `.NET 10` NuGet 包清单、`CsWin32` 原生 API 映射表、正式编码前本机必备与可选环境安装全表及 `gbe_fork` 资源准备规范
-> **关联文档**：[ADR-0002 UI 技术栈](../decisions/0002-pure-native-wpf-and-nodify-ui-stack.md) · [ADR-0003 反作弊隔离](../decisions/0003-anti-cheat-guard-and-process-isolation.md) · [系统顶层架构](../design/system-architecture.md) · [开源与架构规范](../dev-rules/architecture-and-open-source.md) · [USER-ACTIONS.md](../../USER-ACTIONS.md)
+> **关联文档**：[ADR-0002 UI 技术栈](../decisions/0002-pure-native-wpf-and-nodify-ui-stack.md) · [ADR-0003 反作弊隔离](../decisions/0003-anti-cheat-guard-and-process-isolation.md) · [系统顶层架构](../design/system-architecture.md) · [开源与架构规范](../dev-rules/architecture-and-open-source.md)
 
 ---
 
@@ -156,10 +156,10 @@ SPAWN 核心仓库采用 **`Apache-2.0`** 开源许可证。所有外部开源�
 | **Windows 10/11 SDK (`signtool.exe`)** | `10.0.22621.0` 及以上 | **已就绪**（`10.0.26100.0` 含 x64 `signtool.exe`） | `winget install --id Microsoft.WindowsSDK.10.0.26100 --exact` | `where.exe signtool` | M2 本地瞬态自签名证书签发 `Spawn.OverlayHost.exe`（`ZBID_UIACCESS`）及原生互操作头文件参考 |
 | **Visual Studio Build Tools / IDE** | VS 2022/2026 或 Build Tools `18` | **已就绪**（Build Tools `18` 已安装） | `winget install --id Microsoft.VisualStudio.2022.BuildTools --exact` | `vswhere -latest` | 提供 MSBuild 桌面构建链与原生依赖打包支持（如需可视化 XAML 热重载可选装桌面开发工作负载） |
 | **Python 3** | `3.12+` | **已就绪**（`Python 3.12.16`） | `winget install --id Python.Python.3.12 --exact` | `python --version` | 运行本地与 CI 一致的文档治理及架构注册表门禁脚本 `python -B scripts/check_docs.py` |
-| **Git & GitHub CLI** | `git 2.40+` / `gh 2.50+` | **已就绪**（`git 2.56.0` / `gh 2.103.3`） | `winget install --id Git.Git --exact` / `winget install --id GitHub.cli --exact` | `git --version` / `gh auth status` | 单阶段单提交 DCO 签名演进、远端规则集审计与受控 PR 交付 |
+| **Git & GitHub CLI** | `git 2.40+` / `gh 2.50+` | **已就绪**（`git 2.56.0` / `gh 2.103.3`） | `winget install --id Git.Git --exact` / `winget install --id GitHub.cli --exact` | `git --version` / `gh auth status` | DCO 签名提交、issue 与 PR 流程、远端规则集审计 |
 | **Inno Setup** | `6.3+` / `7.x` | **已就绪**（`Inno Setup 7` `ISCC.exe`） | `winget install --id JRSoftware.InnoSetup --exact` | `iscc /?` | M6 制作标准安装包（部署 `%ProgramFiles%\spawn\Overlay\` 受保护目录与本地自签名向导） |
 
-> **M2 启动就绪结论**：本机全部 M2 核心编译、签名与验证基础设施均已 100% 就位；待 M1 分支按 [USER-ACTIONS.md](../../USER-ACTIONS.md) `ACT-002` 获准合并入 `main` 后，即可零阻塞直接启动 M2 编码与测试。
+> **M2 启动就绪结论**：本机全部 M2 核心编译、签名与验证基础设施均已 100% 就位；`M1` 已经 [PR #1](https://github.com/chialecode/spawn/pull/1) 合入 `main`，`M2` 据此启动。
 
 ### 5.2 `M2` 离线成就激活器（`Detanup01/gbe_fork`）DLL 资源准备与合规规范
 

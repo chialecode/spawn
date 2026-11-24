@@ -1,95 +1,106 @@
-# 开发协作流程与多 Agent / Swarm 并行隔离协议
+# 开发流程
 
-本规范定义 SPAWN 在每个里程碑阶段（`M1`~`M6`）的标准研发闭环，同时覆盖**单会话 Agent A ↔ Agent B 连续交付模式**与 **Swarm 多智能体集群并行开发模式**。沟通与消息板礼仪详见 [沟通协议](communication-protocol.md)，Git 单阶段提交规则详见 [Git 工作流](git-workflow.md)。
+适用于 SPAWN 的需求管理、编码、验证、审查、合并与维护，程序员与 AI 同样适用。门禁见[质量门禁](quality-gates.md)，Git 与远端见 [Git 工作流](git-workflow.md)，参考与未跟踪文件见[本地文件与参考](local-files-and-references.md)。
 
----
+<a id="issues"></a>
+## 1. 需求队列：GitHub Issues
 
-## 1. 主流程：Agent A 整阶段规划 ↔ Agent B 连续实现 ↔ Agent A 集中审查
+- 需求、缺陷与后续迭代项都在 [GitHub Issues](https://github.com/chialecode/spawn/issues)；仓库只允许协作者建 issue 和 PR，外部反馈走 [Discussions](https://github.com/chialecode/spawn/discussions)。
+- 标签：类型 `feature` / `bug` / `chore` / `security` / `dependencies`；状态 `ready`（可领取）/ `in-progress` / `blocked`；`needs-user`（等用户决定、实机检查或配置）；`risk:high`（PR 碰了[高风险清单](#high-risk)）。
+- 领取时加 `in-progress`；PR 正文写 `Closes #<号>`，合并即关闭。里程碑（`M4`～`M6`）各有一个总 issue，开工前按 MVP 拆成小 issue。MVP 之外的迭代项建为 `feature` issue，不加 `ready`，正文写当前替代做法与触发条件。上游缺陷与开源适配缺口登记在[上游事项台账](../decisions/open-questions.md)的 `OSS-*`，需要动手时再建 issue。
 
-<a id="mvp-loop"></a>
+<a id="user-actions"></a>
+<a id="agent-user"></a>
+<a id="continuous-execution"></a>
+### 1.1 什么时候找用户
+
+用户希望尽量少被打断。本地实现、调试、NuGet 还原、单元测试补齐、门禁修复、文档同步、push、建 PR、低风险合并与开发版安装都由 Agent 连续完成，不逐项请示。
+
+| 情况 | Agent 的处理 |
+| :--- | :--- |
+| 缺视觉细节或局部技术参数，但能做可逆实现 | 按推荐默认值实现，在 PR 里写明；值得用户回看的再建 `needs-user` issue，标题“决定：…”，写清默认值与可选项 |
+| 需要真人判断的实机体验（真实游戏、修改器、手感、输入法） | 建 `needs-user` issue，标题“检查：…”，写步骤与预期；没做就保持 `not-run`，不冒充通过 |
+| 真实账号、API Key 或外部服务配置（海报源、云存储、推送通道） | 先用离线资源、合成夹具与回环服务完成验证；建可选的 `needs-user` issue 说明需要什么、在哪里录入，真实在线验收保持 `not-run` |
+| 缺失决定会改变产品范围、反作弊安全边界、数据含义或造成不可逆结果，且无法可逆隔离 | 建 `needs-user` + `blocked` issue 并在对话里指出，只暂停受阻的部分 |
+| 改远端设置、规则集、签名密钥、发布正式版、改写远端历史 | 先做完本地部分，建 `needs-user` issue 写清具体动作，等用户授权该动作 |
+
+不得把开发缺代码交给用户人工测试。用户在 issue 里答复后，把结论回写[已确认决策](../decisions/confirmed-decisions.md)与对应正本，再关闭 issue。
+
+<a id="change-loop"></a>
 <a id="agent-handoff"></a>
+<a id="mvp-loop-handoff"></a>
+## 2. 每次改动的流程
 
-| 阶段环节 | 责任角色 | 核心职责与结束判据 |
-| :--- | :--- | :--- |
-| **① 整阶段规划（`planned`）** | Agent A | 核对基线与用户决定，完成阶段清理与开源查证，编写覆盖**整个里程碑阶段**的可执行长计划 `docs/delivery/stage-plan.md`（不分零碎小批次），明确工作包（`M2-W01` 等）、模块契约、验收映射与 A→B 交接 Prompt |
-| **② 连续实现与自检（`executing → ready-for-review`）** | Agent B（或 Swarm 实现集群） | 核对分支与父提交，连续完成计划内全部可执行工作包、单元/架构门禁测试、问题修复与受影响正本同步；产出 `docs/delivery/stage-report.md`、完整提交 SHA 及 B→A 审查 Prompt |
-| **③ 集中技术审查（`reviewed` / `changes-requested`）** | Agent A（或 Swarm `@verifier`） | 直接审查实际 `git diff`、源码边界与门禁实跑结果；局部确定性小瑕疵（单会话模式下）直接修复并复验，跨模块缺口汇总为单次 `F-*` 清单退回返工；收敛后分列实现/技术审查/产品验收三项结论 |
-| **④ 远端授权与集成（`closed`）** | 用户授权 + Agent 执行 | 技术审查收敛后在 [USER-ACTIONS.md](../../USER-ACTIONS.md) 登记具体 `ACT-*`；获用户明确授权后执行 `git push`、创建 PR、核对 CI（`docs` + DCO）并按授权范围 squash 合并入 `main` |
+1. **开工**：`git status --short --branch`；从最新 `main` 切分支 `<type>/<issue号>-<简短描述>`（`feat`、`fix`、`chore`、`docs`、`refactor`、`test`、`ci`、`build`、`perf`）。跨模块或改公共契约（`Spawn.Contracts`、IPC、`spawn.db` Schema、反作弊联锁）的改动，先在 issue 里写清方案再动手。
+2. **实现**：严守 `Spawn.sln` 项目引用方向与 Clean Host 边界；完整实现正常流程与关键失败恢复路径；同步更新受影响的需求、设计、模块规格、`traceability.json` 与文档登记表。
+3. **验证**：跑[快速门禁](quality-gates.md#gate-tiers) `python -B scripts/quick_gate.py`；发布前以及改到打包、安装、更新、签名或发布链路时跑整套交付门禁。
+4. **提交**：Conventional Commits（`feat: …`、`fix(trainer): …`），每个提交 `git commit -s`；用 `git add -u` 或显式路径暂存。一个 PR 只做一件事；PR 合并时 squash 成一个提交，分支里提交几次都可以。
+5. **PR**：push 后建 PR，按模板写关联 issue、做了什么、验证（命令 / 结果 / 未运行项）、风险。碰了高风险清单就加 `risk:high` 标签。
+6. **审查**：CI 通过后，由干净上下文的审查者（新开的子代理，或交给另一个 Agent）按 [REVIEW](../../REVIEW.md) 审查完整改动；作者不能自己审自己。阻塞项修完再审。
+7. **合并**：低风险 PR 由 Agent `gh pr merge <号> --squash --match-head-commit <头提交>` 合并；`risk:high` 的 PR 留给用户合并。不轮询长挂命令（如 `gh pr checks --watch`）。
+8. **合并后**：本地 `git switch main && git pull --ff-only`，运行[开发版自动安装](#dev-install-at-handoff)；在 issue 或对话里报告结果与一个首选下一步。
 
-- 阶段状态流转严格遵循：`planned → executing → ready-for-review → reviewed → closed`（需返工时记为 `changes-requested`）。
-- 工程技术审查通过（`reviewed`）、产品人工实机检查（`H-*`）与远端推送授权（`ACT-*`）三者正交记录：人工体验项可跨阶段顺延，不阻塞请求或执行远端 PR 授权，但合入 `main` 亦不代表人工实机体验已自动验收通过。
+<a id="high-risk"></a>
+### 2.1 高风险清单
+
+PR 只要碰到下列任一项就是高风险，加 `risk:high`，Agent 不自行合并：
+
+- 安装包、安装与卸载行为、开发版自动安装（`scripts/package.py`、`installer/`、卸载项）；
+- 更新、签名、发布流程与密钥（应用内更新与验签、`scripts/release.py`、`release.yml`、`installer/update-signing-public.pem`）；
+- 反作弊联锁与进程隔离（`AntiCheatTier`、15 秒冷却、Clean Host 引用与 IAT 门禁白名单、`JobObject` 标志、提权与 UAC、跨完整性级别 IPC ACL）；
+- `spawn.db` Schema 与迁移、`SPAWN_Vault` / 硬链接 / Junction 部署、存档备份与回滚、凭据存储；
+- `.github/`（工作流、规则集与仓库设置镜像、Dependabot 配置）；
+- 删除或弱化测试、门禁与公开内容检查。
+
+其余（功能、界面、修复、文档、依赖小版本、重构）都是低风险。拿不准就按高风险处理。
 
 <a id="dev-install-at-handoff"></a>
+### 2.2 开发版自动安装
 
-### 每次本地提交后自动重装本机 `SPAWN Dev`（`install-dev`）
-
-为让用户无需手动打开终端输入 `dotnet run` 即可随时从桌面/开始菜单快捷方式或系统托盘体验最新开发版，按 `D-32`（2026-11-22 用户选择），Agent 每次本地 `git commit` 或 `git commit --amend` 成功后都必须立即在本机自动执行一次（开发版永不自查更新，由此保持与 `HEAD` 一致；交接与请用户复查时同样以最近一次安装为准），并把装好的版本写进交接说明与报告：
+每次合并进 `main` 后（本机拉取 `main` 后），以及请用户实机检查前，Agent 在本机执行（`D-34`）：
 
 ```powershell
 python -B scripts/package.py --install-dev
 ```
 
-1. **安全无损闭环**：脚本先在 `dist/.staging-*/` 编译 `spawn-dev.exe`、`Spawn.OverlayHost.exe`、`Workers\Trainer\Spawn.TrainerWorker.exe` 与免 UAC 按用户安装包 `spawn-dev-setup-<ver>-x64.exe` 并原子替换至 `dist/spawn-dev/`；若本机已有运行中的 `SPAWN Dev`，先剥离测试/覆写环境变量再通过 `--quit-for-update` 命名管道请求其写入 `config/update-restart-state.json`（`reason: "dev-install"`、5 分钟 TTL）并优雅退出（连同 `Spawn.OverlayHost.exe`、`Spawn.TrainerWorker.exe` 最多等待 30s，**绝不强杀进程，也不影响正在运行的游戏**，超时即放弃本次安装、本机不变）；本机尚未安装时直接首次安装；随后静默执行 `/VERYSILENT` 安装、核验 `HKCU` 卸载项版本号与 `Workers\Trainer\` 隔离布局、写入 `%LOCALAPPDATA%\spawn-dev\dev-workspace.json` 桥接当前仓库 `.local` 资源，安装成功后**不论原来是否在运行、也不论此前主窗口是否打开**，都以 `--background` 在系统托盘静默拉起新装好的 `spawn-dev.exe`：先请桌面外壳（`explorer.exe` 的 `Shell.Application.ShellExecute`）启动并经 Toolhelp32 + `0x1000` 核验其父进程确为 `%SystemRoot%\explorer.exe`，确认后回执直接记录 `viaShell: true, inJob: false`（规避 Windows 系统外壳作业对象或应用自建作业对象的误报，保证脱离命令作业对象、不在命令结束时被回收）；外壳不可用时再以 `CREATE_BREAKAWAY_FROM_JOB` 脱离作业（仍不允许脱离时照常启动、回执记 `viaShell: false, inJob: true`，交接说明里请用户从开始菜单打开一次），回执写入 `.local/reports/<当前阶段>/install-dev.json`（阶段取 `docs/governance/document-registry.json` 的 `currentStage`）。
-2. **严格隔离边界**：设置 `SPAWN_DEV_AUTO_INSTALL=0` 或 `CI=true` 时自动跳过本机安装；日常自动化门禁 `scripts/quick_gate.py` 与单元测试**严禁调用 `--install-dev` 触碰用户的 `spawn` 或 `spawn-dev` 环境**（安装包自动化测试必须使用独立隔离身份 `--identity spawn-dev-test --no-shortcuts --no-relaunch`）。
+1. **安全无损**：脚本先在 `dist/.staging-*/` 编译 `spawn-dev.exe`、`Spawn.OverlayHost.exe`、`Workers\Trainer\Spawn.TrainerWorker.exe` 与免 UAC 按用户安装包并原子替换到 `dist/spawn-dev/`；本机已有运行中的 `SPAWN Dev` 时经 `--quit-for-update` 命名管道请其保存退出，装完按原来的窗口或托盘状态重新打开；从不碰正式版。
+2. **隔离边界**：`SPAWN_DEV_AUTO_INSTALL=0` 或 `CI=true` 时跳过；`quick_gate.py` 与单元测试严禁调用 `--install-dev` 触碰 `spawn` 或 `spawn-dev`（安装包测试用隔离身份 `--identity spawn-dev-test --no-shortcuts --no-relaunch`）。
+3. 装好的版本写进 PR 或 issue 评论。开发版未安装时的首次安装与窗口开着时推迟安装见 [#11](https://github.com/chialecode/spawn/issues/11)。
 
----
+<a id="next-step"></a>
+### 2.3 收尾报告
 
-## 2. 多 Agent / Swarm 集群协同开发协议
+每次收尾如实说明：做了什么、验证证据（命令 / 结果 / 未运行项）、限制与未决事项，并给出一个首选下一步。实现完成、审查通过、产品验收（用户实机检查）是三件事，分开下结论；合成夹具与真实游戏、真实修改器、真实外部服务的验证分开声明。交给另一个 Agent 继续时，交接内容写进 issue 或 PR，不只留在聊天里。
 
 <a id="swarm-collaboration"></a>
+## 3. 多个 Agent 并行开发
 
-SPAWN 天然具备清晰的 `Spawn.sln` 多进程物理隔离工程结构与模块化文档树，非常适合通过 Swarm 多智能体集群并行加速。启用 Swarm 集群时，必须严格遵守以下五条防碰撞铁律：
+多个 Agent 同时工作时：
 
-```mermaid
-flowchart LR
-    Coord["@coordinator<br/>阶段拆分与契约冻结调度"]
-    PhaseA["Phase A 基础设施/契约先行<br/>(如 Git 基线 或 Spawn.Contracts 冻结)"]
-    W1["Worker 1<br/>独占子工程/文档域 A"]
-    W2["Worker 2<br/>独占子工程/文档域 B"]
-    W3["Worker 3<br/>独占子工程/文档域 C"]
-    Ver["@verifier (只读审查官)<br/>跑全量门禁 + 架构 IAT 核查"]
-    GitEnd["单写者收束阶段提交<br/>(git commit -s / --amend -s)"]
+1. **一个 Agent 一个 issue 一个分支**：各自用独立工作区（`git worktree` 或独立克隆），互不在对方的分支上提交。
+2. **契约先行**：要并行改的模块共用的契约（`Directory.Packages.props`、`Spawn.Contracts` DTO、`Spawn.Core` 接口签名）先单独做成一个 PR 合并，再开始并行实现，避免各自臆造冲突的接口或包版本。
+3. **不重叠写**：同一时间只有一个进行中的 PR 修改 `Spawn.sln`、`Directory.Packages.props`、`document-registry.json` 或宿主装配入口；后来者等它合并后 rebase。
+4. **审查者只审不改**：审查者把问题写进 PR 评论，由作者修复；不直接改作者的分支。
 
-    Coord --> PhaseA
-    PhaseA -->|"[Phase A Ready] 广播"| W1 & W2 & W3
-    W1 & W2 & W3 -->|"@verifier 提请审查"| Ver
-    Ver -.->|"发现 F-xx 精准 @责任人 修复"| W1 & W2 & W3
-    Ver ==>|"零阻断通过"| GitEnd
-    GitEnd ==>|"@coordinator 汇总交付用户"| Coord
-```
+<a id="mvp-loop"></a>
+## 4. MVP 优先与反馈循环
 
-1. **契约先行与阶段栅栏（Phase Barrier）**：
-   - 在并行编写各业务模块或 Worker 子进程前，必须先完成共享底座契约冻结（如 `M1` 的 Git 空 `README` 第一提交与分支就绪栅栏 `[Phase A Ready]`；`M2+` 编码阶段先冻结 `Directory.Packages.props`、`Spawn.Contracts` DTO/`.proto` 与 `Spawn.Core` 接口签名），再唤醒下游并行 Worker，杜绝各 Worker 各自臆造冲突的接口名或包版本。
-2. **文件与子工程独占写权限（Zero Overlapping Writes）**：
-   - `@coordinator` 在每个 Worker 的启动 Brief 中必须显式列出**允许创建/修改的精确文件路径或子工程目录**（例如：`worker-launcher` 独占 `src/Spawn.Modules.Launcher/**`、`worker-nexus` 独占 `src/Spawn.Modules.Nexus/**`、`worker-progress` 独占 `src/Spawn.Modules.Progress/**` 与 `src/Spawn.TrainerWorker/**`）。
-   - **绝对红线**：严禁两个活跃 Worker 同时编辑同一个文件（如 `Spawn.sln`、`Directory.Packages.props`、`document-registry.json` 或 `Spawn.Host/App.xaml.cs`）；共享注册表或宿主装配入口必须指定**唯一责任 Worker** 统合写入，其他 Worker 通过消息板告知所需注册条目。
-   - 若多个 Worker 需同时执行冲突性 `dotnet build`（锁定同一 `obj/` 目录）或独立分支演练，应为并行编译型 Worker 配置独立工作区（`workspace: "share"`），并在销毁（`kill`）Worker 前将其变更合并落地回主工作区。
-3. **`@verifier` 只审不代改原则**：
-   - `@verifier` 作为独立质量守门员，负责运行全套门禁脚本（`check_docs.py`、`quick_gate.py`、`dotnet test`、`PEReader` IAT 审计与 `git diff --check`）并对照 [REVIEW.md](../../REVIEW.md) 核查技术细节。
-   - `@verifier` **严禁直接动手修改其他 Worker 负责的文件**（防止与仍在运行的作者发生写覆盖冲突）；发现任何缺陷统一整理为 `F-01`… 编号，在消息板精准 `@<对应责任 Worker>` 修复并复验。
-4. **点对点精准唤醒（禁止滥用 `@coordinator` CC）**：
-   - Worker 之间交接（如文档作者写完通知 `@gov-rules` 核对注册表并 `@verifier` 提请审查）只 `@` 下一步实际行动者，严禁在中间过程每条消息抄送 `@coordinator` 消耗上下文与配额；仅在遇到无法自行消解的跨边界死锁或最终收敛交付时唤醒 `@coordinator`。
-5. **收束为单一阶段提交**：
-   - Swarm 内部无论拆分了多少个并行 Worker，对外交付到阶段分支（如 `feat/m1-foundation`、`feat/m2-launcher-achievement`）时，必须由指定的 Git 收口角色在全部门禁通过后统一暂存并生成/修订**唯一一个带 DCO `Signed-off-by` 的阶段提交**，且清理所有已完成的辅助 Worker。
+先贯通基本功能的端到端闭环（范围见[交付路线图](../engineering/delivery-plan.md)），再按反馈迭代：不等单一模块的边缘打磨全部清零才推进下一核心能力，也不得把缺失的主流程包装成“后续优化”。反作弊安全、防丢档与数据隔离不因 MVP 放宽。
 
----
+<a id="lessons"></a>
+## 5. 教训循环（`LESSONS.md`）
 
-## 3. 连续执行与可逆默认决策机制
+- 踩到值得记住的坑（返工、CI 失败的根因、环境陷阱、审查反复指出的问题）时，在根目录 [LESSONS](../../LESSONS.md) 加一条：**规则** → 原因 → 证据（PR 号或日期）→ 出现次数。已有同类条目就把次数加一。
+- 出现 3 次的教训提升进本目录的规则或 [AGENTS](../../AGENTS.md)，并从 LESSONS 删除。
+- 与本项目无关、对其他项目也适用的教训（工具链、平台陷阱、流程），在其他项目仓库里开 `chore` issue 分享，不在本仓库写其他项目的名字。
 
-<a id="continuous-execution"></a>
-
-1. **不逐包停顿请示**：在当前阶段计划范围内，常规代码编写、NuGet 包还原、单元测试补齐、门禁报错修复与正本文档同步均由 Agent 一气呵成连续执行。
-2. **非阻塞默认先行**：遇到不影响安全底线与外部付费授权的细节取舍，先采用工程上最稳健的可逆默认方案落地实现，并在 [USER-ACTIONS.md](../../USER-ACTIONS.md) 或 [已确认决策](../decisions/confirmed-decisions.md) 中透明注明当前默认值；仅当缺失决定会导致破坏性数据变更、违反反作弊安全边界或需要用户外部授权时，才精准暂停该受阻支线并继续推进其余独立工作包。
-
----
-
-## 4. 阶段启动清理与 NuGet 7 天冷却依赖盘点
-
+<a id="weekly"></a>
 <a id="dependency-inventory"></a>
+## 6. 每周维护：依赖、漏洞与无用文件
 
-自 `M2` 起，每个新里程碑阶段启动时固定执行两项例行卫生动作并纳入本阶段提交：
+每周（或开始一批较大改动前）做一次，结果写在维护 PR 里：
 
-1. **文档与工作区四分类清理**：按 [文档治理政策](../governance/documentation-policy.md#stage-cleanup) 清理上一阶段遗留的过渡文件，更新 `retireAfter` 到期项并保持长期正本无过期阶段标签。
-2. **NuGet 与 GitHub Actions 依赖盘点**：
-   - 检查远端是否有待处理的 Dependabot 安全告警或已满 **7 天冷却期**（对齐 [`.github/dependabot.yml`](../../.github/dependabot.yml) `cooldown.default-days: 7`）的版本更新 PR；安全漏洞修复不受冷却期限制，优先合入验证。
-   - 核查 `Directory.Packages.props` 中各直接依赖包已发布满 7 天的新稳定版（拒绝抢跑刚发布未满 7 天的非安全更新，规避上游供应链投毒或撤包闪崩），升级兼容版本并跑通 `Spawn.Architecture.GateTests` 与全量回归测试。
+1. **Dependabot**：NuGet 兼容更新（同主版本）在 CI 通过后按低风险合并；含主版本变化的，或 GitHub Actions 的更新（改的是 `.github/workflows/`），按[高风险](#high-risk)加 `risk:high` 等用户合并；不采用的写明原因关闭。**安全修复随时尽快处理**，不等每周，风险分级不变。
+2. **盘点**：核查 `Directory.Packages.props` 直接依赖已发布满 **7 天**（与 [`.github/dependabot.yml`](../../.github/dependabot.yml) 冷却期一致）的新稳定版，兼容的升级后跑通 `Spawn.Architecture.GateTests` 与全量测试；升级失败就回退，在 PR 写明尝试的版本、失败命令与复查条件。
+3. **漏洞**：`dotnet list Spawn.sln package --vulnerable --include-transitive`；有修复版本的先升级，无法修复的在 PR 与[上游事项台账](../decisions/open-questions.md)写明原因与复查日期。全仓传递依赖保持零 `GPL`/`AGPL`。
+4. **无用文件**：按[文档治理政策](../governance/documentation-policy.md#stage-cleanup)四分类整理工作区与生成物；仍有效的结论先写进正本或 issue。Git 历史就是归档，需要回看时用固定提交链接。

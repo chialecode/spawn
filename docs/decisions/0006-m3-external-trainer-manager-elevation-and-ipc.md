@@ -2,7 +2,7 @@
 
 - **状态**：Accepted
 - **日期**：2026-11-21
-- **维护角色**：Agent A / 系统架构师
+- **维护角色**：维护者
 - **关联决策与需求**：`D-04`、`D-11`、`D-13`、`D-23`、`D-25` ~ `D-29`；`REQ-PRG-04` ~ `REQ-PRG-08`、`REQ-SEC-03`、`REQ-SEC-05`、`REQ-SEC-06`、`NFR-07`
 - **部分替代**：[ADR-0003 §3.3](0003-anti-cheat-guard-and-process-isolation.md) 中“首次引导注册计划任务静默拉起 High IL Worker”与“`gRPC over Named Pipes`”两项表述；[ADR-0005 §3.2](0005-external-ecosystem-orchestration-and-uiaccess-overlay.md) 中修改器静音参数与二期 `.CT` 依赖表述
 

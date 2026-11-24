@@ -1,6 +1,6 @@
 # 仓库地图与 `Spawn.sln` 依赖隔离规范
 
-当前仓库实际落地进度以 [当前执行状态](../delivery/status.md) 为准：`M1` 已完成全套治理、架构契约、五大模块规格与 GitHub 配置基线；`M2` 起按本文件定义的物理隔离边界初始化 `Spawn.sln` 多工程结构。
+实际落地进度以 `main` 上的代码与[需求追踪](../delivery/traceability.json)为准：`M1` 建立治理、架构契约、五大模块规格与 GitHub 配置基线；`M2` 起按本文件定义的物理隔离边界建立 `Spawn.sln` 多工程结构。
 
 ---
 
@@ -8,8 +8,8 @@
 
 | 仓库相对路径 | 状态 | 职责与所有权边界 |
 | :--- | :--- | :--- |
-| 根文档（`README.md`、`AGENTS.md`、`CLAUDE.md`、`CONTRIBUTING.md`、`DESIGN.md`、`REVIEW.md`、`SECURITY.md`、`USER-ACTIONS.md`） | `M1` 已建立 | 项目门面、AI/开发者工作指令唯一正本、审查一票否决门禁、安全声明与全仓唯一用户待办 |
-| `.github/`（`workflows/docs.yml`、`dependabot.yml`、`rulesets/main.json`、`repository-settings.json`、`actions-policy.json`、`PULL_REQUEST_TEMPLATE.md`） | `M1` 已建立 | 远端仓库设置镜像、`main-protection` 规则集、Actions 白名单、NuGet/Actions 7 天冷却 Dependabot 与 CI 文档/DCO 门禁 |
+| 根文档（`README.md`、`AGENTS.md`、`CLAUDE.md`、`CONTRIBUTING.md`、`DESIGN.md`、`REVIEW.md`、`SECURITY.md`、`LESSONS.md`） | `M1` 已建立 | 项目门面、AI/开发者工作指令唯一正本、审查口径、安全声明与开发教训 |
+| `.github/`（`workflows/docs.yml`、`dependabot.yml`、`rulesets/main.json`、`repository-settings.json`、`actions-policy.json`、`PULL_REQUEST_TEMPLATE.md`、`ISSUE_TEMPLATE/`） | `M1` 已建立 | 远端仓库设置镜像、`main-protection` 规则集、Actions 白名单、NuGet/Actions 7 天冷却 Dependabot 与 CI 文档/DCO 门禁 |
 | `docs/governance/`、`docs/product-rules/`、`docs/design-rules/`、`docs/dev-rules/`、`docs/templates/` | `M1` 已建立 | 文档治理政策、`document-registry.json` 注册表、五大产品不变量、WPF/Nodify/Overlay 视觉规范、工程协作规则与写作模板 |
 | `docs/requirements/`、`docs/decisions/`、`docs/design/`、`docs/engineering/`、`docs/delivery/` | `M1` 已建立 | 产品需求正本、ADR-0001~0005 与决策台账、系统架构/数据/IPC 契约、开源选型与环境清单、里程碑路线图与追踪矩阵 |
 | `docs/modules/`、`docs/research/` | `M1` 已建立 | S.P.A.W.N. 五大领域模块正式实现规格书（`active`）及前期源码级深度调研档案（`reference`） |

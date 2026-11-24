@@ -35,5 +35,5 @@
 
 <a id="file-cleanup"></a>
 
-1. **谨慎对待未知未跟踪文件**：发现工作区存在非本人创建的未跟踪目录或文件时，先通过 `git status --short` 与 `git check-ignore -v` 核实归属，绝不擅自删除或用 `git add .` 混入阶段提交。
-2. **阶段切换四分类整理**：进入下一里程碑（如 `M1 → M2`）时，按 [文档治理政策](../governance/documentation-policy.md#stage-cleanup) 对工作区与 `.local/reports/` 历史过程产物执行 **原样保留 / 原地精炼 / 提炼后删除 / 直接删除** 整理，确保仓库始终清爽紧凑、单一事实正本零冗余。
+1. **谨慎对待未知未跟踪文件**：发现工作区存在非本人创建的未跟踪目录或文件时，先通过 `git status --short` 与 `git check-ignore -v` 核实归属，绝不擅自删除或用 `git add .` 混入提交。
+2. **每周四分类整理**：每周维护时按 [文档治理政策](../governance/documentation-policy.md#stage-cleanup) 对工作区与 `.local/reports/` 历史过程产物执行 **原样保留 / 原地精炼 / 提炼后删除 / 直接删除** 整理，确保仓库始终清爽紧凑、单一事实正本零冗余。

@@ -32,7 +32,7 @@ SPAWN 从解决方案工程结构（`Spawn.sln`）与操作系统进程完整性
 
 ## 当前阶段与仓库结构
 
-`M1` 架构契约基线（[PR #1](https://github.com/chialecode/spawn/pull/1)）与 `M2` 启动器及单机成就闭环（[PR #2](https://github.com/chialecode/spawn/pull/2)）均已合入 `main`；当前处于 **`M3`（单机外部修改器安全管家 + 启动前轻量存档快照）**，执行详情见 [当前状态](docs/delivery/status.md)、[M3 阶段计划](docs/delivery/stage-plan.md) 与 [M3 阶段报告](docs/delivery/stage-report.md)；用户事项与远端授权统一维护在 [USER-ACTIONS.md](USER-ACTIONS.md)。
+`M1` 架构契约基线（[PR #1](https://github.com/chialecode/spawn/pull/1)）、`M2` 启动器及单机成就闭环（[PR #2](https://github.com/chialecode/spawn/pull/2)）与 `M3` 单机外部修改器安全管家 + 启动前轻量存档快照（[PR #7](https://github.com/chialecode/spawn/pull/7)，验证记录见 [M3 阶段报告](docs/evidence/2026-11-22-m3-stage-report.md)）均已合入 `main`。进行中的工作、下一里程碑 `M4` 与需要用户处理的事项都在 [GitHub Issues](https://github.com/chialecode/spawn/issues)（用户事项带 `needs-user` 标签）。
 
 ```text
 spawn/
@@ -43,7 +43,7 @@ spawn/
 ├── AGENTS.md / CLAUDE.md            # AI Agent 与开发者最高工作指令正本
 ├── REVIEW.md / CONTRIBUTING.md      # 集中审查口径、开发贡献与环境要求
 ├── DESIGN.md / SECURITY.md          # 三栏极简视觉规范入口与安全隔离声明
-├── USER-ACTIONS.md                  # 全仓唯一用户待办、环境配置与远端授权台账
+├── LESSONS.md                       # 开发教训：前人踩过的坑
 ├── assets/                          # 双通道原生图标资产 (icon.ico/png 与琥珀色 DEV 角标 icon-dev.ico/png)
 ├── installer/
 │   └── spawn.iss                    # Inno Setup 7 免 UAC 按用户安装包模板 (隔离 AppId、Workers\Trainer\、无损升级)
@@ -74,10 +74,10 @@ spawn/
 
 ## 文档导航与快速门禁
 
-1. **治理与入口**：[文档总导航](docs/README.md) · [AGENTS 工作指令](AGENTS.md) · [项目关键事实](docs/project-baseline.md) · [用户待办](USER-ACTIONS.md)
+1. **治理与入口**：[文档总导航](docs/README.md) · [AGENTS 工作指令](AGENTS.md) · [项目关键事实](docs/project-baseline.md) · [Issues](https://github.com/chialecode/spawn/issues)
 2. **架构与契约**：[全景系统架构](docs/design/system-architecture.md) · [数据模型与存储](docs/design/data-model.md) · [IPC 与反作弊安全契约](docs/design/ipc-and-security-contracts.md)
 3. **五大模块规格**：[模块总览](docs/modules/README.md) · [Spawn 启动管线](docs/modules/spawn-launcher.md) · [Nexus Mod 与工具箱](docs/modules/nexus-mods-and-utilities.md) · [Progress 存档与修改器](docs/modules/progress-saves-and-trainer.md) · [Achievement 成就与 Overlay](docs/modules/achievement-and-overlay.md) · [Workflow 代肝与蓝图](docs/modules/workflow-and-blueprint.md)
-4. **选型与交付**：[技术选型与环境清单](docs/engineering/technology-selection.md) · [M1~M6 交付路线图](docs/engineering/delivery-plan.md) · [当前执行状态](docs/delivery/status.md)
+4. **选型与交付**：[技术选型与环境清单](docs/engineering/technology-selection.md) · [M1~M6 交付路线图](docs/engineering/delivery-plan.md) · [需求追踪矩阵](docs/delivery/traceability.json)
 
 日常开发与提交前在仓库根目录运行一键静默门禁（需 `.NET 10 SDK` 与 `Python 3.12+`）：
 

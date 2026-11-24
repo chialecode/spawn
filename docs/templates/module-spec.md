@@ -35,4 +35,4 @@
 
 ## 5. 门禁测试与验收准则
 
-区分确定性单元测试（`Spawn.Core.Tests` / `Spawn.Achievement.Tests` / `Spawn.Integration.Tests` 合成夹具）、`Spawn.Architecture.GateTests` IAT 静态断言与需实机硬件/游戏配合的人工体验检查（关联 `USER-ACTIONS.md` `H-*`）。
+区分确定性单元测试（`Spawn.Core.Tests` / `Spawn.Achievement.Tests` / `Spawn.Integration.Tests` 合成夹具）、`Spawn.Architecture.GateTests` IAT 静态断言与需实机硬件/游戏配合的人工体验检查（建为 `needs-user` issue，标题“检查：…”）。

@@ -1,13 +1,13 @@
 # 验证与阶段交付报告模板
 
-本模板用于编写 `docs/delivery/stage-report.md` 及专项技术验证报告。核心纪律：**运行状态仅允许使用 `passed`、`failed`、`blocked`、`not-run` 四种标准值；未执行的检查严禁推断或标记为 `passed`**。
+本模板用于编写需要长期留存的阶段或专项验证报告（`docs/evidence/<日期>-<主题>.md`，`reference` 状态）；日常改动的验证证据直接写进 PR。核心纪律：**运行状态仅允许使用 `passed`、`failed`、`blocked`、`not-run` 四种标准值；未执行的检查严禁推断或标记为 `passed`**。
 
 ---
 
 ## 1. 验证基线元数据
 
-- **阶段与计划版本**：如 `M2`（对应 `docs/delivery/stage-plan.md` `v1.0`）
-- **本地分支与父提交 SHA**：`feat/m2-...`（父提交 `<40位完整SHA>`，交付提交以 `git rev-parse HEAD` 核验）
+- **阶段与计划版本**：如 `M4`（对应里程碑总 issue 与合并的 PR）
+- **分支与提交**：PR 号、分支 `<type>/<issue号>-<简短描述>` 与被验证提交的 40 位 SHA（`git rev-parse HEAD` 核验）
 - **测试环境快照**：Windows 版本号、`.NET SDK` 版本、`Python` 版本、测试数据隔离目录（`%TEMP%\spawn-gate-...`）
 
 ---
@@ -35,4 +35,4 @@
   1. **实现与自检状态**：`ready-for-review` / `completed`
   2. **集中技术审查结论**：`reviewed` / `changes-requested`
   3. **产品实机验收状态**：`pending`（列明顺延的 `H-*` / `ACT-*` 编号）
-- **唯一推荐下一步**：指向跨角色交接动作，或指向 [USER-ACTIONS.md](../../USER-ACTIONS.md) 中待用户明确授权的具体 `ACT-*`。
+- **唯一推荐下一步**：指向下一个 issue，或需要用户处理的 `needs-user` issue。

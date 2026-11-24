@@ -47,10 +47,10 @@
 
 | 待确认问题 | 唯一权威正本 |
 | :--- | :--- |
-| 开发红线、A/B 闭环与 Swarm 并行隔离怎么配合？ | [AGENTS.md](../AGENTS.md)、[开发协作流程](dev-rules/development-workflow.md) |
-| 当前做到哪个里程碑、本地分支与父提交是什么？ | [当前执行状态](delivery/status.md)、[阶段计划](delivery/stage-plan.md)、[Git 工作流](dev-rules/git-workflow.md) |
-| 哪些决策已拍板、哪些工程细节待后续阶段实测？ | [已确认决策](decisions/confirmed-decisions.md)、[集中工程事项台账](decisions/open-questions.md) |
-| 需要用户装什么环境、配什么密钥或授什么远端权限？ | [USER-ACTIONS.md](../USER-ACTIONS.md) |
+| 开发红线、issue 与 PR 流程、多个 Agent 并行怎么配合？ | [AGENTS.md](../AGENTS.md)、[开发流程](dev-rules/development-workflow.md)、[LESSONS](../LESSONS.md) |
+| 当前做到哪个里程碑、正在做什么？ | [GitHub Issues](https://github.com/chialecode/spawn/issues)、[交付路线图](engineering/delivery-plan.md)、[需求追踪](delivery/traceability.json) |
+| 哪些决策已拍板、哪些工程细节待后续阶段实测？ | [已确认决策](decisions/confirmed-decisions.md)、[上游事项台账](decisions/open-questions.md) |
+| 需要用户决定、实机检查、配置或授权什么？ | [`needs-user` issue](https://github.com/chialecode/spawn/issues?q=is%3Aissue+is%3Aopen+label%3Aneeds-user) |
 | `Spawn.sln` 子工程怎么拆、各工程允许引哪些 NuGet 包？ | [仓库地图](dev-rules/repo-map.md)、[技术选型与环境清单](engineering/technology-selection.md) |
 | 五大核心模块的接口、状态机与 15 大深坑怎么实现？ | [模块规格总览](modules/README.md)、[全景系统架构](design/system-architecture.md) |
 | 需求 ID 与里程碑验收标准怎么一一对应？ | [产品需求正本](requirements/product-requirements.md)、[交付路线图](engineering/delivery-plan.md)、[需求追踪矩阵](delivery/traceability.json) |

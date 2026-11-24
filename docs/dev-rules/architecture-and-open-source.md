@@ -7,8 +7,8 @@
 ## 1. 活跃开源优先查证铁律（Open-Source First）
 
 1. **规划期必须完成源码级查证**：
-   - Agent A 在制定阶段计划或推荐技术组件前，必须核查目标开源仓库的官方地址、默认分支近期功能提交（`pushed_at` / 最新 commit，不轻信仅修改 README 的 `updated_at`）、最新 Release、`.NET 10` / Windows 10/11 x64 兼容性及许可证条款，并将结论记入选型文档；严禁凭过时记忆拍脑袋自研，也严禁把首次可行性调研推给实施阶段的 Agent B。
-   - Agent B 在接入阶段通过 `Directory.Packages.props` 锁定精确兼容版本，跑通最小闭环并提供构建与运行证据。
+   - 制定方案或推荐技术组件前，必须核查目标开源仓库的官方地址、默认分支近期功能提交（`pushed_at` / 最新 commit，不轻信仅修改 README 的 `updated_at`）、最新 Release、`.NET 10` / Windows 10/11 x64 兼容性及许可证条款，并将结论记入选型文档；严禁凭过时记忆拍脑袋自研，也严禁把首次可行性调研推给实施阶段的 Agent B。
+   - 接入时通过 `Directory.Packages.props` 锁定精确兼容版本，跑通最小闭环并提供构建与运行证据。
 2. **四级复用梯度**：
    - 遇到功能缺口时严格按 **“① 直接使用成熟开源 NuGet 包现成 API → ② 编写非侵入薄适配器（Thin Adapter） → ③ 提交最小隔离封装补丁 → ④ 经文档论证无合适方案后定向自研”** 推进。
    - SPAWN 的核心自研精力集中投入在 **跨模块联动状态机、Anti-Cheat Guard 物理隔离总线、Kismet 双引脚异步调试解释器、FastCDC + Junction 原子事务及多生态统一编排协议**，绝不重复自研节点画布底层渲染、OCR 推理引擎、Zstd/BLAKE3 算法或单款二次元游戏关卡识图脚本。

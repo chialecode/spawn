@@ -46,7 +46,7 @@ spawn/
 ├── LESSONS.md                       # 开发教训：前人踩过的坑
 ├── assets/                          # 双通道原生图标资产 (icon.ico/png 与琥珀色 DEV 角标 icon-dev.ico/png)
 ├── installer/
-│   └── spawn.iss                    # Inno Setup 7 免 UAC 按用户安装包模板 (隔离 AppId、Workers\Trainer\、无损升级)
+│   └── spawn.nsi                    # NSIS 3.13 免 UAC 按用户安装脚本 (卸载项 io.github.chialecode.<身份>、Workers\Trainer\、只删本版本文件的覆盖升级)
 ├── src/
 │   ├── Spawn.Contracts/             # 零业务跨模块强类型 DTO、修改器/存档快照/游戏数据清理与 IPC 接口契约 (net10.0)
 │   ├── Spawn.Core/                  # SQLite WAL Schema v4、SpawnPaths、DPAPI、四层反作弊守卫、0x1000 探测与 NamedPipeJsonRpc
@@ -67,7 +67,7 @@ spawn/
     ├── check_docs.py                # 零依赖 Python 3.12+ 文档注册表、链接锚点与路径卫生门禁
     ├── quick_gate.py                # 低优先级后台静默一键门禁 (check_docs + Release 编译 + 4 工程测试 + diff --check)
     ├── generate_icons.py            # 零依赖 SDF 超采样正式版与 DEV 角标图标生成器
-    └── package.py                   # Inno Setup 7 原子打包 (含 Workers\Trainer\ 隔离) 与 SPAWN Dev 自动静默安装器
+    └── package.py                   # NSIS 原子打包 (固定版本与 SHA-256，含 Workers\Trainer\ 隔离) 与 SPAWN Dev 自动静默安装器
 ```
 
 ---

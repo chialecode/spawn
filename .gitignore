@@ -61,3 +61,6 @@ SPAWN_Vault/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Pinned build tools fetched by scripts/package.py (NSIS)
+/.tools/

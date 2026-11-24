@@ -557,7 +557,7 @@ public sealed class UpdateServiceTests
 
         Assert.Single(launcher.Launches);
         Assert.Equal(stagedPath, launcher.Launches[0].Path);
-        Assert.Equal("/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /SPAWNRELAUNCH", launcher.Launches[0].Arguments);
+        Assert.Equal("/S /RELAUNCH", launcher.Launches[0].Arguments);
     }
 
     [Fact]

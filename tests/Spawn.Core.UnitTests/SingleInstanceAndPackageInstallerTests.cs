@@ -10,7 +10,7 @@ namespace Spawn.Core.UnitTests;
 
 public sealed class SingleInstanceAndPackageInstallerTests
 {
-    private const string SpawnDevTestAppGuid = "B7E91A42-6D30-4C95-9E18-2F4A8C705104";
+    private const string SpawnDevTestAppId = "io.github.chialecode.spawn-dev-test";
 
     [Fact]
     public async Task SingleInstance_PrimarySecondaryActivateAndQuitForUpdate_HandshakesAndReleasesMutexCleanly()
@@ -243,22 +243,32 @@ print(json.dumps({"ok": True, "selfInJob": bool(in_job_out.value)}))
             Assert.Contains(token, notices, StringComparison.Ordinal);
         }
 
-        // 2. installer/spawn.iss must explicitly ship Workers\Trainer\* & THIRD-PARTY-NOTICES.txt and NEVER declare [UninstallDelete]
-        string issPath = Path.Combine(repoRoot!, "installer", "spawn.iss");
-        string[] activeIssLines = File.ReadAllLines(issPath)
+        // 2. installer/spawn.nsi installs the staged app folder as is (Workers\Trainer\ and
+        //    THIRD-PARTY-NOTICES.txt included), relaunches only on /RELAUNCH, writes the
+        //    io.github.chialecode.<identity> uninstall entry, and never deletes recursively from the
+        //    install folder (only the generated file list, the .retired folder and an empty folder).
+        Assert.False(File.Exists(Path.Combine(repoRoot!, "installer", "spawn.iss")), "Inno Setup script must be gone.");
+        string nsiPath = Path.Combine(repoRoot!, "installer", "spawn.nsi");
+        string[] activeNsiLines = File.ReadAllLines(nsiPath)
             .Select(line => line.Trim())
             .Where(line => line.Length > 0 && !line.StartsWith(';'))
             .ToArray();
-        string activeIssText = string.Join('\n', activeIssLines);
-        Assert.Contains(@"Workers\Trainer\*", activeIssText, StringComparison.Ordinal);
-        Assert.Contains(@"{app}\Workers\Trainer", activeIssText, StringComparison.Ordinal);
-        Assert.Contains("THIRD-PARTY-NOTICES.txt", activeIssText, StringComparison.Ordinal);
-        Assert.Contains("/SPAWNRELAUNCH", activeIssText, StringComparison.Ordinal);
-        Assert.Contains("--after-update", activeIssText, StringComparison.Ordinal);
-        Assert.Contains("skipifnotsilent", activeIssText, StringComparison.Ordinal);
-        Assert.DoesNotContain(
-            activeIssLines,
-            line => line.Equals("[UninstallDelete]", StringComparison.OrdinalIgnoreCase));
+        string activeNsiText = string.Join('\n', activeNsiLines);
+        Assert.Contains("File /r \"${SPAWN_SOURCE_DIR}\\*\"", activeNsiText, StringComparison.Ordinal);
+        Assert.Contains("${GetOptions} $0 \"/RELAUNCH\" $1", activeNsiText, StringComparison.Ordinal);
+        Assert.Contains("--after-update", activeNsiText, StringComparison.Ordinal);
+        Assert.Contains("Uninstall\\${SPAWN_APP_ID}", activeNsiText, StringComparison.Ordinal);
+        Assert.Contains("!insertmacro SPAWN_REMOVE_INSTALLED_FILES", activeNsiText, StringComparison.Ordinal);
+        Assert.Contains("--quit-for-update", activeNsiText, StringComparison.Ordinal);
+        Assert.DoesNotContain("TerminateProcess", activeNsiText, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("taskkill", activeNsiText, StringComparison.OrdinalIgnoreCase);
+        string[] recursiveRemovals = activeNsiLines
+            .Where(line => line.StartsWith("RMDir /r", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        Assert.NotEmpty(recursiveRemovals);
+        Assert.All(
+            recursiveRemovals,
+            line => Assert.Equal("RMDir /r \"$INSTDIR\\.retired\"", line));
 
         // 2b. W10 release tooling and ECDSA P-256 update-signing public key hygiene
         string releasePyPath = Path.Combine(repoRoot!, "scripts", "release.py");
@@ -296,10 +306,11 @@ print(json.dumps({"ok": True, "selfInJob": bool(in_job_out.value)}))
         string? repoRoot = TestSandbox.TryLocateRepositoryRoot();
         Assert.False(string.IsNullOrWhiteSpace(repoRoot));
 
-        string? isccPath = TryFindInnoSetup7Compiler();
-        if (string.IsNullOrWhiteSpace(isccPath))
+        string? makensisPath = TryFindPinnedMakensis(repoRoot!);
+        if (string.IsNullOrWhiteSpace(makensisPath))
         {
-            // Cloud CI runners without Inno Setup 7 installed still verify icon generation & SpawnCommandLineOptions.
+            // Without the pinned NSIS fetched yet (cloud CI runners: tests stay offline) still verify
+            // SpawnCommandLineOptions; scripts/package.py fetches NSIS on its first local run.
             var parsed = SpawnCommandLineOptions.Parse(["--quit-for-update", "--identity=spawn-dev-test"]);
             Assert.True(parsed.IsQuitForUpdate);
             Assert.Equal("spawn-dev-test", parsed.ExplicitIdentity);
@@ -325,7 +336,7 @@ print(json.dumps({"ok": True, "selfInJob": bool(in_job_out.value)}))
         string receiptPath = Path.Combine(sandbox.RootDirectory, "install-spawn-dev-test.json");
         const string testVersion = "0.1.1-dev.202611209999";
 
-        string uninstallSubKey = $@"Software\Microsoft\Windows\CurrentVersion\Uninstall\{{{SpawnDevTestAppGuid}}}_is1";
+        string uninstallSubKey = $@"Software\Microsoft\Windows\CurrentVersion\Uninstall\{SpawnDevTestAppId}";
         string distIdentityDir = Path.Combine(repoRoot!, "dist", "spawn-dev-test");
 
         try
@@ -502,23 +513,16 @@ print(json.dumps({"ok": True, "selfInJob": bool(in_job_out.value)}))
         }
     }
 
-    private static string? TryFindInnoSetup7Compiler()
+    private static string? TryFindPinnedMakensis(string repoRoot)
     {
-        string? envOverride = Environment.GetEnvironmentVariable("SPAWN_ISCC_PATH");
+        string? envOverride = Environment.GetEnvironmentVariable("SPAWN_MAKENSIS_PATH");
         if (!string.IsNullOrWhiteSpace(envOverride) && File.Exists(envOverride))
         {
             return envOverride;
         }
 
-        string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        string[] candidates =
-        [
-            Path.Combine(localAppData, "Programs", "Inno Setup 7", "ISCC.exe"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Inno Setup 7", "ISCC.exe"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Inno Setup 7", "ISCC.exe"),
-        ];
-
-        return candidates.FirstOrDefault(File.Exists);
+        string cached = Path.Combine(repoRoot, ".tools", "nsis-3.13", "makensis.exe");
+        return File.Exists(cached) ? cached : null;
     }
 
     private static (bool Exists, HashSet<string> Entries) CaptureDirectoryExistenceAndChildSet(string path)

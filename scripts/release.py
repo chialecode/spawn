@@ -2,7 +2,7 @@
 
 Requires Python 3.12+ standard library only (zero pip dependencies).
 `--plan` runs on both Linux (ubuntu-24.04) and Windows without Windows-only imports.
-`--build` and `--drill-install` require Windows + .NET 10 SDK + Inno Setup 7.
+`--build` and `--drill-install` require Windows + .NET 10 SDK (package.py fetches the pinned NSIS 3.13).
 
 Usage examples:
   python3 -B scripts/release.py --plan
@@ -558,7 +558,7 @@ def build_release(
     """Build self-contained release installer + symbols + signed manifest atomically into dist/spawn/."""
     parse_semver_triple(version)
 
-    # Validate signing key presence before spending time on dotnet publish + Inno Setup.
+    # Validate signing key presence before spending time on dotnet publish + NSIS.
     key_path_str = os.environ.get(SIGNING_KEY_ENV_VAR, "").strip()
     if not key_path_str:
         raise RuntimeError(f"Environment variable {SIGNING_KEY_ENV_VAR} must be set before --build.")
@@ -707,7 +707,7 @@ def run_isolated_install_drill(
             if not receipt.get("installed"):
                 raise RuntimeError(f"spawn-test install drill did not install: {receipt}")
 
-            entry = pkg.lookup_uninstall_entry(profile.app_guid)
+            entry = pkg.lookup_uninstall_entry(profile.app_id)
             if not entry or entry.get("DisplayVersion") != resolved_version:
                 raise RuntimeError(
                     f"HKCU Uninstall entry version mismatch for spawn-test: {entry}"
@@ -751,7 +751,7 @@ def run_isolated_install_drill(
             print("[drill] silently uninstalling spawn-test...")
             pkg.uninstall_identity(repo_root, profile, allow_release=False)
 
-            if pkg.lookup_uninstall_entry(profile.app_guid) is not None:
+            if pkg.lookup_uninstall_entry(profile.app_id) is not None:
                 raise RuntimeError("HKCU Uninstall entry still present after spawn-test silent uninstall.")
             if not marker.is_file():
                 raise RuntimeError("Silent uninstall deleted isolated user data marker!")
@@ -773,7 +773,7 @@ def run_isolated_install_drill(
             return result
         finally:
             try:
-                if pkg.lookup_uninstall_entry(profile.app_guid) is not None:
+                if pkg.lookup_uninstall_entry(profile.app_id) is not None:
                     pkg.uninstall_identity(repo_root, profile, allow_release=False)
             except Exception:
                 pass

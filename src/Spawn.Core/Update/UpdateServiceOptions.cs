@@ -15,8 +15,9 @@ public sealed record UpdateServiceOptions
     public const string DefaultInstallerUrlPrefixTemplate =
         "https://github.com/chialecode/spawn/releases/download/v{0}/";
 
-    public const string DefaultSilentInstallerArguments =
-        "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /SPAWNRELAUNCH";
+    /// <summary>NSIS installer (installer/spawn.nsi): <c>/S</c> silent, <c>/RELAUNCH</c> starts SPAWN with
+    /// <c>--after-update</c> once the update is in place.</summary>
+    public const string DefaultSilentInstallerArguments = "/S /RELAUNCH";
 
     public const long DefaultMaxManifestBytes = 64L * 1024;
     public const long DefaultMaxSignatureBytes = 4L * 1024;

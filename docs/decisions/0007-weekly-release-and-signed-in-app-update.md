@@ -4,6 +4,7 @@
 - **日期**：2026-11-22
 - **维护角色**：维护者
 - **关联决策与需求**：`D-15`、`D-23`、`D-30` ~ `D-33`；`NFR-05`、`NFR-06`、`NFR-07`、`NFR-09`、`REQ-SEC-01`；验收 `AC-25`
+- **后续修订**：2026-11-24 安装器改为 NSIS（[D-35](confirmed-decisions.md#d-35)）。下文否决 NSIS 的“与 Inno 同类无收益”与发布工作流下载 Inno Setup 的做法不再适用；应用内更新的静默参数改为 `/S /RELAUNCH`，其余更新链路（签名清单、校验链、安装时机、重启契约）不变
 - **部分替代**：[上游事项台账](open-questions.md) `LOOP-05` 中“`M6` 收官阶段补齐 Ed25519 离线公钥验签在线更新引擎”的承接阶段与签名算法；`%ProgramFiles%\spawn\Overlay\` 自签名证书部署见 [#27](https://github.com/chialecode/spawn/issues/27)
 
 ---
@@ -59,7 +60,7 @@
 - **来源与网络边界**：`https://github.com/chialecode/spawn/releases/latest/download/update-windows-x64.json` 及 `.sig`；仅 HTTPS，主机白名单 `github.com`、`objects.githubusercontent.com`、`release-assets.githubusercontent.com`，手动重定向最多 5 跳，清单上限 `64KB`、安装包上限 `300MB`；User-Agent 如实标为 `SPAWN-Updater/<版本>`，**不携带任何设备或用户标识**（与 `NFR-06` 零遥测兼容）。
 - **校验链**：清单先用编译进 `Spawn.Core` 的 ECDSA P-256 公钥验签（与 `installer/update-signing-public.pem` 逐字节一致，由门禁测试断言）→ 通道必须为 `release` → 版本必须**严格高于**当前版本（拒绝降级与同版本）→ 安装包 URL 必须位于 `https://github.com/chialecode/spawn/releases/download/v<版本>/` 之下 → 下载到 `<DataRoot>\cache\updates\<版本>\*.partial`，核对大小与 SHA-256 后原子重命名，只保留最新一份。
 - **安装时机（默认值见 [#16](https://github.com/chialecode/spawn/issues/16)）**：自动下载；SPAWN **空闲**时（无受追踪游戏运行、无修改器会话、无存档快照/回滚/数据清理进行中）且仅驻留托盘才自动安装；主窗口打开时只显示“新版本已就绪，重启更新”提示条与托盘提示，由用户点击。设置可改为“仅提醒”。
-- **安装动作**：启动前以禁止写入的句柄重新核对 SHA-256，并持有到安装器进程创建完成（同 `F-02` 的 TOCTOU 防护）→ `RequestQuitForUpdateAsync(UpdateRestartReason.Update)`（先停修改器会话、写重启标记）→ `ShellExecute` 启动按用户安装包 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /SPAWNRELAUNCH`（零 UAC）→ 安装器检测到 `/SPAWNRELAUNCH` 后拉起新版本，并按重启标记恢复窗口或托盘状态。
+- **安装动作**：启动前以禁止写入的句柄重新核对 SHA-256，并持有到安装器进程创建完成（同 `F-02` 的 TOCTOU 防护）→ `RequestQuitForUpdateAsync(UpdateRestartReason.Update)`（先停修改器会话、写重启标记）→ `ShellExecute` 启动按用户安装包 `/S /RELAUNCH`（零 UAC；2026-11-24 前为 Inno Setup 的 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /SPAWNRELAUNCH`）→ 安装器检测到 `/RELAUNCH` 后以 `--after-update` 拉起新版本，并按重启标记恢复窗口或托盘状态。
 - **记录**：`app_settings` 中保存最近一次/下一次检查时间与结果，以及最近 20 条更新记录（时间、旧版本 → 新版本、自动/手动、结果）；本阶段不升级 Schema。
 - **Clean Host**：更新器只用 `HttpClient`、BCL `ECDsa`、`SHA256` 与 `ShellExecute`，`Spawn.Architecture.GateTests` 必须保持全绿。
 

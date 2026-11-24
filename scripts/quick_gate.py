@@ -5,10 +5,11 @@ Executes in strict sequence with BELOW_NORMAL_PRIORITY_CLASS | CREATE_NO_WINDOW 
 and isolated temporary data directories (SPAWN_DATA_DIR / SPAWN_VAULT_DIR):
 1. python -B scripts/check_docs.py
 2. python -B scripts/test_release.py (offline release plan, manifest, signing & PDB tests)
-3. dotnet build Spawn.sln -c Release -nologo -v quiet
-4. dotnet test Spawn.sln -c Release --no-build -nologo --verbosity minimal
+3. python -B scripts/test_package.py (offline NSIS packaging and dev auto-install tests)
+4. dotnet build Spawn.sln -c Release -nologo -v quiet
+5. dotnet test Spawn.sln -c Release --no-build -nologo --verbosity minimal
    (offline network tripwire: HTTP(S)_PROXY -> dead local port)
-5. git diff --check
+6. git diff --check
 """
 
 from __future__ import annotations
@@ -186,6 +187,7 @@ def main() -> int:
     commands: tuple[tuple[str, list[str]], ...] = (
         ("check_docs", [sys.executable, "-B", "scripts/check_docs.py"]),
         ("test_release", [sys.executable, "-B", "scripts/test_release.py"]),
+        ("test_package", [sys.executable, "-B", "scripts/test_package.py"]),
         ("dotnet_build", ["dotnet", "build", "Spawn.sln", "-c", "Release", "-nologo", "-v", "quiet"]),
         (
             "dotnet_test",
@@ -212,7 +214,7 @@ def main() -> int:
             shown_cmd = " ".join(cmd if cmd[0] != sys.executable else ["python", *cmd[1:]])
             print(f"[quick-gate] -> {step_name}: {shown_cmd}", flush=True)
 
-            step_env = build_network_tripwire_env(env) if step_name in {"dotnet_test", "test_release"} else env
+            step_env = build_network_tripwire_env(env) if step_name in {"dotnet_test", "test_release", "test_package"} else env
             proc = subprocess.run(
                 cmd,
                 cwd=repo_root,

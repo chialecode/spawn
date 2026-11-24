@@ -92,6 +92,9 @@ jobs:
       - name: Release tooling unit tests (offline)
         run: python -B scripts/test_release.py
 
+      - name: Packaging tooling unit tests (offline)
+        run: python -B scripts/test_package.py
+
       - name: Restore NuGet dependencies
         run: dotnet restore Spawn.sln
 

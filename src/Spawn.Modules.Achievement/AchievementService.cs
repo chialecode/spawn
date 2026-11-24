@@ -1080,8 +1080,8 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
         CancellationToken ct)
     {
         var (detectedGogId, detectedGogClient) = GogAchievementProvider.TryParseGogGameInfo(game.InstallDir);
-        int? steamAppId = resolvedSteamAppId ?? game.SteamAppId;
-        string? gogGameId = resolvedGogGameId ?? game.GogGameId ?? detectedGogId;
+        int? steamAppId = game.SteamAppId ?? resolvedSteamAppId;
+        string? gogGameId = game.GogGameId ?? resolvedGogGameId ?? detectedGogId;
         string? gogClientId = game.GogClientId ?? detectedGogClient;
 
         var probeGame = game with

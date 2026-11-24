@@ -221,9 +221,10 @@ flowchart LR
    - 探测 `steam_appid.txt`、`steam_settings\steam_appid.txt`、`OnlineFix.ini`（优先读取 `RealAppId` 防 `480` Spacewar 误判）、`steam_emu.ini` / `tenoke.ini` / `codex.ini` / `ColdClientLoader.ini` / `configs.main.ini` 中的 `AppId`、Steam 正版库 `appmanifest_*.acf`；
    - 探测 GOG 离线安装包根目录 `goggame-<id>.info` JSON（解析 `gameId`、`clientId`、`name` 及 `playTasks` 主程序），并直接从同目录 `webcache.zip` 内的 `resources.json` 秒级离线直提 `icon`、`sidebarIcon2x`、`logo2x`、`background` 美工资产（缺失时回退 `goggame-*.ico` 或 PE EXE 图标）；
    - 正则匹配目录名中的同人作品唯一编号 `\b([RVB]J\d{6,8})\b`（直连 DLsite Web JSON / HTML 元数据接口）。
-2. **Stage 2（PE 头提取与脏目录名多级清洗）**：
-   - 优先通过 `FileVersionInfo.GetVersionInfo(exePath).ProductName` 读取官方内嵌产品名（过滤 `Application`、`BootstrapPackagedGame`、`UnityPlayer` 等通用引擎占位符）。
-   - 对文件夹名按序剥离噪音：剥离 `[]`/`【】`/`()` 内的汉化组、网盘码与整合标签 -> 剥离 `v1.04`、`Build.138421`、`GOTY`、`Deluxe.Edition` -> 剥离常见发行组尾缀（`RUNE`、`TENOKE`、`FLT`、`CODEX`、`EMPRESS`、`Goldberg`、`SteamRIP`、`ElAmigos`、`FitGirl`）-> 将分隔符 `.`/`_` 归一化为空格。
+2. **Stage 2（多游戏合集展开、可执行文件启发式择优与脏目录名清洗）**：
+   - **多游戏合集/三部曲目录自动展开与陈旧父级对账**：当扫描或按目录导入的容器顶层不具备单一游戏引擎/商店信标（即使顶层存在菜单壳 `Launcher.exe` 或启动脚本），而直接子目录包含 `>= 2` 个相互独立的完整游戏根目录（各自具备 `Engine\` + `<Project>\Binaries\Win64|WinGDK\*.exe`、Unity `*_Data`、`goggame-*.info` 或独立 Steam 模拟器身份）时，自动拆分为各独立子游戏入库；若库内残留此前未手动锁定 `.exe` 且无已解锁成就的合并父级记录，在对账确认子游戏入库后自动退役陈旧父记录。
+   - **可执行文件深度探查与转发壳过滤**：排除 `Redist` / `Redistributables` 等运行库目录与前置安装器/转发壳（`RockstarRedirector`、`BootstrapPackagedGame`、`UE4PrereqSetup`、`CompactAutoRunner` 等文件名及 PE 版本资源特征）；在 `maxDepth = 5` 范围内对所有位于 `Engine\` 体系下 `<Project>\Binaries\Win64|WinGDK\*.exe` 的真实虚幻主程序赋予引擎加分（无论是否带 `-Win64-Shipping` 后缀），并通过 `app_settings`（`launcher.user_pinned_exe.<GameId>`）区分用户显式指定的 `.exe` 与扫描器自动猜测值，使重扫能自动刷新过期的猜测路径而不覆盖用户手动绑定。
+   - **PE 头提取与脏目录名多级清洗**：优先通过 `FileVersionInfo.GetVersionInfo(exePath).ProductName` 读取官方内嵌产品名（过滤通用引擎占位符、启动器与转发壳描述）；对文件夹名按序剥离 `[]`/`【】`/`()` 噪音、版本号与整合包尾缀（消除 `" - The Definitive Edition"` / `"- DE"` 清洗后悬空 `"- The"` 缺陷，保留重制版区分度并扩展常见系列缩写检索候选）。
 3. **Stage 3（多源并发图谱与置信度阈值）**：
    - **中文与日系同人首选**：`Bangumi API v0`（`POST /v0/search/subjects`，过滤 `type = 4` 游戏，原生返回高质量中文译名与标签）+ `VNDB API v2 (Kana)`（`POST https://api.vndb.org/kana/vn`，额外获取 `length_minutes` 通关预期时长供进度卡片展示）。
    - **欧美全品类与统一海报**：`IGDB API v4` + **`SteamGridDB API v2`**（拉取 `600x900` 标准 2:3 竖版封面、`1920x620` 详情页 Hero 背景与透明 PNG Logo，统一转码缓存至本地 `cache/media/`）。

@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Net;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
@@ -87,9 +88,10 @@ public sealed partial class AchievementSchemaService : IDisposable
         string? gogClientId = !string.IsNullOrWhiteSpace(game.GogClientId) ? game.GogClientId : detectedGogClient;
 
         var matchedRule = _nativeSaveProvider.FindMatchingRule(game, game.SteamAppId, gogGameId);
-        int? steamAppId = game.SteamAppId
-                          ?? matchedRule?.MappedSteamAppId
-                          ?? SteamEmulatorFormatParsers.TryDetectSteamAppIdFromDirectory(game.InstallDir);
+        int? deterministicSteamAppId = game.SteamAppId
+                                       ?? matchedRule?.MappedSteamAppId
+                                       ?? SteamEmulatorFormatParsers.TryDetectSteamAppIdFromDirectory(game.InstallDir);
+        int? steamAppId = deterministicSteamAppId;
 
         IReadOnlyList<AchievementDefinitionDto> primaryDefs = [];
         var primarySource = AchievementSchemaSource.None;
@@ -184,8 +186,9 @@ public sealed partial class AchievementSchemaService : IDisposable
             builtInFallback,
             globalPercents);
 
-        string schemaKey = steamAppId is > 0
-            ? $"Steam_{steamAppId.Value.ToString(CultureInfo.InvariantCulture)}"
+        int? verifiedSteamAppId = deterministicSteamAppId ?? (merged.Count > 0 ? steamAppId : null);
+        string schemaKey = verifiedSteamAppId is > 0
+            ? $"Steam_{verifiedSteamAppId.Value.ToString(CultureInfo.InvariantCulture)}"
             : (!string.IsNullOrWhiteSpace(gogGameId) ? $"GOG_{gogGameId}" : $"Game_{game.GameId}");
 
         // Stage 7: Cache color icons & synthesize SkiaSharp Rec.709 grayscale locked icons
@@ -198,7 +201,7 @@ public sealed partial class AchievementSchemaService : IDisposable
         return new ResolvedSchemaWaterfallResult(
             SchemaKey: schemaKey,
             Source: primarySource,
-            ResolvedSteamAppId: steamAppId,
+            ResolvedSteamAppId: verifiedSteamAppId,
             ResolvedGogGameId: gogGameId,
             Definitions: merged);
     }
@@ -557,53 +560,272 @@ public sealed partial class AchievementSchemaService : IDisposable
         }
     }
 
+    private static readonly Dictionary<string, string> RomanInstallmentMap = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["II"] = "2",
+        ["III"] = "3",
+        ["IV"] = "4",
+        ["V"] = "5",
+        ["VI"] = "6",
+        ["VII"] = "7",
+        ["VIII"] = "8",
+        ["IX"] = "9",
+        ["X"] = "10",
+        ["XI"] = "11",
+        ["XII"] = "12",
+        ["XIII"] = "13",
+        ["XIV"] = "14",
+        ["XV"] = "15",
+        ["XVI"] = "16",
+    };
+
     private async Task<int?> TrySearchSteamAppIdByTitleAsync(string rawTitle, CancellationToken ct)
     {
-        string cleaned = NoiseSuffixRegex().Replace(rawTitle, " ").Trim();
+        string cleaned = NormalizeSearchTitle(rawTitle);
         if (string.IsNullOrWhiteSpace(cleaned))
         {
             return null;
         }
+
+        string expanded = ExpandLeadingAbbreviations(cleaned);
+        var queries = new List<string>(2);
+        if (!string.Equals(expanded, cleaned, StringComparison.OrdinalIgnoreCase))
+        {
+            queries.Add(expanded);
+        }
+
+        queries.Add(cleaned);
 
         try
         {
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(TimeSpan.FromSeconds(4));
 
-            string url = $"https://store.steampowered.com/api/storesearch/?term={Uri.EscapeDataString(cleaned)}&l=schinese&cc=CN";
-            using var resp = await _httpClient.GetAsync(url, HttpCompletionOption.ResponseContentRead, cts.Token).ConfigureAwait(false);
-            if (!resp.IsSuccessStatusCode)
-            {
-                return null;
-            }
+            (int AppId, double Score)? bestMatch = null;
 
-            await using var stream = await resp.Content.ReadAsStreamAsync(cts.Token).ConfigureAwait(false);
-            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cts.Token).ConfigureAwait(false);
-            if (!doc.RootElement.TryGetProperty("items", out var items)
-                || items.ValueKind != JsonValueKind.Array
-                || items.GetArrayLength() == 0)
+            foreach (string query in queries)
             {
-                return null;
-            }
-
-            // Prefer exact case-insensitive title match first, otherwise take top result
-            foreach (var item in items.EnumerateArray())
-            {
-                string? name = TryGetStr(item, "name");
-                int id = TryGetInt(item, "id");
-                if (id > 0 && string.Equals(name?.Trim(), cleaned, StringComparison.OrdinalIgnoreCase))
+                foreach (string locale in new[] { "l=schinese&cc=CN", "l=english&cc=US" })
                 {
-                    return id;
+                    string url = $"https://store.steampowered.com/api/storesearch/?term={Uri.EscapeDataString(query)}&{locale}";
+                    using var resp = await _httpClient.GetAsync(url, HttpCompletionOption.ResponseContentRead, cts.Token).ConfigureAwait(false);
+                    if (!resp.IsSuccessStatusCode)
+                    {
+                        continue;
+                    }
+
+                    await using var stream = await resp.Content.ReadAsStreamAsync(cts.Token).ConfigureAwait(false);
+                    using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cts.Token).ConfigureAwait(false);
+                    if (!doc.RootElement.TryGetProperty("items", out var items)
+                        || items.ValueKind != JsonValueKind.Array
+                        || items.GetArrayLength() == 0)
+                    {
+                        continue;
+                    }
+
+                    foreach (var item in items.EnumerateArray())
+                    {
+                        string? name = TryGetStr(item, "name")?.Trim();
+                        int id = TryGetInt(item, "id");
+                        if (id <= 0 || string.IsNullOrWhiteSpace(name))
+                        {
+                            continue;
+                        }
+
+                        if (HasConflictingSequelOrAnthologyTokens(query, name))
+                        {
+                            continue;
+                        }
+
+                        double sim = Math.Max(
+                            ComputeJaroWinkler(query, name),
+                            ComputeJaroWinkler(expanded, ExpandLeadingAbbreviations(NormalizeSearchTitle(name))));
+
+                        if (RemasterEditionMarkerRegex().IsMatch(query) != RemasterEditionMarkerRegex().IsMatch(name))
+                        {
+                            sim -= 0.12;
+                        }
+
+                        if (sim >= 0.98)
+                        {
+                            return id;
+                        }
+
+                        if (sim >= 0.90 && (bestMatch is null || sim > bestMatch.Value.Score))
+                        {
+                            bestMatch = (id, sim);
+                        }
+                    }
+
+                    if (bestMatch is { Score: >= 0.93 })
+                    {
+                        return bestMatch.Value.AppId;
+                    }
                 }
             }
 
-            int topId = TryGetInt(items[0], "id");
-            return topId > 0 ? topId : null;
+            return bestMatch?.AppId;
         }
         catch
         {
             return null;
         }
+    }
+
+    private static string NormalizeSearchTitle(string rawTitle)
+    {
+        string cleaned = NoiseSuffixRegex().Replace(rawTitle, " ").Trim();
+        if (ShorthandDeSuffixRegex().IsMatch(cleaned))
+        {
+            cleaned = ShorthandDeSuffixRegex().Replace(cleaned, " - Definitive Edition");
+        }
+
+        return MultiWhitespaceRegex().Replace(cleaned, " ").Trim(' ', '-', '_', '.', '–', '—');
+    }
+
+    private static string ExpandLeadingAbbreviations(string title)
+    {
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            return string.Empty;
+        }
+
+        string trimmed = title.Trim();
+        return LeadingGtaRegex().IsMatch(trimmed)
+            ? LeadingGtaRegex().Replace(trimmed, "Grand Theft Auto")
+            : trimmed;
+    }
+
+    private static bool HasConflictingSequelOrAnthologyTokens(string query, string candidate)
+    {
+        if (AnthologyWordRegex().IsMatch(query) && !CollectionWordRegex().IsMatch(candidate))
+        {
+            return true;
+        }
+
+        if (AnthologyWordRegex().IsMatch(candidate) && !CollectionWordRegex().IsMatch(query))
+        {
+            return true;
+        }
+
+        var leftTokens = ExtractInstallmentNumbers(query);
+        var rightTokens = ExtractInstallmentNumbers(candidate);
+        return !leftTokens.SetEquals(rightTokens);
+    }
+
+    private static HashSet<string> ExtractInstallmentNumbers(string text)
+    {
+        var result = new HashSet<string>(StringComparer.Ordinal);
+        foreach (Match match in WordTokenRegex().Matches(text))
+        {
+            string token = match.Groups[1].Value;
+            if (RomanInstallmentMap.TryGetValue(token, out string? romanNum))
+            {
+                result.Add(romanNum);
+            }
+            else if (token.All(char.IsAsciiDigit))
+            {
+                string trimmed = token.TrimStart('0');
+                result.Add(trimmed.Length == 0 ? "0" : trimmed);
+            }
+        }
+
+        return result;
+    }
+
+    private static double ComputeJaroWinkler(string left, string right)
+    {
+        string s1 = NormalizeAlphanumeric(left);
+        string s2 = NormalizeAlphanumeric(right);
+        if (s1.Length == 0 && s2.Length == 0)
+        {
+            return 1.0;
+        }
+
+        if (s1.Length == 0 || s2.Length == 0)
+        {
+            return 0.0;
+        }
+
+        if (string.Equals(s1, s2, StringComparison.Ordinal))
+        {
+            return 1.0;
+        }
+
+        int matchDistance = Math.Max(Math.Max(s1.Length, s2.Length) / 2 - 1, 0);
+        bool[] s1Matches = new bool[s1.Length];
+        bool[] s2Matches = new bool[s2.Length];
+
+        int matches = 0;
+        for (int i = 0; i < s1.Length; i++)
+        {
+            int start = Math.Max(0, i - matchDistance);
+            int end = Math.Min(i + matchDistance + 1, s2.Length);
+            for (int j = start; j < end; j++)
+            {
+                if (s2Matches[j] || s1[i] != s2[j])
+                {
+                    continue;
+                }
+
+                s1Matches[i] = true;
+                s2Matches[j] = true;
+                matches++;
+                break;
+            }
+        }
+
+        if (matches == 0)
+        {
+            return 0.0;
+        }
+
+        double transpositions = 0;
+        int k = 0;
+        for (int i = 0; i < s1.Length; i++)
+        {
+            if (!s1Matches[i])
+            {
+                continue;
+            }
+
+            while (!s2Matches[k])
+            {
+                k++;
+            }
+
+            if (s1[i] != s2[k])
+            {
+                transpositions++;
+            }
+
+            k++;
+        }
+
+        double m = matches;
+        double jaro = ((m / s1.Length) + (m / s2.Length) + ((m - (transpositions / 2.0)) / m)) / 3.0;
+        int prefix = 0;
+        int maxPrefix = Math.Min(4, Math.Min(s1.Length, s2.Length));
+        while (prefix < maxPrefix && s1[prefix] == s2[prefix])
+        {
+            prefix++;
+        }
+
+        return jaro + (prefix * 0.1 * (1.0 - jaro));
+    }
+
+    private static string NormalizeAlphanumeric(string text)
+    {
+        var sb = new StringBuilder(text.Length);
+        foreach (char ch in text)
+        {
+            if (char.IsLetterOrDigit(ch))
+            {
+                sb.Append(char.ToLowerInvariant(ch));
+            }
+        }
+
+        return sb.ToString();
     }
 
     private static IReadOnlyList<AchievementDefinitionDto> TryLoadLocalEmulatorSchema(string? installDir, string preferredLanguage)
@@ -728,8 +950,29 @@ public sealed partial class AchievementSchemaService : IDisposable
         return false;
     }
 
-    [GeneratedRegex(@"(\bSteamRIP(\.com)?\b|\bFitGirl[- ]?Repacks?\b|\bGOTY\b|\bDeluxe\s+Edition\b|\bv\d+(\.\d+)+\b|\bBuild[\.\s]?\d+\b|\[[^\]]+\]|\([^\)]+\))", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"(\bSteamRIP(\.com)?\b|\bFitGirl[- ]?Repacks?\b|\bGOTY\b|\b(?:The\s+)?Deluxe\s+Edition\b|\b(?:The\s+)?Ultimate\s+Edition\b|\b(?:The\s+)?Complete\s+Edition\b|\bv\d+(\.\d+)+\b|\bBuild[\.\s]?\d+\b|\[[^\]]+\]|\([^\)]+\))", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex NoiseSuffixRegex();
+
+    [GeneratedRegex(@"(?:[\s\._]*[-–—][\s\._]*)(?:(?:[Tt]he)[\s\._\-]+)?DE$", RegexOptions.CultureInvariant)]
+    private static partial Regex ShorthandDeSuffixRegex();
+
+    [GeneratedRegex(@"^GTA(?=\s*(?:[-:–—]|\b(?:III|II|IV|V|VI|1|2|3|4|5|6|Vice\s+City|San\s+Andreas|Liberty\s+City|The\s+Trilogy|Trilogy|Episodes|Chinatown|Online)\b|$))", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex LeadingGtaRegex();
+
+    [GeneratedRegex(@"\b([A-Za-z0-9]+)\b", RegexOptions.CultureInvariant)]
+    private static partial Regex WordTokenRegex();
+
+    [GeneratedRegex(@"\b(?:trilogy|anthology)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex AnthologyWordRegex();
+
+    [GeneratedRegex(@"\b(?:trilogy|anthology|collection|bundle)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex CollectionWordRegex();
+
+    [GeneratedRegex(@"\b(?:definitive(?:\s+edition)?|remaster(?:ed)?)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex RemasterEditionMarkerRegex();
+
+    [GeneratedRegex(@"\s{2,}", RegexOptions.CultureInvariant)]
+    private static partial Regex MultiWhitespaceRegex();
 
     public void Dispose()
     {

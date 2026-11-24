@@ -39,6 +39,7 @@ public static partial class GameEngineInspector
         "_CommonRedist",
         "CommonRedist",
         "Redist",
+        "Redistributables",
         "DirectX",
         "__Installer",
         "Support",
@@ -51,6 +52,9 @@ public static partial class GameEngineInspector
         "usd",
         "locales",
         "ShaderCache",
+        "Shaders",
+        "DerivedDataCache",
+        "Paks",
         "Movies",
         "Videos",
         "CrashReportClient",
@@ -260,11 +264,15 @@ public static partial class GameEngineInspector
 
                     // Skip numeric depot/manifest cache folders or deep asset bundles unless Plugins/Binaries/Engine/steam_settings.
                     int nextMax = effectiveMaxDepth;
-                    if (name.Equals("Plugins", StringComparison.OrdinalIgnoreCase)
+                    if (name.Equals("Engine", StringComparison.OrdinalIgnoreCase)
+                        || name.Equals("Binaries", StringComparison.OrdinalIgnoreCase)
+                        || name.Equals("Plugins", StringComparison.OrdinalIgnoreCase)
                         || name.Equals("ThirdParty", StringComparison.OrdinalIgnoreCase)
-                        || name.Equals("Steamworks", StringComparison.OrdinalIgnoreCase))
+                        || name.Equals("Steamworks", StringComparison.OrdinalIgnoreCase)
+                        || name.Equals("steam_settings", StringComparison.OrdinalIgnoreCase)
+                        || name.StartsWith("Steamv", StringComparison.OrdinalIgnoreCase))
                     {
-                        nextMax = Math.Max(effectiveMaxDepth, 5);
+                        nextMax = Math.Max(effectiveMaxDepth, 7);
                     }
 
                     Walk(sub, depth + 1, nextMax);

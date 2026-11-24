@@ -69,7 +69,7 @@
 <a id="conflicts"></a>
 
 1. **权威优先级顺序**：
-   - 用户（仓库所有者）在当前会话或 GitHub issue 中给出的最新明确指示 > [AGENTS.md](../../AGENTS.md) 与 [已确认决策](../decisions/confirmed-decisions.md) > `active` 状态的需求/设计/模块正本 > `reference` 状态的前期调研档案 > 外部参考仓库或模型默认推断。
+   - 用户（仓库所有者本人；Agent 用同一账号发的内容只是记录）在当前会话或 GitHub issue 中给出的最新明确指示 > [AGENTS.md](../../AGENTS.md) 与 [已确认决策](../decisions/confirmed-decisions.md) > `active` 状态的需求/设计/模块正本 > `reference` 状态的前期调研档案 > 外部参考仓库或模型默认推断。
    - 当用户新决定推翻既有正本设计时，执行者必须在**同一轮次**同步修订 `confirmed-decisions.md`、受影响的设计/模块正本及 `traceability.json`，消除新旧文档打架。
 2. **公开自洽与零泄露底线**：
    - 仓库内所有受管文本必须对公开克隆者完全自洽可读，严禁出现任何个人机器绝对路径（如用户主目录路径或个人代码盘路径）、外部兄弟仓库名称泄露、真实密钥/Token 或 `.db`/`.pfx`/`.key` 二进制敏感文件。

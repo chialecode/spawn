@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.IO;
 using System.Windows.Media.Imaging;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Spawn.Contracts;
@@ -8,6 +9,12 @@ namespace Spawn.Host.ViewModels;
 
 public sealed partial class GameListItemViewModel : ObservableObject
 {
+    private readonly record struct ArtworkFileStamp(string? FullPath, bool Exists, long Length, long LastWriteUtcTicks);
+
+    private ArtworkFileStamp _smallIconStamp;
+    private ArtworkFileStamp _coverImageStamp;
+    private bool _artworkInitialized;
+
     [ObservableProperty]
     private GameRecord _record;
 
@@ -134,29 +141,62 @@ public sealed partial class GameListItemViewModel : ObservableObject
 
     public void UpdateRecord(GameRecord updated)
     {
-        Record = updated;
+        ArgumentNullException.ThrowIfNull(updated);
+
+        bool recordChanged = !Equals(Record, updated);
+        if (recordChanged)
+        {
+            Record = updated;
+        }
+
         ReloadArtwork();
-        NotifyDerivedProperties();
+
+        if (recordChanged)
+        {
+            NotifyDerivedProperties();
+        }
     }
 
     public void UpdateSession(ActiveGameSession? session)
     {
+        if (Equals(ActiveSession, session))
+        {
+            return;
+        }
+
         ActiveSession = session;
         NotifyDerivedProperties();
     }
 
     public void UpdateAchievementCounts(int unlocked, int total, string? channelStatus = null)
     {
-        UnlockedAchievements = unlocked;
-        TotalAchievements = total;
-        if (!string.IsNullOrWhiteSpace(channelStatus))
+        bool unlockedChanged = UnlockedAchievements != unlocked;
+        bool totalChanged = TotalAchievements != total;
+        bool statusChanged = !string.IsNullOrWhiteSpace(channelStatus)
+                             && !string.Equals(ChannelStatusOverride, channelStatus, StringComparison.Ordinal);
+
+        if (!unlockedChanged && !totalChanged && !statusChanged)
         {
-            ChannelStatusOverride = channelStatus;
+            return;
         }
 
-        OnPropertyChanged(nameof(CompletionPercent));
-        OnPropertyChanged(nameof(AchievementRatioText));
-        OnPropertyChanged(nameof(EffectiveChannelStatusText));
+        UnlockedAchievements = unlocked;
+        TotalAchievements = total;
+        if (statusChanged)
+        {
+            ChannelStatusOverride = channelStatus!;
+        }
+
+        if (unlockedChanged || totalChanged)
+        {
+            OnPropertyChanged(nameof(CompletionPercent));
+            OnPropertyChanged(nameof(AchievementRatioText));
+        }
+
+        if (statusChanged)
+        {
+            OnPropertyChanged(nameof(EffectiveChannelStatusText));
+        }
     }
 
     public void NotifyPlaytimeTick()
@@ -167,8 +207,49 @@ public sealed partial class GameListItemViewModel : ObservableObject
 
     private void ReloadArtwork()
     {
-        SmallIcon = ImageLoaderHelper.LoadFrozen(Record.IconPath ?? Record.CoverImagePath, maxDecodeWidth: 96);
-        CoverImage = ImageLoaderHelper.LoadFrozen(Record.CoverImagePath ?? Record.HeroImagePath ?? Record.IconPath, maxDecodeWidth: 320);
+        string? smallSource = Record.IconPath ?? Record.CoverImagePath;
+        string? coverSource = Record.CoverImagePath ?? Record.HeroImagePath ?? Record.IconPath;
+
+        ArtworkFileStamp nextSmallStamp = CaptureArtworkStamp(smallSource);
+        ArtworkFileStamp nextCoverStamp = CaptureArtworkStamp(coverSource);
+
+        if (!_artworkInitialized || nextSmallStamp != _smallIconStamp)
+        {
+            _smallIconStamp = nextSmallStamp;
+            SmallIcon = ImageLoaderHelper.LoadFrozen(smallSource, maxDecodeWidth: 96);
+        }
+
+        if (!_artworkInitialized || nextCoverStamp != _coverImageStamp)
+        {
+            _coverImageStamp = nextCoverStamp;
+            CoverImage = ImageLoaderHelper.LoadFrozen(coverSource, maxDecodeWidth: 320);
+        }
+
+        _artworkInitialized = true;
+    }
+
+    private static ArtworkFileStamp CaptureArtworkStamp(string? rawPath)
+    {
+        if (string.IsNullOrWhiteSpace(rawPath))
+        {
+            return default;
+        }
+
+        try
+        {
+            string fullPath = Path.GetFullPath(rawPath);
+            var info = new FileInfo(fullPath);
+            if (!info.Exists)
+            {
+                return new ArtworkFileStamp(fullPath, Exists: false, Length: 0, LastWriteUtcTicks: 0);
+            }
+
+            return new ArtworkFileStamp(fullPath, Exists: true, info.Length, info.LastWriteTimeUtc.Ticks);
+        }
+        catch
+        {
+            return new ArtworkFileStamp(rawPath, Exists: false, Length: 0, LastWriteUtcTicks: 0);
+        }
     }
 
     private void NotifyDerivedProperties()

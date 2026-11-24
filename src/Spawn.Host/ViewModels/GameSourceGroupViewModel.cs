@@ -6,6 +6,8 @@ namespace Spawn.Host.ViewModels;
 
 public sealed partial class GameSourceGroupViewModel : ObservableObject
 {
+    private int _lastNotifiedCount;
+
     public string GroupKey { get; }
     public string BaseTitle { get; }
 
@@ -25,8 +27,19 @@ public sealed partial class GameSourceGroupViewModel : ObservableObject
         _isExpanded = initiallyExpanded;
         Items.CollectionChanged += (_, _) =>
         {
+            int currentCount = Items.Count;
+            if (currentCount == _lastNotifiedCount)
+            {
+                return;
+            }
+
+            bool previousHasItems = _lastNotifiedCount > 0;
+            _lastNotifiedCount = currentCount;
             OnPropertyChanged(nameof(Count));
-            OnPropertyChanged(nameof(HasItems));
+            if ((currentCount > 0) != previousHasItems)
+            {
+                OnPropertyChanged(nameof(HasItems));
+            }
         };
     }
 

@@ -52,6 +52,13 @@ public sealed partial class TrayIconService : IDisposable
     private const uint CmdRestartForUpdate = 1004;
     private const uint CmdOpenUpdateSettings = 1005;
 
+    private const int SmCxSmIcon = 49;
+    private const int SmCySmIcon = 50;
+    private const uint ImageIcon = 1;
+    private const uint LrLoadFromFile = 0x00000010;
+    private const int IdiApplicationResourceId = 32512;
+    private const int PrimaryIconResourceId = 1;
+
     private static readonly Guid TrayItemGuid = Guid.Empty;
 
     private readonly bool _isHeadless;
@@ -113,8 +120,8 @@ public sealed partial class TrayIconService : IDisposable
             _messageWindow = new HwndSource(parameters);
             _messageWindow.AddHook(WndProc);
 
-            byte[] pngBytes = LoadOrRenderBrandIconPngBytes(_isDevChannel, sizePx: 64);
-            _hIcon = CreateHIconFromPngBytes(pngBytes, desiredPx: 32);
+            var (iconWidth, iconHeight) = GetSystemSmallIconSize();
+            _hIcon = LoadOrRenderTrayHIcon(_isDevChannel, iconWidth, iconHeight);
             if (_hIcon == nint.Zero)
             {
                 CleanupFailedInitialization();
@@ -232,6 +239,90 @@ public sealed partial class TrayIconService : IDisposable
         {
             return null;
         }
+    }
+
+    public static (int Width, int Height) NormalizeSmallIconSize(int rawWidth, int rawHeight)
+    {
+        int width = rawWidth > 0 ? Math.Clamp(rawWidth, 16, 256) : 16;
+        int height = rawHeight > 0 ? Math.Clamp(rawHeight, 16, 256) : width;
+        return (width, height);
+    }
+
+    public static (int Width, int Height) GetSystemSmallIconSize() =>
+        NormalizeSmallIconSize(GetSystemMetrics(SmCxSmIcon), GetSystemMetrics(SmCySmIcon));
+
+    public static string? ResolveBrandIconIcoPath(bool isDevChannel)
+    {
+        string icoFileName = isDevChannel ? "icon-dev.ico" : "icon.ico";
+        string? discovered = SpawnPaths.DiscoverLocalFileUpwards(Path.Combine("assets", icoFileName));
+        return !string.IsNullOrWhiteSpace(discovered) && File.Exists(discovered) ? discovered : null;
+    }
+
+    /// <summary>
+    /// Loads a DPI-matched small tray <c>HICON</c> at <c>SM_CXSMICON x SM_CYSMICON</c> from the pre-averaged
+    /// multi-size <c>assets/icon[-dev].ico</c> (or embedded Win32 PE icon resource), falling back to
+    /// <see cref="BrandIconGeometry"/> SkiaSharp rendering at the exact target pixel size.
+    /// </summary>
+    public static nint LoadOrRenderTrayHIcon(
+        bool isDevChannel,
+        int widthPx,
+        int heightPx,
+        string? icoPathOverride = null,
+        bool allowEmbeddedModuleIcon = true)
+    {
+        var (width, height) = NormalizeSmallIconSize(widthPx, heightPx);
+
+        string? icoPath = icoPathOverride is null ? ResolveBrandIconIcoPath(isDevChannel) : icoPathOverride;
+        if (!string.IsNullOrWhiteSpace(icoPath) && File.Exists(icoPath))
+        {
+            nint fromFile = LoadImageFromFileW(nint.Zero, icoPath, ImageIcon, width, height, LrLoadFromFile);
+            if (fromFile != nint.Zero)
+            {
+                return fromFile;
+            }
+        }
+
+        if (allowEmbeddedModuleIcon && CanUseCurrentProcessEmbeddedIcon(isDevChannel))
+        {
+            nint hModule = GetModuleHandleW(null);
+            if (hModule != nint.Zero)
+            {
+                nint fromPe = LoadImageFromResourceIdW(hModule, IdiApplicationResourceId, ImageIcon, width, height, 0);
+                if (fromPe != nint.Zero)
+                {
+                    return fromPe;
+                }
+
+                fromPe = LoadImageFromResourceIdW(hModule, PrimaryIconResourceId, ImageIcon, width, height, 0);
+                if (fromPe != nint.Zero)
+                {
+                    return fromPe;
+                }
+            }
+        }
+
+        byte[] fallbackPng = RenderBrandIconPngBytes(isDevChannel, sizePx: Math.Max(width, height));
+        return CreateHIconFromPngBytes(fallbackPng, width, height);
+    }
+
+    public static bool DestroyTrayHIcon(nint hIcon) =>
+        hIcon != nint.Zero && DestroyIcon(hIcon);
+
+    private static bool CanUseCurrentProcessEmbeddedIcon(bool requestedDevChannel)
+    {
+        if (requestedDevChannel != SpawnBuildInfo.IsDevOrSourceChannel)
+        {
+            return false;
+        }
+
+        string? processPath = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(processPath))
+        {
+            return false;
+        }
+
+        string exeStem = Path.GetFileNameWithoutExtension(processPath);
+        return exeStem.StartsWith("spawn", StringComparison.OrdinalIgnoreCase);
     }
 
     public static byte[] LoadOrRenderBrandIconPngBytes(bool isDevChannel, int sizePx = 64)
@@ -368,7 +459,7 @@ public sealed partial class TrayIconService : IDisposable
         }
     }
 
-    private static unsafe nint CreateHIconFromPngBytes(byte[] pngBytes, int desiredPx)
+    private static unsafe nint CreateHIconFromPngBytes(byte[] pngBytes, int desiredWidthPx, int desiredHeightPx)
     {
         if (pngBytes.Length == 0)
         {
@@ -382,8 +473,8 @@ public sealed partial class TrayIconService : IDisposable
                 (uint)pngBytes.Length,
                 fIcon: true,
                 dwVer: 0x00030000,
-                cxDesired: desiredPx,
-                cyDesired: desiredPx,
+                cxDesired: desiredWidthPx,
+                cyDesired: desiredHeightPx,
                 Flags: 0);
         }
     }
@@ -548,4 +639,28 @@ public sealed partial class TrayIconService : IDisposable
 
     [LibraryImport("user32.dll", EntryPoint = "RegisterWindowMessageW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
     private static partial uint RegisterWindowMessageW(string lpString);
+
+    [LibraryImport("user32.dll")]
+    private static partial int GetSystemMetrics(int nIndex);
+
+    [LibraryImport("user32.dll", EntryPoint = "LoadImageW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
+    private static partial nint LoadImageFromFileW(
+        nint hInst,
+        string name,
+        uint type,
+        int cx,
+        int cy,
+        uint fuLoad);
+
+    [LibraryImport("user32.dll", EntryPoint = "LoadImageW", SetLastError = true)]
+    private static partial nint LoadImageFromResourceIdW(
+        nint hInst,
+        nint resourceId,
+        uint type,
+        int cx,
+        int cy,
+        uint fuLoad);
+
+    [LibraryImport("kernel32.dll", EntryPoint = "GetModuleHandleW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
+    private static partial nint GetModuleHandleW(string? lpModuleName);
 }

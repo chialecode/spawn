@@ -16,6 +16,7 @@
         Background="{DynamicResource PageBackgroundBrush}"
         Foreground="{DynamicResource PrimaryTextBrush}"
         FontFamily="{StaticResource SpawnUiFont}"
+        Typography.NumeralAlignment="Tabular"
         AllowDrop="True"
         UseLayoutRounding="True"
         SnapsToDevicePixels="True"
@@ -4995,7 +4996,7 @@
                                                 <TextBlock Text="{Binding Update.CurrentVersionText}"
                                                            FontFamily="{StaticResource SpawnMonoFont}"
                                                            FontSize="14"
-                                                           FontWeight="Bold"
+                                                           FontWeight="SemiBold"
                                                            Margin="10,0,0,0"
                                                            VerticalAlignment="Center" />
                                                 <Border CornerRadius="5"
@@ -5263,8 +5264,9 @@
                                                        FontSize="18"
                                                        FontWeight="Bold"
                                                        VerticalAlignment="Center" />
-                                            <Border CornerRadius="5"
-                                                    Background="{DynamicResource WarningAmberSoftBrush}"
+                                            <Border x:Name="AboutBuildChannelBadge"
+                                                    CornerRadius="5"
+                                                    Background="#F3A115"
                                                     Padding="7,2"
                                                     Margin="10,0,0,0"
                                                     VerticalAlignment="Center"
@@ -5273,7 +5275,7 @@
                                                            FontFamily="{StaticResource SpawnMonoFont}"
                                                            FontSize="11"
                                                            FontWeight="Bold"
-                                                           Foreground="{DynamicResource WarningAmberBrush}" />
+                                                           Foreground="#202124" />
                                             </Border>
                                         </WrapPanel>
                                         <TextBlock Text="{Binding ChannelDisplayName}"

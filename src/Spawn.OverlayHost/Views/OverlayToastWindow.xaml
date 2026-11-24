@@ -7,6 +7,8 @@
         WindowStyle="None"
         AllowsTransparency="True"
         Background="Transparent"
+        FontFamily="Inter, Segoe UI Variable Text, Segoe UI, Microsoft YaHei UI, Microsoft YaHei"
+        Typography.NumeralAlignment="Tabular"
         ResizeMode="NoResize"
         ShowInTaskbar="False"
         ShowActivated="False"
@@ -319,7 +321,7 @@
                         <TextBlock x:Name="XboxPercentText"
                                    Text="4.2%"
                                    Foreground="#F3E8FF"
-                                   FontFamily="Cascadia Mono, Consolas"
+                                   FontFamily="JetBrains Mono, Cascadia Mono, Consolas, Microsoft YaHei UI, Microsoft YaHei"
                                    FontSize="11"
                                    FontWeight="SemiBold"
                                    VerticalAlignment="Center" />

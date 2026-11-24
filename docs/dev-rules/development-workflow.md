@@ -66,7 +66,7 @@ python -B scripts/package.py --install-dev
 ```
 
 1. **安全无损**：脚本先在 `dist/.staging-*/` 编译 `spawn-dev.exe`、`Spawn.OverlayHost.exe`、`Workers\Trainer\Spawn.TrainerWorker.exe` 与免 UAC 按用户 NSIS 安装包并原子替换到 `dist/spawn-dev/`（[D-35](../decisions/confirmed-decisions.md#d-35)）；只读写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.chialecode.spawn-dev`，没有这个卸载项就是首次安装，同样静默完成；从不碰正式版。
-2. **窗口开着时推迟**：已安装的 `spawn-dev.exe` 有可见的顶层窗口（最小化也算，隐藏到托盘不算）时说明用户正在使用，每 2 秒检查一次，最多等 10 分钟；仍开着就跳过这次安装（跳过不算失败），回执记 `reason=window_open` 并提示关窗后运行 `python -B scripts/package.py --install-dev --install-only`。只在托盘运行时经 `--quit-for-update` 命名管道请其保存退出（最多 30 秒，从不强杀），装完一律以 `--background` 静默回到托盘、不弹出窗口（`StartupWindowPolicy` 对 `dev-install` 重启只进托盘，`D-23`）。
+2. **窗口开着时推迟**：已安装的 `spawn-dev.exe` 有可见的顶层窗口（最小化也算，隐藏到托盘不算）时说明用户正在使用，每 2 秒检查一次，最多等 10 分钟；仍开着就跳过这次安装（跳过不算失败），回执记 `reason=window_open` 并提示关窗后运行 `python -B scripts/package.py --install-dev --install-only`。窗口按已安装的 `spawn-dev.exe` 路径匹配：用 `dotnet run` 从源码运行的副本共用同一个单实例互斥量，却不算“窗口开着”，安装时同样会被请求保存退出。只在托盘运行时经 `--quit-for-update` 命名管道请其保存退出（最多 30 秒，从不强杀），装完一律以 `--background` 静默回到托盘、不弹出窗口（`StartupWindowPolicy` 对 `dev-install` 重启只进托盘，`D-23`）。
 3. **回执**：写 `.local/reports/<阶段>/install-dev.json`，字段统一为 camelCase：`identity`、`installed`、`skipped`、`reason`、`error`、`firstInstall`、`oldVersion`、`newVersion`、`installLocation`、`wasRunning`、`windowOpen`、`deferred`、`deferMs`、`quitMs`、`relaunched`、`background`、`inJob`、`guidance`、`elapsedMs`、`at`，另有 `displayName`、`installedExe`、`installedTrainerWorker`、`installedNotices`、`viaShell`、`pid` 等。
 4. **隔离边界**：`SPAWN_DEV_AUTO_INSTALL=0` 或 `CI=true` 时跳过；`quick_gate.py` 与单元测试严禁调用 `--install-dev` 触碰 `spawn` 或 `spawn-dev`（安装包测试用隔离身份 `--identity spawn-dev-test --no-shortcuts --no-relaunch`）。
 5. 装好的版本写进 PR 或 issue 评论。

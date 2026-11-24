@@ -168,7 +168,14 @@ jobs:
         with:
           global-json-file: global.json
 
-      # scripts/package.py fetches the pinned NSIS 3.13 zip itself (SHA-256 checked) into .tools/.
+      # The pinned NSIS 3.13 zip (SHA-256 checked) is fetched into .tools/ before the signing key exists.
+      - name: Fetch pinned NSIS 3.13
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -B scripts/package.py --fetch-nsis
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Build release installer and sign update manifest
         shell: pwsh
         env:

@@ -160,9 +160,13 @@ class InstallerScriptTests(unittest.TestCase):
             "--after-update",
             '!insertmacro MUI_LANGUAGE "SimpChinese"',
             "!define SPAWN_EXIT_FOLDER_TAKEN 7",
+            "!define SPAWN_EXIT_FILES_NOT_WRITTEN 8",
+            # An update without /D= stays in the installed folder.
+            'InstallDirRegKey HKCU "${SPAWN_UNINSTALL_KEY}" "InstallLocation"',
             "SetCompressor /SOLID zlib",
         ):
             self.assertIn(needle, text)
+        self.assertIn(8, pkg.INSTALLER_EXIT_REASONS)
         self.assertNotRegex(text, r"(?im)^\s*SetCompressor\s.*lzma")
         self.assertFalse((REPO_ROOT / "installer" / "spawn.iss").exists())
 

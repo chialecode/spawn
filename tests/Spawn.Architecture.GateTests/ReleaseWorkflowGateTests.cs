@@ -304,6 +304,14 @@ public sealed class ReleaseWorkflowGateTests
             new Regex(@"(?:Write-Host|Write-Output|\becho\b)[^\r\n]*(?:SIGNING_KEY|keyFile|\.pem)", RegexOptions.IgnoreCase),
             signRun);
 
+        // The NSIS download happens in its own step, before the signing key is written.
+        var buildSteps = build.Steps.ToList();
+        int fetchIndex = buildSteps.FindIndex(
+            s => (s.Run ?? string.Empty).Contains("python -B scripts/package.py --fetch-nsis", StringComparison.Ordinal));
+        Assert.True(fetchIndex >= 0, "release build job must fetch the pinned NSIS in its own step");
+        Assert.True(fetchIndex < buildSteps.IndexOf(signStep), "NSIS must be fetched before the signing step");
+        Assert.DoesNotContain("SPAWN_UPDATE_SIGNING_KEY", buildSteps[fetchIndex].RawBlock, StringComparison.Ordinal);
+
         // 4. Isolated spawn-test install drill.
         Assert.Contains("python -B scripts/release.py --drill-install --version", build.AllRunScripts, StringComparison.Ordinal);
 

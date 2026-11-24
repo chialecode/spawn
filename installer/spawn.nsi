@@ -10,9 +10,11 @@
 ;   4. Never force-kills: asks a running copy to --quit-for-update, waits 30 s, otherwise stops.
 ;   5. Spawn.TrainerWorker stays under Workers\Trainer\ (never flattened); THIRD-PARTY-NOTICES.txt ships.
 ;   6. /RELAUNCH (silent installs only) starts <identity>.exe --after-update once the update is done.
-;   7. One installation per identity: an update goes into the installed folder; a /D= naming another
-;      folder uninstalls the old copy first; a folder holding another program's Uninstall.exe is
-;      refused (exit code 7) and left untouched.
+;   7. One installation per identity: an update without /D= goes into the installed folder
+;      (InstallDirRegKey); a /D= naming another folder uninstalls the old copy first; a folder
+;      holding another program's Uninstall.exe is refused (exit code 7) and left untouched.
+;   8. A file that cannot be written (held open by another program) stops the installer with
+;      exit code 8 before the uninstaller and the uninstall entry are written.
 ; Command line: /S silent; /D=<folder> (last, unquoted) picks the folder; /RELAUNCH as above.
 
 !if "${NSIS_VERSION}" != "v3.13"
@@ -46,6 +48,7 @@
 !define SPAWN_EXIT_QUIT_FAILED 5    ; SPAWN runs, but its executable to ask was not found
 !define SPAWN_EXIT_SETUP_RUNNING 6  ; another installer of this identity is running
 !define SPAWN_EXIT_FOLDER_TAKEN 7   ; the folder holds another program's Uninstall.exe
+!define SPAWN_EXIT_FILES_NOT_WRITTEN 8 ; a file could not be written (held open elsewhere)
 
 Unicode true
 ManifestDPIAware true
@@ -60,8 +63,10 @@ ManifestDPIAware true
 RequestExecutionLevel user
 Name "${SPAWN_DISPLAY_NAME}"
 OutFile "${SPAWN_OUT_FILE}"
-; Always the identity's own folder unless /D= says otherwise (no directory page).
+; The identity's own folder on a first install, the installed folder on an update; /D= overrides
+; both (no directory page).
 InstallDir "$LOCALAPPDATA\Programs\${SPAWN_IDENTITY}"
+InstallDirRegKey HKCU "${SPAWN_UNINSTALL_KEY}" "InstallLocation"
 BrandingText " "
 ShowInstDetails nevershow
 ShowUninstDetails nevershow
@@ -314,7 +319,15 @@ Section "-Install"
   ${EndIf}
 
   SetOutPath "$INSTDIR"
+  ; Under /S a file that cannot be written is skipped (NSIS answers its own prompt with Ignore)
+  ; and only the error flag says so: stop before the entry claims the new version.
+  ClearErrors
   File /r "${SPAWN_SOURCE_DIR}\*"
+  ${If} ${Errors}
+    MessageBox MB_OK|MB_ICONSTOP "有文件被别的程序占用，没能写入 $INSTDIR。请关闭占用它的程序后重新运行安装程序。" /SD IDOK
+    SetErrorLevel ${SPAWN_EXIT_FILES_NOT_WRITTEN}
+    Quit
+  ${EndIf}
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
   WriteRegStr HKCU "${SPAWN_UNINSTALL_KEY}" "DisplayName" "${SPAWN_DISPLAY_NAME}"

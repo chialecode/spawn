@@ -59,6 +59,7 @@ INSTALLER_EXIT_REASONS = {
     5: "SPAWN is running but its executable to ask to quit was not found",
     6: "another installer of this identity is running",
     7: "the target folder holds another program's Uninstall.exe",
+    8: "a file could not be written (held open by another program); nothing was registered",
 }
 
 BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
@@ -1329,12 +1330,16 @@ def request_graceful_quit_and_wait(
 
     t0 = time.monotonic()
     if host_pids and exe_path.is_file():
-        _run_quiet(
-            [str(exe_path), "--quit-for-update"],
-            cwd=exe_path.parent,
-            base_env=clean_env,
-            timeout=15.0,
-        )
+        # The helper itself waits up to 25 s for the running copy to exit; allow it the full wait.
+        try:
+            _run_quiet(
+                [str(exe_path), "--quit-for-update"],
+                cwd=exe_path.parent,
+                base_env=clean_env,
+                timeout=timeout_sec,
+            )
+        except subprocess.TimeoutExpired:
+            pass
 
     deadline = t0 + timeout_sec
     while time.monotonic() < deadline:
@@ -1779,7 +1784,16 @@ def main() -> int:
         help="Publish self-contained win-x64 runtime (default: true for release, false for dev).",
     )
     parser.add_argument("--receipt-path", type=Path, default=None)
+    parser.add_argument(
+        "--fetch-nsis",
+        action="store_true",
+        help="Only fetch the pinned NSIS build into .tools/ (SHA-256 checked) and print makensis.exe.",
+    )
     args = parser.parse_args()
+
+    if args.fetch_nsis:
+        print(find_makensis())
+        return 0
 
     repo_root = REPO_ROOT
 
@@ -1841,7 +1855,8 @@ def main() -> int:
             profile,
             setup_exe,
             version,
-            install_dir_override=args.install_dir,
+            # /D= needs an absolute folder.
+            install_dir_override=args.install_dir.resolve() if args.install_dir else None,
             relaunch_background=(not args.no_relaunch),
             receipt_path=receipt_path,
             is_dev_auto_install=(args.install_dev or profile.identity == "spawn-dev"),

@@ -4,7 +4,7 @@
 - **日期**：2026-11-22
 - **维护角色**：维护者
 - **关联决策与需求**：`D-15`、`D-23`、`D-30` ~ `D-33`；`NFR-05`、`NFR-06`、`NFR-07`、`NFR-09`、`REQ-SEC-01`；验收 `AC-25`
-- **部分替代**：[集中工程事项台账](open-questions.md) `LOOP-05` 中“`M6` 收官阶段补齐 Ed25519 离线公钥验签在线更新引擎”的承接阶段与签名算法；`%ProgramFiles%\spawn\Overlay\` 自签名证书部署见 [#27](https://github.com/chialecode/spawn/issues/27)
+- **部分替代**：[上游事项台账](open-questions.md) `LOOP-05` 中“`M6` 收官阶段补齐 Ed25519 离线公钥验签在线更新引擎”的承接阶段与签名算法；`%ProgramFiles%\spawn\Overlay\` 自签名证书部署见 [#27](https://github.com/chialecode/spawn/issues/27)
 
 ---
 

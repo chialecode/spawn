@@ -6,8 +6,8 @@
 
 | 文档 | 定位与职责 |
 | :--- | :--- |
-| [confirmed-decisions.md](confirmed-decisions.md) | 汇总 `D-01` ~ `D-19` 全部已拍板锁定的产品、技术栈、里程碑优先级、安全隔离与协作治理决策，以及 `A-01` ~ `A-06` 可逆工程默认项。任何偏离已确认决策的改动必须先提交新 ADR 审阅。 |
-| [open-questions.md](open-questions.md) | 集中管理不阻塞 M1 架构基线、按里程碑触发收敛的工程验证事项（`OSS-*` 外部组件适配与合规核验、`LOOP-*` 二期/可选增强闭环）。 |
+| [confirmed-decisions.md](confirmed-decisions.md) | 汇总 `D-01` ~ `D-29` 全部已拍板锁定的产品、技术栈、里程碑范围、安全隔离与协作治理决策，以及 `A-01` ~ `A-06` 可逆工程默认项。任何偏离已确认决策的改动必须先提交新 ADR 审阅。 |
+| [open-questions.md](open-questions.md) | 集中管理按里程碑触发收敛的工程验证事项（`OSS-*` 外部组件适配与合规核验、`LOOP-*` 二期/可选增强闭环）。 |
 
 > **协作分工约束**：本目录仅记录**系统架构与工程技术决策**；凡需仓库所有者手工执行的本机工具确认、证书信任或远端发布审批动作，统一登记在仓库根目录 [USER-ACTIONS.md](../../USER-ACTIONS.md) 中，不在本目录重复建账。
 
@@ -19,7 +19,9 @@
 | [ADR-0002](0002-pure-native-wpf-and-nodify-ui-stack.md) | 纯原生 `.NET 10 (LTS)` + WPF（`WPF-UI` + `Nodify`）桌面与蓝图技术栈 | Accepted | 否决 Electron/Tauri/`WebView2` 混合套壳与 WinUI 3 多窗口缺陷，锁定纯原生 C# 14 + `.NET 10 (LTS)` + `lepoco/wpfui` + `miroiu/nodify` 实现毫秒级响应与 60FPS 千节点蓝图。 |
 | [ADR-0003](0003-anti-cheat-guard-and-process-isolation.md) | Clean Host 多进程完整性物理隔离与四级反作弊联锁护栏 | Accepted | 将敏感能力剥离至按需启停的独立 Worker 进程，主宿主维持 Medium IL 纯净导入表（CI `PEReader` 门禁），建立 `Tier 0~3` 联锁、Explorer 血缘脱钩与 15 秒 `SGuard64` 退出冷却状态机。 |
 | [ADR-0004](0004-cas-fastcdc-storage-and-mod-junction-topology.md) | `FastCDC` 内容寻址存档库、`32MB SPPK` 云同步与 NTFS Junction Mod 拓扑 | Accepted | 采用确定性 Gear-Hash `FastCDC` + `BLAKE3` + `Zstd` 构建存档时间机器与 `32MB SPPK` 自建云同步；采用 CAS 硬链接 + `MutableCopy` `XxHash3` 回收 + 顶层 NTFS Junction WAL 实现 `<100ms` 多维 Profile 原子切换。 |
-| [ADR-0005](0005-external-ecosystem-orchestration-and-uiaccess-overlay.md) | 二次元外部生态顶层编排、零报毒外部修改器管家与 `ZBID_UIACCESS` 高刷图层 | Accepted | 坚持顶层元调度定位（内嵌 `Maa.Framework` C# + `_ctypes.pyd` 桥接 `MaaFgo/BBChannel` + 统管 CLI 生态）；一期采用 `A0+A` 零注入静音管理外部 FLiNG 并预留二期 `.CT` 接口；采用 `DirectComposition` + `SkiaSharp` + `ZBID_UIACCESS` 实现 144Hz 零侵入 Overlay。 |
+| [ADR-0005](0005-external-ecosystem-orchestration-and-uiaccess-overlay.md) | 二次元外部生态顶层编排、零报毒外部修改器管家与 `ZBID_UIACCESS` 高刷图层 | Accepted | 坚持顶层元调度定位（内嵌 `Maa.Framework` C# + `_ctypes.pyd` 桥接 `MaaFgo/BBChannel` + 统管 CLI 生态）；一期采用 `A0+A` 零注入静音管理外部 FLiNG 并预留二期 `.CT` 接口；采用 `DirectComposition` + `SkiaSharp` + `ZBID_UIACCESS` 实现 144Hz 零侵入 Overlay。（修改器静音参数与二期后端表述由 ADR-0006 细化修订） |
+| [ADR-0006](0006-m3-external-trainer-manager-elevation-and-ipc.md) | `M3` 外部修改器安全管家：分级按需提权、倒置跨 IL 管道与洁净室依赖边界 | Accepted | 废止指向按用户安装目录的免 UAC 计划任务（LPE 风险），改为无管理员清单直启 Medium IL / 每会话 1 次 `runas` UAC；Medium IL `Spawn.Host` 作单实例 `NamedPipeJsonRpc` 服务端、Worker 作客户端并双向互验；`M3` Worker 零跨进程内存 API；全仓移除 `Reloaded.Memory` 家族与捆绑 `unRAR` 限制的解压库，洁净室实现 FLiNG 发现/下载。 |
+| [ADR-0007](0007-weekly-release-and-signed-in-app-update.md) | 正式版每周发布流水线、签名应用内更新与开发版逐提交重装 | Accepted | 正式版自包含 + Actions 每周有合入才发、仓库变量控制发布；应用内更新改用 BCL ECDSA P-256 验签并提前至 `M3`；开发版永不自查、每次本地提交后重装 |
 
 ## 3. 新增或变更 ADR 流程
 

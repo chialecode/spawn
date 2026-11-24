@@ -330,6 +330,37 @@ public sealed class SpawnPathsDatabaseAndCredentialTests
     }
 
     [Fact]
+    public async Task Database_MigrationV3_RaisesUntouchedLegacyOverlayVolumeOnceAndKeepsLaterUserChoice()
+    {
+        await using var sandbox = new TestSandbox();
+        await sandbox.Database.InitializeAsync();
+        Assert.Equal(1.0, (await sandbox.Database.GetOverlaySettingsAsync()).SoundVolume);
+
+        // Simulate a pre-v3 database that persisted the legacy 75% default.
+        await sandbox.Database.SetSettingAsync(AppSettingKeys.OverlaySoundVolume, "0.75");
+        await using (var conn = new SqliteConnection($"Data Source={sandbox.Paths.DatabaseFilePath};Pooling=False"))
+        {
+            await conn.OpenAsync();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = "DELETE FROM schema_migrations WHERE version = 3;";
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        using (var upgraded = new SpawnDatabase(sandbox.Paths))
+        {
+            await upgraded.InitializeAsync();
+            Assert.Equal(1.0, (await upgraded.GetOverlaySettingsAsync()).SoundVolume, precision: 3);
+
+            // A user who later deliberately picks 75% keeps it across restarts.
+            await upgraded.SetSettingAsync(AppSettingKeys.OverlaySoundVolume, "0.75");
+        }
+
+        using var restarted = new SpawnDatabase(sandbox.Paths);
+        await restarted.InitializeAsync();
+        Assert.Equal(0.75, (await restarted.GetOverlaySettingsAsync()).SoundVolume, precision: 3);
+    }
+
+    [Fact]
     public async Task SpawnPaths_SteamClientSoundLocator_PrefersDesktopAchievementToastOverGamepadUiInSandbox()
     {
         await using var sandbox = new TestSandbox();

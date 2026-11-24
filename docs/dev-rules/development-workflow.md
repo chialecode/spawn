@@ -21,15 +21,15 @@
 
 <a id="dev-install-at-handoff"></a>
 
-### 交付人工体验前自动安装更新本机 `SPAWN Dev`（`install-dev`）
+### 每次本地提交后自动重装本机 `SPAWN Dev`（`install-dev`）
 
-为让用户无需手动打开终端输入 `dotnet run` 即可随时从桌面/开始菜单快捷方式或系统托盘体验最新开发版，每次阶段交付、阶段内功能追加或按用户反馈修复完成本地提交收束后，收口 Agent 必须在本机自动执行一次：
+为让用户无需手动打开终端输入 `dotnet run` 即可随时从桌面/开始菜单快捷方式或系统托盘体验最新开发版，按 `D-32`（2026-11-22 用户选择），Agent 每次本地 `git commit` 或 `git commit --amend` 成功后都必须立即在本机自动执行一次（开发版永不自查更新，由此保持与 `HEAD` 一致；交接与请用户复查时同样以最近一次安装为准），并把装好的版本写进交接说明与报告：
 
 ```powershell
 python -B scripts/package.py --install-dev
 ```
 
-1. **安全无损闭环**：脚本先在 `dist/.staging-*/` 编译 `spawn-dev.exe`、`Spawn.OverlayHost.exe` 与免 UAC 按用户安装包 `spawn-dev-setup-<ver>-x64.exe` 并原子替换至 `dist/spawn-dev/`；若本机已有运行中的 `SPAWN Dev`，通过 `--quit-for-update` 命名管道请求其保存状态并优雅退出（最多等待 30s，**绝不强杀进程，也不影响正在运行的游戏**）；随后静默执行 `/VERYSILENT` 安装、核验 `HKCU` 卸载项版本号、写入 `%LOCALAPPDATA%\spawn-dev\dev-workspace.json` 桥接当前仓库 `.local` 资源，并通过脱离当前命令 Job 的方式以 `--background` 在系统托盘静默拉起新装好的 `spawn-dev.exe`，将回执写入 `.local/reports/m2/install-dev.json`。
+1. **安全无损闭环**：脚本先在 `dist/.staging-*/` 编译 `spawn-dev.exe`、`Spawn.OverlayHost.exe`、`Workers\Trainer\Spawn.TrainerWorker.exe` 与免 UAC 按用户安装包 `spawn-dev-setup-<ver>-x64.exe` 并原子替换至 `dist/spawn-dev/`；若本机已有运行中的 `SPAWN Dev`，先剥离测试/覆写环境变量再通过 `--quit-for-update` 命名管道请求其写入 `config/update-restart-state.json`（`reason: "dev-install"`、5 分钟 TTL）并优雅退出（连同 `Spawn.OverlayHost.exe`、`Spawn.TrainerWorker.exe` 最多等待 30s，**绝不强杀进程，也不影响正在运行的游戏**，超时即放弃本次安装、本机不变）；本机尚未安装时直接首次安装；随后静默执行 `/VERYSILENT` 安装、核验 `HKCU` 卸载项版本号与 `Workers\Trainer\` 隔离布局、写入 `%LOCALAPPDATA%\spawn-dev\dev-workspace.json` 桥接当前仓库 `.local` 资源，安装成功后**不论原来是否在运行、也不论此前主窗口是否打开**，都以 `--background` 在系统托盘静默拉起新装好的 `spawn-dev.exe`：先请桌面外壳（`explorer.exe` 的 `Shell.Application.ShellExecute`）启动并经 Toolhelp32 + `0x1000` 核验其父进程确为 `%SystemRoot%\explorer.exe`，确认后回执直接记录 `viaShell: true, inJob: false`（规避 Windows 系统外壳作业对象或应用自建作业对象的误报，保证脱离命令作业对象、不在命令结束时被回收）；外壳不可用时再以 `CREATE_BREAKAWAY_FROM_JOB` 脱离作业（仍不允许脱离时照常启动、回执记 `viaShell: false, inJob: true`，交接说明里请用户从开始菜单打开一次），回执写入 `.local/reports/<当前阶段>/install-dev.json`（阶段取 `docs/governance/document-registry.json` 的 `currentStage`）。
 2. **严格隔离边界**：设置 `SPAWN_DEV_AUTO_INSTALL=0` 或 `CI=true` 时自动跳过本机安装；日常自动化门禁 `scripts/quick_gate.py` 与单元测试**严禁调用 `--install-dev` 触碰用户的 `spawn` 或 `spawn-dev` 环境**（安装包自动化测试必须使用独立隔离身份 `--identity spawn-dev-test --no-shortcuts --no-relaunch`）。
 
 ---

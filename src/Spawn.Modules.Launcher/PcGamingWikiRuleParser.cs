@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -14,6 +16,19 @@ public sealed class GameDataManagementOptions
 {
     public bool AllowOnlinePcGamingWikiLookup { get; set; } = true;
     public TimeSpan OnlineLookupTimeout { get; set; } = TimeSpan.FromSeconds(4.0);
+
+    /// <summary>
+    /// Controls whether <see cref="ResolveSteamInstallDir"/> may inspect the host machine's Steam registry/default paths
+    /// when <see cref="SteamInstallDirOverride"/> is unset. Unit tests can set this to <see langword="false"/> to guarantee
+    /// zero host Steam probing.
+    /// </summary>
+    public bool AllowSystemSteamDiscovery { get; set; } = true;
+
+    /// <summary>
+    /// Optional <see cref="HttpMessageHandler"/> injected for 100% offline fixture testing when no explicit
+    /// <see cref="HttpClient"/> is passed to <see cref="GameDataManagementService"/>.
+    /// </summary>
+    public HttpMessageHandler? HttpMessageHandlerOverride { get; set; }
 
     public string? AppDataRoamingOverride { get; set; }
     public string? LocalAppDataOverride { get; set; }
@@ -120,21 +135,108 @@ public sealed class GameDataManagementOptions
             return Path.GetFullPath(SteamInstallDirOverride);
         }
 
-        try
+        if (!AllowSystemSteamDiscovery)
         {
-            using var key = Registry.CurrentUser.OpenSubKey(@"Software\Valve\Steam", writable: false);
-            string? steamPath = key?.GetValue("SteamPath") as string;
-            if (!string.IsNullOrWhiteSpace(steamPath))
+            return null;
+        }
+
+        string? hkcuPath = TryReadRegistryString(RegistryHive.CurrentUser, RegistryView.Default, @"Software\Valve\Steam", "SteamPath");
+        if (TryNormalizeExistingOrCandidateDir(hkcuPath, requireExists: false, out string? resolved))
+        {
+            return resolved;
+        }
+
+        string? hkcuExe = TryReadRegistryString(RegistryHive.CurrentUser, RegistryView.Default, @"Software\Valve\Steam", "SteamExe");
+        if (!string.IsNullOrWhiteSpace(hkcuExe))
+        {
+            try
             {
-                return Path.GetFullPath(steamPath.Replace('/', Path.DirectorySeparatorChar));
+                string? exeDir = Path.GetDirectoryName(hkcuExe.Trim().Trim('"').Replace('/', Path.DirectorySeparatorChar));
+                if (TryNormalizeExistingOrCandidateDir(exeDir, requireExists: false, out resolved))
+                {
+                    return resolved;
+                }
+            }
+            catch
+            {
+                // Ignore malformed SteamExe value.
             }
         }
-        catch
+
+        string?[] hklmCandidates =
+        [
+            TryReadRegistryString(RegistryHive.LocalMachine, RegistryView.Registry32, @"SOFTWARE\Valve\Steam", "InstallPath"),
+            TryReadRegistryString(RegistryHive.LocalMachine, RegistryView.Registry64, @"SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath"),
+            TryReadRegistryString(RegistryHive.LocalMachine, RegistryView.Registry64, @"SOFTWARE\Valve\Steam", "InstallPath"),
+        ];
+
+        foreach (string? candidate in hklmCandidates)
         {
-            // Ignore missing Steam registry key.
+            if (TryNormalizeExistingOrCandidateDir(candidate, requireExists: false, out resolved))
+            {
+                return resolved;
+            }
+        }
+
+        string progX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+        if (!string.IsNullOrWhiteSpace(progX86)
+            && TryNormalizeExistingOrCandidateDir(Path.Combine(progX86, "Steam"), requireExists: true, out resolved))
+        {
+            return resolved;
+        }
+
+        string progX64 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        if (!string.IsNullOrWhiteSpace(progX64)
+            && TryNormalizeExistingOrCandidateDir(Path.Combine(progX64, "Steam"), requireExists: true, out resolved))
+        {
+            return resolved;
         }
 
         return null;
+    }
+
+    private static string? TryReadRegistryString(
+        RegistryHive hive,
+        RegistryView view,
+        string subKeyPath,
+        string valueName)
+    {
+        try
+        {
+            using var baseKey = RegistryKey.OpenBaseKey(hive, view);
+            using var subKey = baseKey.OpenSubKey(subKeyPath, writable: false);
+            return subKey?.GetValue(valueName) as string;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool TryNormalizeExistingOrCandidateDir(string? rawPath, bool requireExists, out string? normalized)
+    {
+        normalized = null;
+        if (string.IsNullOrWhiteSpace(rawPath))
+        {
+            return false;
+        }
+
+        try
+        {
+            string full = Path.TrimEndingDirectorySeparator(
+                Path.GetFullPath(rawPath.Trim().Trim('"').Replace('/', Path.DirectorySeparatorChar)));
+            if (requireExists && !Directory.Exists(full))
+            {
+                return false;
+            }
+
+            normalized = full;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 }
 
@@ -146,12 +248,51 @@ public sealed record PcGamingWikiRawRule(
     string RawTemplatePath);
 
 /// <summary>
-/// Queries PCGamingWiki Cargo + MediaWiki Parse APIs and expands <c>{{p|...}}</c> Windows path/registry templates.
+/// Queries PCGamingWiki MediaWiki Parse + Search APIs (replacing anonymous <c>action=cargoquery</c> which returns
+/// <c>permissiondenied</c>) and expands <c>{{p|...}}</c> Windows path/registry templates.
 /// </summary>
 public static partial class PcGamingWikiRuleParser
 {
-    [GeneratedRegex(@"\{\{\s*[Pp]\|([^}|]+)(?:\|[^}]*)?\}\}", RegexOptions.CultureInvariant)]
+    private const string ApiEndpoint = "https://www.pcgamingwiki.com/w/api.php";
+
+    private static readonly string[] IgnoredWikiNamespacePrefixes =
+    [
+        "Talk:",
+        "User:",
+        "User talk:",
+        "PCGamingWiki:",
+        "File:",
+        "MediaWiki:",
+        "Template:",
+        "Help:",
+        "Category:",
+        "Special:",
+        "Module:",
+    ];
+
+    [GeneratedRegex(@"\{\{\s*(?:[Pp]|[Pp]ath)\|([^}|]+)(?:\|[^}]*)?\}\}", RegexOptions.CultureInvariant)]
     private static partial Regex PlaceholderTagRegex();
+
+    [GeneratedRegex(@"<!--.*?-->", RegexOptions.Singleline | RegexOptions.CultureInvariant)]
+    private static partial Regex HtmlCommentRegex();
+
+    [GeneratedRegex(@"<ref\b[^>]*/>|<ref\b[^>]*>.*?</ref>", RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.CultureInvariant)]
+    private static partial Regex WikiRefTagRegex();
+
+    [GeneratedRegex(@"\{\{\s*(?:cn|citation\s+needed|note|ref|verify|check|clarify)(?:\|[^}]*)?\}\}", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex AnnotationTemplateRegex();
+
+    /// <summary>
+    /// Creates an <see cref="HttpClient"/> backed by a caller-supplied <see cref="HttpMessageHandler"/>
+    /// (for 100% offline fixture unit testing without touching the network).
+    /// </summary>
+    public static HttpClient CreateHttpClient(HttpMessageHandler handler, bool disposeHandler = false)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        var client = new HttpClient(handler, disposeHandler);
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("SpawnLauncher/1.0 (Windows NT 10.0; Win64; x64)");
+        return client;
+    }
 
     /// <summary>
     /// Extracts Windows save and configuration template paths from raw PCGamingWiki article wikitext.
@@ -180,8 +321,9 @@ public static partial class PcGamingWikiRuleParser
     }
 
     /// <summary>
-    /// Expands a PCGamingWiki template path (containing <c>{{p|appdata}}</c>, <c>{{p|locallow}}</c>, <c>{{p|hkcu}}</c>, <c>{{p|uid}}</c>, etc.)
-    /// into one or more concrete filesystem paths or registry key paths.
+    /// Expands a PCGamingWiki template path (containing <c>{{p|appdata}}</c>, <c>{{p|localappdata}}</c>,
+    /// <c>{{p|locallow}}</c>, <c>{{p|userprofile}}</c>, <c>{{p|game}}</c>, <c>{{p|steam}}</c>, <c>{{p|uid}}</c>,
+    /// <c>{{p|hkcu}}</c>, etc.) into one or more concrete filesystem paths or registry key paths.
     /// </summary>
     /// <param name="identity">
     /// When supplied, wildcard expansions ({{p|uid}} and trailing globs) are kept only if the resulting path is inside the
@@ -196,7 +338,7 @@ public static partial class PcGamingWikiRuleParser
         ArgumentNullException.ThrowIfNull(rule);
         ArgumentNullException.ThrowIfNull(options);
 
-        string raw = rule.RawTemplatePath.Trim();
+        string raw = StripWikiAnnotations(rule.RawTemplatePath);
         if (string.IsNullOrWhiteSpace(raw))
         {
             return [];
@@ -216,6 +358,8 @@ public static partial class PcGamingWikiRuleParser
                 case "localappdata":
                     return options.ResolveLocalAppData();
                 case "locallow":
+                case "localappdatalow":
+                case @"userprofile\appdata\locallow":
                     return options.ResolveLocalLow();
                 case "public":
                     return options.ResolvePublicRoot();
@@ -253,7 +397,11 @@ public static partial class PcGamingWikiRuleParser
                 case "hklm":
                     isRegistry = true;
                     return "HKLM";
+                case "wow64":
+                    isRegistry = true;
+                    return @"HKLM\Software\Wow6432Node";
                 case "uid":
+                case "user-id":
                 case "username":
                     return UidSentinel;
                 default:
@@ -267,7 +415,7 @@ public static partial class PcGamingWikiRuleParser
             return [];
         }
 
-        // Strip leftover wiki markup or HTML comments if any.
+        // Strip any leftover HTML comments or unexpanded markup.
         int commentIdx = expanded.IndexOf("<!--", StringComparison.Ordinal);
         if (commentIdx >= 0)
         {
@@ -280,7 +428,10 @@ public static partial class PcGamingWikiRuleParser
             expanded = expanded.Replace(@"\\", @"\", StringComparison.Ordinal);
         }
 
-        if (isRegistry || expanded.StartsWith(@"HKCU\", StringComparison.OrdinalIgnoreCase) || expanded.StartsWith(@"HKLM\", StringComparison.OrdinalIgnoreCase))
+        if (isRegistry
+            || expanded.StartsWith(@"HKCU\", StringComparison.OrdinalIgnoreCase)
+            || expanded.StartsWith(@"HKLM\", StringComparison.OrdinalIgnoreCase)
+            || expanded.StartsWith(@"HKEY_", StringComparison.OrdinalIgnoreCase))
         {
             string regKey = RewriteHkcuSoftwarePrefix(expanded.TrimEnd('\\'), options.HkcuSoftwarePrefix);
             if (regKey.Contains(UidSentinel, StringComparison.Ordinal))
@@ -362,12 +513,63 @@ public static partial class PcGamingWikiRuleParser
         }
     }
 
+    /// <summary>
+    /// Fetches and parses PCGamingWiki save/config rules using a caller-provided <see cref="HttpMessageHandler"/>
+    /// (convenience overload for 100% offline fixture testing).
+    /// </summary>
+    public static async Task<IReadOnlyList<PcGamingWikiRawRule>?> FetchOnlineRulesAsync(
+        HttpMessageHandler messageHandler,
+        int? steamAppId,
+        string? gogGameId,
+        string gameTitle,
+        TimeSpan timeout,
+        bool tryCargoQueryFirst = false,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(messageHandler);
+        using var client = CreateHttpClient(messageHandler, disposeHandler: false);
+        return await FetchOnlineRulesAsync(
+            client,
+            steamAppId,
+            gogGameId,
+            gameTitle,
+            timeout,
+            tryCargoQueryFirst,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Fetches and parses PCGamingWiki save/config rules prioritizing <c>action=parse&amp;redirects=1&amp;prop=wikitext</c>
+    /// with automatic <c>action=query&amp;list=search</c> fallback when the page title is unknown or returns <c>missingtitle</c>.
+    /// </summary>
+    public static Task<IReadOnlyList<PcGamingWikiRawRule>?> FetchOnlineRulesAsync(
+        HttpClient httpClient,
+        int? steamAppId,
+        string? gogGameId,
+        string gameTitle,
+        TimeSpan timeout,
+        CancellationToken cancellationToken) =>
+        FetchOnlineRulesAsync(
+            httpClient,
+            steamAppId,
+            gogGameId,
+            gameTitle,
+            timeout,
+            tryCargoQueryFirst: false,
+            cancellationToken);
+
+    /// <summary>
+    /// Fetches and parses PCGamingWiki save/config rules with configurable <c>cargoquery</c> probing and automatic
+    /// fallback to <c>action=parse&amp;redirects=1&amp;prop=wikitext</c> and <c>action=query&amp;list=search</c> whenever
+    /// <c>cargoquery</c> returns <c>permissiondenied</c> or the page title returns <c>missingtitle</c>.
+    /// </summary>
     public static async Task<IReadOnlyList<PcGamingWikiRawRule>?> FetchOnlineRulesAsync(
         HttpClient httpClient,
         int? steamAppId,
         string? gogGameId,
         string gameTitle,
         TimeSpan timeout,
+        bool tryCargoQueryFirst,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(httpClient);
@@ -375,48 +577,87 @@ public static partial class PcGamingWikiRuleParser
         linkedCts.CancelAfter(timeout <= TimeSpan.Zero ? TimeSpan.FromSeconds(4.0) : timeout);
         var ct = linkedCts.Token;
 
+        string normalizedTitle = gameTitle?.Trim() ?? string.Empty;
+        var attemptedTitles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var attemptedPageIds = new HashSet<int>();
+        bool cargoTried = false;
+
         try
         {
-            int? pageId = null;
-
-            if (steamAppId is > 0)
+            // Optional legacy path: attempt cargoquery first when explicitly requested, falling back cleanly on permissiondenied.
+            if (tryCargoQueryFirst && (steamAppId is > 0 || !string.IsNullOrWhiteSpace(gogGameId)))
             {
-                string where = Uri.EscapeDataString($"Infobox_game.Steam_AppID HOLDS \"{steamAppId.Value}\"");
-                pageId = await QueryCargoPageIdAsync(httpClient, where, ct).ConfigureAwait(false);
+                cargoTried = true;
+                var cargoRules = await TryResolveViaCargoAsync(
+                    httpClient,
+                    steamAppId,
+                    gogGameId,
+                    attemptedPageIds,
+                    ct).ConfigureAwait(false);
+                if (cargoRules is not null)
+                {
+                    return cargoRules;
+                }
             }
 
-            if (!pageId.HasValue && !string.IsNullOrWhiteSpace(gogGameId))
+            // 1. Primary path: action=parse&redirects=1&prop=wikitext directly by title.
+            if (!string.IsNullOrWhiteSpace(normalizedTitle) && attemptedTitles.Add(normalizedTitle))
             {
-                string where = Uri.EscapeDataString($"Infobox_game.GOGcom_ID HOLDS \"{gogGameId}\"");
-                pageId = await QueryCargoPageIdAsync(httpClient, where, ct).ConfigureAwait(false);
+                var directAttempt = await TryParseByTitleAsync(httpClient, normalizedTitle, ct).ConfigureAwait(false);
+                if (directAttempt.Found)
+                {
+                    return ParseWikitext(directAttempt.Wikitext);
+                }
             }
 
-            string parseUrl = pageId.HasValue
-                ? $"https://www.pcgamingwiki.com/w/api.php?action=parse&pageid={pageId.Value}&prop=wikitext&format=json"
-                : (!string.IsNullOrWhiteSpace(gameTitle)
-                    ? $"https://www.pcgamingwiki.com/w/api.php?action=parse&page={Uri.EscapeDataString(gameTitle)}&redirects=1&prop=wikitext&format=json"
-                    : string.Empty);
-
-            if (string.IsNullOrWhiteSpace(parseUrl))
+            // 2. Fallback path: action=query&list=search to discover the canonical PCGW page title, then action=parse.
+            var searchQueries = BuildSearchQueries(normalizedTitle, steamAppId, gogGameId);
+            foreach (string query in searchQueries)
             {
-                return null;
+                var candidates = await SearchPageCandidatesAsync(httpClient, query, normalizedTitle, ct).ConfigureAwait(false);
+                int parsedAttemptsForQuery = 0;
+
+                foreach (var candidate in candidates)
+                {
+                    if (parsedAttemptsForQuery >= 2)
+                    {
+                        break;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(candidate.Title) && attemptedTitles.Add(candidate.Title))
+                    {
+                        parsedAttemptsForQuery++;
+                        var attempt = await TryParseByTitleAsync(httpClient, candidate.Title, ct).ConfigureAwait(false);
+                        if (attempt.Found)
+                        {
+                            return ParseWikitext(attempt.Wikitext);
+                        }
+                    }
+                    else if (candidate.PageId is > 0 && attemptedPageIds.Add(candidate.PageId.Value))
+                    {
+                        parsedAttemptsForQuery++;
+                        var attempt = await TryParseByPageIdAsync(httpClient, candidate.PageId.Value, ct).ConfigureAwait(false);
+                        if (attempt.Found)
+                        {
+                            return ParseWikitext(attempt.Wikitext);
+                        }
+                    }
+                }
             }
 
-            using var resp = await httpClient.GetAsync(parseUrl, ct).ConfigureAwait(false);
-            if (!resp.IsSuccessStatusCode)
+            // 3. Last-resort compatibility fallback if neither parse nor search resolved a page (handles permissiondenied silently).
+            if (!cargoTried && (steamAppId is > 0 || !string.IsNullOrWhiteSpace(gogGameId)))
             {
-                return null;
-            }
-
-            await using var stream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-            using var doc = JsonDocument.Parse(stream);
-            if (doc.RootElement.TryGetProperty("parse", out var parseObj)
-                && parseObj.TryGetProperty("wikitext", out var wtObj)
-                && wtObj.TryGetProperty("*", out var starProp)
-                && starProp.ValueKind == JsonValueKind.String)
-            {
-                string? wikitext = starProp.GetString();
-                return ParseWikitext(wikitext);
+                var cargoRules = await TryResolveViaCargoAsync(
+                    httpClient,
+                    steamAppId,
+                    gogGameId,
+                    attemptedPageIds,
+                    ct).ConfigureAwait(false);
+                if (cargoRules is not null)
+                {
+                    return cargoRules;
+                }
             }
         }
         catch (Exception ex) when (ex is OperationCanceledException or HttpRequestException or JsonException)
@@ -427,44 +668,358 @@ public static partial class PcGamingWikiRuleParser
         return null;
     }
 
-    private static async Task<int?> QueryCargoPageIdAsync(
+    private static async Task<IReadOnlyList<PcGamingWikiRawRule>?> TryResolveViaCargoAsync(
+        HttpClient httpClient,
+        int? steamAppId,
+        string? gogGameId,
+        HashSet<int> attemptedPageIds,
+        CancellationToken ct)
+    {
+        int? pageId = null;
+
+        if (steamAppId is > 0)
+        {
+            string where = Uri.EscapeDataString($"Infobox_game.Steam_AppID HOLDS \"{steamAppId.Value}\"");
+            var cargo = await QueryCargoPageIdAsync(httpClient, where, ct).ConfigureAwait(false);
+            if (cargo.PermissionDenied)
+            {
+                return null;
+            }
+
+            pageId = cargo.PageId;
+        }
+
+        if (!pageId.HasValue && !string.IsNullOrWhiteSpace(gogGameId))
+        {
+            string where = Uri.EscapeDataString($"Infobox_game.GOGcom_ID HOLDS \"{gogGameId.Trim()}\"");
+            var cargo = await QueryCargoPageIdAsync(httpClient, where, ct).ConfigureAwait(false);
+            if (cargo.PermissionDenied)
+            {
+                return null;
+            }
+
+            pageId = cargo.PageId;
+        }
+
+        if (pageId is > 0 && attemptedPageIds.Add(pageId.Value))
+        {
+            var attempt = await TryParseByPageIdAsync(httpClient, pageId.Value, ct).ConfigureAwait(false);
+            if (attempt.Found)
+            {
+                return ParseWikitext(attempt.Wikitext);
+            }
+        }
+
+        return null;
+    }
+
+    private static List<string> BuildSearchQueries(string normalizedTitle, int? steamAppId, string? gogGameId)
+    {
+        var queries = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        if (!string.IsNullOrWhiteSpace(normalizedTitle) && seen.Add(normalizedTitle))
+        {
+            queries.Add(normalizedTitle);
+        }
+
+        if (steamAppId is > 0)
+        {
+            string appIdStr = steamAppId.Value.ToString(CultureInfo.InvariantCulture);
+            if (seen.Add(appIdStr))
+            {
+                queries.Add(appIdStr);
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(gogGameId))
+        {
+            string trimmedGog = gogGameId.Trim();
+            if (seen.Add(trimmedGog))
+            {
+                queries.Add(trimmedGog);
+            }
+        }
+
+        return queries;
+    }
+
+    private static async Task<ParseAttemptResult> TryParseByTitleAsync(
+        HttpClient httpClient,
+        string pageTitle,
+        CancellationToken cancellationToken)
+    {
+        string url = $"{ApiEndpoint}?action=parse&page={Uri.EscapeDataString(pageTitle)}&redirects=1&prop=wikitext&format=json";
+        return await ExecuteParseRequestAsync(httpClient, url, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<ParseAttemptResult> TryParseByPageIdAsync(
+        HttpClient httpClient,
+        int pageId,
+        CancellationToken cancellationToken)
+    {
+        string url = $"{ApiEndpoint}?action=parse&pageid={pageId}&redirects=1&prop=wikitext&format=json";
+        return await ExecuteParseRequestAsync(httpClient, url, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<ParseAttemptResult> ExecuteParseRequestAsync(
+        HttpClient httpClient,
+        string url,
+        CancellationToken cancellationToken)
+    {
+        using var resp = await httpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
+        if (!resp.IsSuccessStatusCode)
+        {
+            return new ParseAttemptResult(Found: false, ErrorCode: ((int)resp.StatusCode).ToString(CultureInfo.InvariantCulture), Wikitext: null);
+        }
+
+        await using var stream = await resp.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        if (TryExtractApiErrorCode(doc.RootElement, out string? errorCode))
+        {
+            return new ParseAttemptResult(Found: false, ErrorCode: errorCode, Wikitext: null);
+        }
+
+        if (doc.RootElement.TryGetProperty("parse", out var parseObj)
+            && parseObj.ValueKind == JsonValueKind.Object
+            && parseObj.TryGetProperty("wikitext", out var wtObj))
+        {
+            if (wtObj.ValueKind == JsonValueKind.String)
+            {
+                return new ParseAttemptResult(Found: true, ErrorCode: null, Wikitext: wtObj.GetString());
+            }
+
+            if (wtObj.ValueKind == JsonValueKind.Object
+                && wtObj.TryGetProperty("*", out var starProp)
+                && starProp.ValueKind == JsonValueKind.String)
+            {
+                return new ParseAttemptResult(Found: true, ErrorCode: null, Wikitext: starProp.GetString());
+            }
+        }
+
+        return new ParseAttemptResult(Found: false, ErrorCode: null, Wikitext: null);
+    }
+
+    private static async Task<IReadOnlyList<SearchPageCandidate>> SearchPageCandidatesAsync(
+        HttpClient httpClient,
+        string searchQuery,
+        string preferredTitle,
+        CancellationToken cancellationToken)
+    {
+        string url = $"{ApiEndpoint}?action=query&list=search&srsearch={Uri.EscapeDataString(searchQuery)}&srlimit=5&format=json";
+        using var resp = await httpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
+        if (!resp.IsSuccessStatusCode)
+        {
+            return [];
+        }
+
+        await using var stream = await resp.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        if (TryExtractApiErrorCode(doc.RootElement, out _))
+        {
+            return [];
+        }
+
+        if (!doc.RootElement.TryGetProperty("query", out var queryObj)
+            || queryObj.ValueKind != JsonValueKind.Object
+            || !queryObj.TryGetProperty("search", out var searchArr)
+            || searchArr.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        var rawCandidates = new List<SearchPageCandidate>();
+        foreach (var item in searchArr.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            string? title = item.TryGetProperty("title", out var titleProp) && titleProp.ValueKind == JsonValueKind.String
+                ? titleProp.GetString()?.Trim()
+                : null;
+
+            int? pageId = null;
+            if (item.TryGetProperty("pageid", out var idProp))
+            {
+                if (idProp.ValueKind == JsonValueKind.Number && idProp.TryGetInt32(out int numId) && numId > 0)
+                {
+                    pageId = numId;
+                }
+                else if (idProp.ValueKind == JsonValueKind.String && int.TryParse(idProp.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int strId) && strId > 0)
+                {
+                    pageId = strId;
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(title) && !pageId.HasValue)
+            {
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(title) && IsIgnoredWikiNamespace(title))
+            {
+                continue;
+            }
+
+            rawCandidates.Add(new SearchPageCandidate(title, pageId));
+        }
+
+        if (rawCandidates.Count <= 1 || string.IsNullOrWhiteSpace(preferredTitle))
+        {
+            return rawCandidates;
+        }
+
+        string normPreferred = NormalizeTitleForMatch(preferredTitle);
+        return rawCandidates
+            .OrderByDescending(c => ScoreSearchCandidate(c.Title, preferredTitle, normPreferred))
+            .ToList();
+    }
+
+    private static async Task<(int? PageId, bool PermissionDenied)> QueryCargoPageIdAsync(
         HttpClient httpClient,
         string encodedWhereClause,
         CancellationToken cancellationToken)
     {
-        string url = $"https://www.pcgamingwiki.com/w/api.php?action=cargoquery&tables=Infobox_game&fields=Infobox_game._pageID&where={encodedWhereClause}&limit=1&format=json";
+        string url = $"{ApiEndpoint}?action=cargoquery&tables=Infobox_game&fields=Infobox_game._pageID&where={encodedWhereClause}&limit=1&format=json";
         using var resp = await httpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
+        if (resp.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized)
+        {
+            return (null, PermissionDenied: true);
+        }
+
         if (!resp.IsSuccessStatusCode)
         {
-            return null;
+            return (null, PermissionDenied: false);
         }
 
         await using var stream = await resp.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        using var doc = JsonDocument.Parse(stream);
+        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        if (TryExtractApiErrorCode(doc.RootElement, out string? errorCode))
+        {
+            bool denied = string.Equals(errorCode, "permissiondenied", StringComparison.OrdinalIgnoreCase)
+                          || string.Equals(errorCode, "readapidenied", StringComparison.OrdinalIgnoreCase);
+            return (null, PermissionDenied: denied);
+        }
+
         if (!doc.RootElement.TryGetProperty("cargoquery", out var arr)
             || arr.ValueKind != JsonValueKind.Array
             || arr.GetArrayLength() == 0)
         {
-            return null;
+            return (null, PermissionDenied: false);
         }
 
         var first = arr[0];
-        if (first.TryGetProperty("title", out var titleObj))
+        if (first.TryGetProperty("title", out var titleObj) && titleObj.ValueKind == JsonValueKind.Object)
         {
             foreach (var prop in titleObj.EnumerateObject())
             {
                 if (prop.Name.Contains("pageID", StringComparison.OrdinalIgnoreCase))
                 {
-                    string? rawId = prop.Value.GetString();
-                    if (int.TryParse(rawId, out int parsed) && parsed > 0)
+                    if (prop.Value.ValueKind == JsonValueKind.Number && prop.Value.TryGetInt32(out int numVal) && numVal > 0)
                     {
-                        return parsed;
+                        return (numVal, PermissionDenied: false);
+                    }
+
+                    if (prop.Value.ValueKind == JsonValueKind.String
+                        && int.TryParse(prop.Value.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed)
+                        && parsed > 0)
+                    {
+                        return (parsed, PermissionDenied: false);
                     }
                 }
             }
         }
 
-        return null;
+        return (null, PermissionDenied: false);
+    }
+
+    private static bool TryExtractApiErrorCode(JsonElement root, out string? errorCode)
+    {
+        errorCode = null;
+        if (root.ValueKind == JsonValueKind.Object
+            && root.TryGetProperty("error", out var errorObj)
+            && errorObj.ValueKind == JsonValueKind.Object)
+        {
+            if (errorObj.TryGetProperty("code", out var codeProp) && codeProp.ValueKind == JsonValueKind.String)
+            {
+                errorCode = codeProp.GetString();
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsIgnoredWikiNamespace(string title)
+    {
+        foreach (string prefix in IgnoredWikiNamespacePrefixes)
+        {
+            if (title.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static int ScoreSearchCandidate(string? candidateTitle, string preferredTitle, string normPreferred)
+    {
+        if (string.IsNullOrWhiteSpace(candidateTitle))
+        {
+            return 0;
+        }
+
+        if (string.Equals(candidateTitle, preferredTitle, StringComparison.OrdinalIgnoreCase))
+        {
+            return 3;
+        }
+
+        string normCandidate = NormalizeTitleForMatch(candidateTitle);
+        if (normPreferred.Length > 0 && string.Equals(normCandidate, normPreferred, StringComparison.Ordinal))
+        {
+            return 2;
+        }
+
+        if (normPreferred.Length >= 4 && normCandidate.Contains(normPreferred, StringComparison.Ordinal))
+        {
+            return 1;
+        }
+
+        return 0;
+    }
+
+    private static string NormalizeTitleForMatch(string value)
+    {
+        var sb = new StringBuilder(value.Length);
+        foreach (char ch in value)
+        {
+            if (char.IsLetterOrDigit(ch))
+            {
+                sb.Append(char.ToLowerInvariant(ch));
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    private static string StripWikiAnnotations(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return string.Empty;
+        }
+
+        string cleaned = HtmlCommentRegex().Replace(raw, string.Empty);
+        cleaned = WikiRefTagRegex().Replace(cleaned, string.Empty);
+        cleaned = AnnotationTemplateRegex().Replace(cleaned, string.Empty);
+        return cleaned.Trim();
     }
 
     private static void AddParsedBlock(
@@ -483,14 +1038,15 @@ public static partial class PcGamingWikiRuleParser
         if (!osName.Equals("Windows", StringComparison.OrdinalIgnoreCase)
             && !osName.Equals("Steam", StringComparison.OrdinalIgnoreCase)
             && !osName.Equals("GOG.com", StringComparison.OrdinalIgnoreCase)
-            && !osName.Equals("Microsoft Store", StringComparison.OrdinalIgnoreCase))
+            && !osName.Equals("Microsoft Store", StringComparison.OrdinalIgnoreCase)
+            && !osName.Equals("Epic Games Launcher", StringComparison.OrdinalIgnoreCase))
         {
             return;
         }
 
         for (int i = 1; i < parts.Count; i++)
         {
-            string candidate = parts[i].Trim();
+            string candidate = StripWikiAnnotations(parts[i]);
             if (string.IsNullOrWhiteSpace(candidate) || candidate.Contains('='))
             {
                 continue;
@@ -510,13 +1066,31 @@ public static partial class PcGamingWikiRuleParser
 
         while (searchFrom < text.Length)
         {
-            int start = text.IndexOf("{{" + templatePrefix, searchFrom, StringComparison.OrdinalIgnoreCase);
-            if (start < 0)
+            int openIdx = text.IndexOf("{{", searchFrom, StringComparison.Ordinal);
+            if (openIdx < 0)
             {
                 break;
             }
 
-            int contentStart = start + 2 + templatePrefix.Length;
+            int posAfterOpen = openIdx + 2;
+            while (posAfterOpen < text.Length && char.IsWhiteSpace(text[posAfterOpen]))
+            {
+                posAfterOpen++;
+            }
+
+            if (posAfterOpen + templatePrefix.Length > text.Length
+                || !text.AsSpan(posAfterOpen, templatePrefix.Length).Equals(templatePrefix.AsSpan(), StringComparison.OrdinalIgnoreCase))
+            {
+                searchFrom = openIdx + 2;
+                continue;
+            }
+
+            int contentStart = posAfterOpen + templatePrefix.Length;
+            while (contentStart < text.Length && char.IsWhiteSpace(text[contentStart]))
+            {
+                contentStart++;
+            }
+
             if (contentStart >= text.Length || text[contentStart] != '|')
             {
                 searchFrom = contentStart;
@@ -616,6 +1190,12 @@ public static partial class PcGamingWikiRuleParser
         {
             foreach (string childDir in Directory.EnumerateDirectories(prefixDir))
             {
+                var info = new DirectoryInfo(childDir);
+                if ((info.Attributes & FileAttributes.ReparsePoint) != 0)
+                {
+                    continue;
+                }
+
                 string combined = string.IsNullOrWhiteSpace(suffix)
                     ? childDir
                     : Path.Combine(childDir, suffix);
@@ -655,4 +1235,8 @@ public static partial class PcGamingWikiRuleParser
 
         return regKey;
     }
+
+    private readonly record struct ParseAttemptResult(bool Found, string? ErrorCode, string? Wikitext);
+
+    private readonly record struct SearchPageCandidate(string? Title, int? PageId);
 }

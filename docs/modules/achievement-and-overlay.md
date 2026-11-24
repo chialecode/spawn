@@ -51,7 +51,7 @@ public interface IAchievementWatcherCoordinator
     Task RestoreOriginalSteamApiDllAsync(Guid gameId, CancellationToken ct = default);
 }
 
-// Spawn.Host -> Spawn.OverlayHost (gRPC over Named Pipes: spawn-overlay-<UserSid>)
+// Spawn.Host -> Spawn.OverlayHost (NamedPipeJsonRpc: spawn-overlay-<UserSid>)
 public interface IOverlayHostRpcContract
 {
     Task EnqueueToastBatchAsync(IReadOnlyList<OverlayToastPayload> toasts, CancellationToken ct = default);

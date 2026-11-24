@@ -34,9 +34,9 @@ flowchart TB
     end
 
     subgraph WorkerDomain["按需隔离执行域 (Tier 2/3 启动前强制清场销毁)"]
-        W_TRN["Spawn.TrainerWorker.exe (High IL 0x3000)"]
-        W_WFL["Spawn.WorkflowWorker.exe (Medium/High IL)"]
-        W_BP["Spawn.BlueprintWorker.exe (Medium/High IL)"]
+        W_TRN["Spawn.TrainerWorker.exe (按 D-11 分级按需提权 · Medium/High IL)"]
+        W_WFL["Spawn.WorkflowWorker.exe (按 D-11 分级按需提权 · Medium/High IL)"]
+        W_BP["Spawn.BlueprintWorker.exe (按 D-11 分级按需提权 · Medium/High IL)"]
         W_LEG["Spawn.LegacyHook.Helper.exe (Tier 0 可选隔离组件, 默认禁用)"]
     end
 
@@ -45,10 +45,10 @@ flowchart TB
     Host --> ModPRG
     Host --> ModACH
     Host --> ModWFL
-    Host <-->|"gRPC over Named Pipes (SDDL ACL)"| Overlay
-    Host <-->|"gRPC over Named Pipes (SDDL ACL)"| W_TRN
-    Host <-->|"gRPC over Named Pipes (SDDL ACL)"| W_WFL
-    Host <-->|"gRPC over Named Pipes (SDDL ACL)"| W_BP
+    Host <-->|"NamedPipeJsonRpc (SDDL ACL)"| Overlay
+    Host <-->|"NamedPipeJsonRpc (倒置跨 IL · SDDL ACL)"| W_TRN
+    Host <-->|"NamedPipeJsonRpc (SDDL ACL)"| W_WFL
+    Host <-->|"NamedPipeJsonRpc (SDDL ACL)"| W_BP
     Overlay -.->|"仅限 Tier 0 远古独占全屏手动开启"| W_LEG
 ```
 
@@ -56,9 +56,9 @@ flowchart TB
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **`spawn.launcher`** | [spawn-launcher.md](./spawn-launcher.md) | `REQ-SPW-01` ~ `06`<br>`REQ-SEC-01` ~ `05` | `Spawn.Core`<br>`Spawn.Modules.Launcher`<br>`Spawn.Host` | `Spawn.Host.exe`（`Medium IL 0x2000`） | `Tier 0 ~ 3` 全兼容（`Tier 2/3` 强制切换 `explorer.exe` 脱钩启动 + `0x1000` 慢速轮询） | **M2**（游戏库管理、Steamrip/GOG 封面刮削、双通道进程追踪、三态计时、基础反作弊门禁）<br>**M4**（Pre/Post-Launch 高阶自愈环境管线） | [卷 02 §1](../research/02-launcher-process-and-mod-nexus.md) |
 | **`spawn.achievement`** | [achievement-and-overlay.md](./achievement-and-overlay.md) | `REQ-ACH-01` ~ `06` | `Spawn.Modules.Achievement`<br>`Spawn.OverlayHost`<br>`Spawn.LegacyHook.Helper`（可选） | 文件/Comet 监听运行于 `Spawn.Host.exe`（`Medium IL`）；游戏内高刷弹窗与面板运行于 `Spawn.OverlayHost.exe`（`Medium+UIAccess IL 0x2010`） | 零注入 `ZBID_UIACCESS` 模式支持 `Tier 0 ~ 3`；无桩 DLL 赋能与经典注入回退硬锁 `Tier 0` | **M2**（15+ 模拟器实时监听、GOG `9977` Comet 捕获、一键 `gbe_fork` 激活器、中文 Schema 缓存、`OverlayHost` 弹窗与成就管理面板）<br>**M4**（`Alt+Z` 游戏内交互大面板跨模块联动） | [卷 04](../research/04-achievement-and-ingame-overlay.md) |
-| **`spawn.progress`** | [progress-saves-and-trainer.md](./progress-saves-and-trainer.md) | `REQ-PRG-01` ~ `07` | `Spawn.Modules.Progress`<br>`Spawn.TrainerWorker` | 存档快照与 `SPPK` 云同步运行于 `Spawn.Host.exe`（`Medium IL`，锁冲突时委派 `TrainerWorker` 调 `AlphaVSS`）；修改器沙箱与热键代理运行于 `Spawn.TrainerWorker.exe`（`High IL 0x3000`） | 存档备份/云同步支持 `Tier 0 ~ 3`；外部修改器管家与二期原生 `.CT` 引擎**严格硬锁死仅限 `Tier 0`** | **M3**（`Ludusavi` + `FastCDC` 存档时间机器、`32MB SPPK` 云同步、FLiNG 一键下载与零报毒静音管家）<br>**M6**（二期 CE `.CT` 原生内存引擎） | [卷 03](../research/03-save-timemachine-and-trainer.md) |
+| **`spawn.progress`** | [progress-saves-and-trainer.md](./progress-saves-and-trainer.md) | `REQ-PRG-01` ~ `08` | `Spawn.Modules.Progress`<br>`Spawn.TrainerWorker` | 修改器发现/静音/启动前轻量快照（`M3`）及 `M4` 存档时间机器/`SPPK` 云同步运行于 `Spawn.Host.exe`（`Medium IL`）；外部修改器沙箱与热键代理运行于 `Spawn.TrainerWorker.exe`（按 `D-11` 分级按需提权，`Medium/High IL`，`M3` 零跨进程内存 API） | 存档备份/云同步支持 `Tier 0 ~ 3`；外部修改器管家仅限 `Tier 0`（及通过实时零 AC 硬验票的 `VerifiedOfflineBypass` 混合单机），二期收窄原生后端硬锁 `Tier 0` | **M3**（单机外部修改器安全管家：洁净室 FLiNG 发现 + 用户显式下载 + 本地导入、`A0+A` 默认静音、`TrainerWorker` 沙箱与热键代理、启动前轻量存档快照与一键回滚）<br>**M4**（`Ludusavi` + `FastCDC` 存档时间机器与 `32MB SPPK` 云同步，`D-25`）<br>**M6**（二期收窄原生修改后端，`D-29`） | [卷 03](../research/03-save-timemachine-and-trainer.md) |
 | **`spawn.nexus`** | [nexus-mods-and-utilities.md](./nexus-mods-and-utilities.md) | `REQ-NEX-01` ~ `07` | `Spawn.Modules.Nexus`<br>`Spawn.TrainerWorker`（仅限 `Tier 0` 进程急冻协助） | 文件拓扑与 CAS 部署运行于 `Spawn.Host.exe`（`Medium IL`）；`NtSuspendProcess` 急冻委派 `Spawn.TrainerWorker.exe` | CAS/Profile 仅对离线单机生效；`XXMI` 激活反作弊互斥锁；超分 DLL 替换限 `Tier 0/1`；进程急冻硬锁 `Tier 0` | **M4**（CAS 硬链接、`XxHash3` 配置回收、四大加载器编排、`<100ms` Junction 原子 Profile）<br>**M6**（便携沙箱/WOF/DLSS 4/Sunshine/声卡/急救箱 6 大极客工具箱） | [卷 02 §2 ~ §3](../research/02-launcher-process-and-mod-nexus.md) |
-| **`spawn.workflow`** | [workflow-and-blueprint.md](./workflow-and-blueprint.md) | `REQ-WFL-01` ~ `07` | `Spawn.Modules.Workflow`<br>`Spawn.Host`（Nodify 画布编辑器）<br>`Spawn.WorkflowWorker`<br>`Spawn.BlueprintWorker` | 画布编辑与调度编排面位于 `Spawn.Host.exe`（`Medium IL`）；二次元调度位于 `Spawn.WorkflowWorker.exe`；蓝图执行与视觉/输入驱动位于 `Spawn.BlueprintWorker.exe`（按目标动态 `Medium/High IL`） | 二次元外部官方认可助手限 `Tier 1` 白名单；通用蓝图执行限 `Tier 0/1`；遇到 `Tier 2/3` 全量排空停机 | **M5**（二次元外部代肝生态并发 DAG 顶层编排器）<br>**M6**（`Nodify` 类 UE 蓝图可视化按键/识图脚本虚拟机） | [卷 01](../research/01-ui-architecture-and-blueprint.md) · [卷 05](../research/05-gacha-workflow-orchestration.md) |
+| **`spawn.workflow`** | [workflow-and-blueprint.md](./workflow-and-blueprint.md) | `REQ-WFL-01` ~ `07` | `Spawn.Modules.Workflow`<br>`Spawn.Host`（Nodify 画布编辑器）<br>`Spawn.WorkflowWorker`<br>`Spawn.BlueprintWorker` | 画布编辑与调度编排面位于 `Spawn.Host.exe`（`Medium IL`）；二次元调度位于 `Spawn.WorkflowWorker.exe`；蓝图执行与视觉/输入驱动位于 `Spawn.BlueprintWorker.exe`（按 `D-11` 分级按需提权 `Medium/High IL`，免 UAC 仅限 `LOOP-07`） | 二次元外部官方认可助手限 `Tier 1` 白名单；通用蓝图执行限 `Tier 0/1`；遇到 `Tier 2/3` 全量排空停机 | **M5**（二次元外部代肝生态并发 DAG 顶层编排器）<br>**M6**（`Nodify` 类 UE 蓝图可视化按键/识图脚本虚拟机） | [卷 01](../research/01-ui-architecture-and-blueprint.md) · [卷 05](../research/05-gacha-workflow-orchestration.md) |
 
 ---
 

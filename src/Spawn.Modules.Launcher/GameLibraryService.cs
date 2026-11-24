@@ -2,12 +2,14 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Spawn.Contracts;
 using Spawn.Core;
+using Spawn.Core.AntiCheat;
 
 namespace Spawn.Modules.Launcher;
 
 /// <summary>
 /// Implements <see cref="IGameLibraryService"/>: single-game folder/exe import, multi-folder library root scanning,
-/// non-destructive rescanning, metadata editing, and safe catalog removal (never deleting user game files).
+/// non-destructive rescanning with four-layer static anti-cheat classification and <c>VerifiedOfflineBypass</c>
+/// lifecycle enforcement, metadata editing, and safe catalog removal (never deleting user game files).
 /// </summary>
 public sealed class GameLibraryService : IGameLibraryService
 {
@@ -17,6 +19,8 @@ public sealed class GameLibraryService : IGameLibraryService
     private readonly ISpawnEventBus _eventBus;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<GameLibraryService> _logger;
+    private readonly ITrainerSafetyGate? _trainerSafetyGate;
+    private readonly GameScanOptions? _scanOptions;
 
     public GameLibraryService(
         SpawnDatabase database,
@@ -24,7 +28,9 @@ public sealed class GameLibraryService : IGameLibraryService
         GameDirectoryScanner scanner,
         ISpawnEventBus eventBus,
         TimeProvider? timeProvider = null,
-        ILogger<GameLibraryService>? logger = null)
+        ILogger<GameLibraryService>? logger = null,
+        ITrainerSafetyGate? trainerSafetyGate = null,
+        GameScanOptions? scanOptions = null)
     {
         ArgumentNullException.ThrowIfNull(database);
         ArgumentNullException.ThrowIfNull(paths);
@@ -37,6 +43,8 @@ public sealed class GameLibraryService : IGameLibraryService
         _eventBus = eventBus;
         _timeProvider = timeProvider ?? TimeProvider.System;
         _logger = logger ?? NullLogger<GameLibraryService>.Instance;
+        _trainerSafetyGate = trainerSafetyGate;
+        _scanOptions = scanOptions;
     }
 
     public Task<IReadOnlyList<GameRecord>> GetAllGamesAsync(CancellationToken cancellationToken = default) =>
@@ -73,8 +81,21 @@ public sealed class GameLibraryService : IGameLibraryService
             return null;
         }
 
-        var record = MergeScannedIntoRecord(gameId, scanned, existing, explicitExeRelPath is not null, now);
+        var merged = MergeScannedIntoRecord(gameId, scanned, existing, explicitExeRelPath is not null, now);
+        var (record, shouldInvalidateBypassInDb) = await ApplyFourLayerStaticClassificationAndBypassPolicyAsync(
+            merged,
+            existing,
+            cancellationToken).ConfigureAwait(false);
+
         await _database.UpsertGameAsync(record, cancellationToken).ConfigureAwait(false);
+        if (shouldInvalidateBypassInDb)
+        {
+            await _database.SetGameVerifiedOfflineBypassAsync(
+                record.GameId,
+                enabled: false,
+                confirmedAtUtc: null,
+                cancellationToken).ConfigureAwait(false);
+        }
 
         await _eventBus.PublishAsync(
             new GameImportedOrRescannedEvent(record, isNewImport, now),
@@ -154,8 +175,21 @@ public sealed class GameLibraryService : IGameLibraryService
             return null;
         }
 
-        var updated = MergeScannedIntoRecord(existing.GameId, scanned, existing, overrideExeRelPath: false, now);
+        var merged = MergeScannedIntoRecord(existing.GameId, scanned, existing, overrideExeRelPath: false, now);
+        var (updated, shouldInvalidateBypassInDb) = await ApplyFourLayerStaticClassificationAndBypassPolicyAsync(
+            merged,
+            existing,
+            cancellationToken).ConfigureAwait(false);
+
         await _database.UpsertGameAsync(updated, cancellationToken).ConfigureAwait(false);
+        if (shouldInvalidateBypassInDb)
+        {
+            await _database.SetGameVerifiedOfflineBypassAsync(
+                updated.GameId,
+                enabled: false,
+                confirmedAtUtc: null,
+                cancellationToken).ConfigureAwait(false);
+        }
 
         await _eventBus.PublishAsync(
             new GameImportedOrRescannedEvent(updated, IsNewImport: false, OccurredUtc: now),
@@ -188,6 +222,9 @@ public sealed class GameLibraryService : IGameLibraryService
                 ? GameTitleCleaner.BuildSortTitle(newTitle)
                 : existing.SortTitle);
 
+        // Static anti_cheat_tier is NEVER altered by VerifiedOfflineBypass.
+        var updatedStaticTier = update.AntiCheatTier ?? existing.AntiCheatTier;
+
         var updated = existing with
         {
             Title = newTitle,
@@ -197,7 +234,7 @@ public sealed class GameLibraryService : IGameLibraryService
                 : existing.ExecutableRelPath,
             LaunchArguments = update.LaunchArguments ?? existing.LaunchArguments,
             PlatformSource = update.PlatformSource ?? existing.PlatformSource,
-            AntiCheatTier = update.AntiCheatTier ?? existing.AntiCheatTier,
+            AntiCheatTier = updatedStaticTier,
             AntiCheatSignature = update.AntiCheatSignature ?? existing.AntiCheatSignature,
             SteamAppId = update.SteamAppId ?? existing.SteamAppId,
             GogGameId = update.GogGameId ?? existing.GogGameId,
@@ -207,22 +244,56 @@ public sealed class GameLibraryService : IGameLibraryService
             CoverImagePath = update.CoverImagePath ?? existing.CoverImagePath,
             IconPath = update.IconPath ?? existing.IconPath,
             HeroImagePath = update.HeroImagePath ?? existing.HeroImagePath,
+            SteamBuildId = update.SteamBuildId ?? existing.SteamBuildId,
+            SteamLastUpdatedUtc = update.SteamLastUpdatedUtc ?? existing.SteamLastUpdatedUtc,
         };
 
         await _database.UpsertGameAsync(updated, cancellationToken).ConfigureAwait(false);
+
+        if (update.VerifiedOfflineBypass.HasValue)
+        {
+            if (update.VerifiedOfflineBypass.Value)
+            {
+                bool canEnable = await IsEligibleForVerifiedOfflineBypassAsync(updated, cancellationToken)
+                    .ConfigureAwait(false);
+                if (canEnable)
+                {
+                    DateTimeOffset confirmedAt = update.VerifiedOfflineBypassAtUtc ?? _timeProvider.GetUtcNow();
+                    await _database.SetGameVerifiedOfflineBypassAsync(gameId, enabled: true, confirmedAt, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                else if (existing.VerifiedOfflineBypass)
+                {
+                    await _database.SetGameVerifiedOfflineBypassAsync(gameId, enabled: false, confirmedAtUtc: null, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+            }
+            else
+            {
+                await _database.SetGameVerifiedOfflineBypassAsync(gameId, enabled: false, confirmedAtUtc: null, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+        else if (existing.VerifiedOfflineBypass && updatedStaticTier != AntiCheatTier.Tier2)
+        {
+            await _database.SetGameVerifiedOfflineBypassAsync(gameId, enabled: false, confirmedAtUtc: null, cancellationToken)
+                .ConfigureAwait(false);
+        }
 
         bool identityChanged = update.SteamAppId.HasValue
             || update.GogGameId is not null
             || update.PlatformSource.HasValue;
 
+        var persisted = await _database.GetGameByIdAsync(gameId, cancellationToken).ConfigureAwait(false) ?? updated;
+
         if (identityChanged)
         {
             await _eventBus.PublishAsync(
-                new GameImportedOrRescannedEvent(updated, IsNewImport: false, OccurredUtc: _timeProvider.GetUtcNow()),
+                new GameImportedOrRescannedEvent(persisted, IsNewImport: false, OccurredUtc: _timeProvider.GetUtcNow()),
                 cancellationToken).ConfigureAwait(false);
         }
 
-        return await _database.GetGameByIdAsync(gameId, cancellationToken).ConfigureAwait(false) ?? updated;
+        return await _database.GetGameByIdAsync(gameId, cancellationToken).ConfigureAwait(false) ?? persisted;
     }
 
     public async Task<bool> RemoveGameAsync(
@@ -255,6 +326,126 @@ public sealed class GameLibraryService : IGameLibraryService
             cancellationToken).ConfigureAwait(false);
 
         return true;
+    }
+
+    private async Task<(GameRecord Record, bool ShouldInvalidateBypassInDb)> ApplyFourLayerStaticClassificationAndBypassPolicyAsync(
+        GameRecord candidate,
+        GameRecord? existing,
+        CancellationToken cancellationToken)
+    {
+        AntiCheatTier staticTier = candidate.AntiCheatTier;
+        string? primarySignature = candidate.AntiCheatSignature;
+        bool? hasSinglePlayer = null;
+        bool isMultiplayerOnly = false;
+
+        if (_trainerSafetyGate is not null)
+        {
+            bool allowOnline = _scanOptions?.AllowOnlineMetadataLookup ?? true;
+            var fourLayer = await _trainerSafetyGate.InspectGameFourLayerAsync(
+                candidate,
+                allowOnlineLookup: allowOnline,
+                ct: cancellationToken).ConfigureAwait(false);
+
+            staticTier = fourLayer.EffectiveTier;
+            if (fourLayer.OfflineConservativeFallbackApplied
+                && existing is not null
+                && existing.AntiCheatTier > staticTier)
+            {
+                staticTier = existing.AntiCheatTier;
+            }
+
+            primarySignature = fourLayer.PrimarySignature ?? candidate.AntiCheatSignature;
+            hasSinglePlayer = fourLayer.HasSinglePlayerCategory;
+            isMultiplayerOnly = fourLayer.IsMultiplayerOnly;
+        }
+        else
+        {
+            var awacy = AreWeAntiCheatYetIndex.Default.Inspect(candidate);
+            if (awacy is not null)
+            {
+                if (awacy.Tier > staticTier)
+                {
+                    staticTier = awacy.Tier;
+                    primarySignature = awacy.PrimarySignature;
+                }
+                else
+                {
+                    primarySignature ??= awacy.PrimarySignature;
+                }
+
+                hasSinglePlayer = awacy.HasSinglePlayerHint;
+                isMultiplayerOnly = awacy.HasSinglePlayerHint == false;
+            }
+        }
+
+        bool bypassEnabled = existing?.VerifiedOfflineBypass ?? candidate.VerifiedOfflineBypass;
+        DateTimeOffset? bypassConfirmedAt = existing?.VerifiedOfflineBypassAtUtc ?? candidate.VerifiedOfflineBypassAtUtc;
+        bool shouldInvalidateBypassInDb = false;
+
+        if (bypassEnabled)
+        {
+            // Rescan must NOT clear user's VerifiedOfflineBypass confirmation when conditions still hold;
+            // auto-invalidate ONLY when static Tier becomes non-Tier2 (e.g. Tier 1/3) or single-player mode is lost.
+            bool tierBecameIneligible = staticTier != AntiCheatTier.Tier2;
+            bool lostSinglePlayerMode = hasSinglePlayer == false || isMultiplayerOnly;
+
+            if (tierBecameIneligible || lostSinglePlayerMode)
+            {
+                bypassEnabled = false;
+                bypassConfirmedAt = null;
+                shouldInvalidateBypassInDb = existing is not null;
+
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation(
+                        "Auto-invalidated VerifiedOfflineBypass for game {GameId} ({Title}) during rescan: staticTier={StaticTier}, hasSinglePlayer={HasSinglePlayer}.",
+                        candidate.GameId,
+                        candidate.Title,
+                        staticTier,
+                        hasSinglePlayer);
+                }
+            }
+        }
+
+        var updated = candidate with
+        {
+            AntiCheatTier = staticTier,
+            AntiCheatSignature = primarySignature,
+            VerifiedOfflineBypass = bypassEnabled,
+            VerifiedOfflineBypassAtUtc = bypassConfirmedAt,
+        };
+
+        return (updated, shouldInvalidateBypassInDb);
+    }
+
+    private async Task<bool> IsEligibleForVerifiedOfflineBypassAsync(
+        GameRecord game,
+        CancellationToken cancellationToken)
+    {
+        if (game.AntiCheatTier != AntiCheatTier.Tier2)
+        {
+            return false;
+        }
+
+        if (_trainerSafetyGate is not null)
+        {
+            bool allowOnline = _scanOptions?.AllowOnlineMetadataLookup ?? true;
+            var fourLayer = await _trainerSafetyGate.InspectGameFourLayerAsync(
+                game,
+                allowOnlineLookup: allowOnline,
+                ct: cancellationToken).ConfigureAwait(false);
+            var effectiveStaticTier = fourLayer.EffectiveTier > game.AntiCheatTier ? fourLayer.EffectiveTier : game.AntiCheatTier;
+            return effectiveStaticTier == AntiCheatTier.Tier2 && fourLayer.HasSinglePlayerCategory == true;
+        }
+
+        var awacy = AreWeAntiCheatYetIndex.Default.Inspect(game);
+        if (awacy is not null)
+        {
+            var effectiveStaticTier = awacy.Tier > game.AntiCheatTier ? awacy.Tier : game.AntiCheatTier;
+            return effectiveStaticTier == AntiCheatTier.Tier2 && awacy.HasSinglePlayerHint == true;
+        }
+
+        return false;
     }
 
     private void TryDeleteCachedArtworkDirectoryOnly(string gameId)
@@ -307,6 +498,8 @@ public sealed class GameLibraryService : IGameLibraryService
                 CoverImagePath = scanned.CoverImagePath,
                 IconPath = scanned.IconPath,
                 HeroImagePath = scanned.HeroImagePath,
+                SteamBuildId = scanned.SteamBuildId,
+                SteamLastUpdatedUtc = scanned.SteamLastUpdatedUtc,
                 CreatedUtc = now,
             };
         }
@@ -342,6 +535,10 @@ public sealed class GameLibraryService : IGameLibraryService
             CoverImagePath = scanned.CoverImagePath ?? existing.CoverImagePath,
             IconPath = scanned.IconPath ?? existing.IconPath,
             HeroImagePath = scanned.HeroImagePath ?? existing.HeroImagePath,
+            SteamBuildId = scanned.SteamBuildId ?? existing.SteamBuildId,
+            SteamLastUpdatedUtc = scanned.SteamLastUpdatedUtc ?? existing.SteamLastUpdatedUtc,
+            VerifiedOfflineBypass = existing.VerifiedOfflineBypass,
+            VerifiedOfflineBypassAtUtc = existing.VerifiedOfflineBypassAtUtc,
         };
     }
 }

@@ -4,7 +4,8 @@ public enum PrimaryNavSection
 {
     Library = 0,
     Achievements = 1,
-    Settings = 2,
+    Trainers = 2,
+    Settings = 3,
 }
 
 public enum SettingsCategory
@@ -14,12 +15,15 @@ public enum SettingsCategory
     OverlayAndSound = 2,
     AppearanceTheme = 3,
     AboutAndVersion = 4,
+    TrainerAndSandbox = 5,
+    Updates = 6,
 }
 
 public enum GameDetailSubTab
 {
     Achievements = 0,
     GameData = 1,
+    Trainers = 2,
 }
 
 public enum AchievementFilterTab

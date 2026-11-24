@@ -16,8 +16,12 @@ public partial class MainWindow : Window
     private readonly MainWindowViewModel _viewModel;
     private readonly TrayIconService _trayService;
     private readonly Action _requestApplicationShutdown;
-    private bool _isQuickImportImeComposing;
+    private readonly HashSet<Popup> _openPopups = [];
+    private bool _isManualImportImeComposing;
+    private bool _isTrainerSearchImeComposing;
     private bool _isApplicationExiting;
+
+    public event Action? HiddenToTray;
 
     public MainWindow(
         MainWindowViewModel viewModel,
@@ -42,9 +46,13 @@ public partial class MainWindow : Window
             Icon = dynamicIcon;
         }
 
-        TextCompositionManager.AddPreviewTextInputStartHandler(QuickImportTextBox, (_, _) => _isQuickImportImeComposing = true);
-        TextCompositionManager.AddPreviewTextInputUpdateHandler(QuickImportTextBox, (_, _) => _isQuickImportImeComposing = true);
-        TextCompositionManager.AddPreviewTextInputHandler(QuickImportTextBox, (_, _) => _isQuickImportImeComposing = false);
+        TextCompositionManager.AddPreviewTextInputStartHandler(SettingsManualImportTextBox, (_, _) => _isManualImportImeComposing = true);
+        TextCompositionManager.AddPreviewTextInputUpdateHandler(SettingsManualImportTextBox, (_, _) => _isManualImportImeComposing = true);
+        TextCompositionManager.AddPreviewTextInputHandler(SettingsManualImportTextBox, (_, _) => _isManualImportImeComposing = false);
+
+        TextCompositionManager.AddPreviewTextInputStartHandler(TrainerSidebarSearchTextBox, (_, _) => _isTrainerSearchImeComposing = true);
+        TextCompositionManager.AddPreviewTextInputUpdateHandler(TrainerSidebarSearchTextBox, (_, _) => _isTrainerSearchImeComposing = true);
+        TextCompositionManager.AddPreviewTextInputHandler(TrainerSidebarSearchTextBox, (_, _) => _isTrainerSearchImeComposing = false);
 
         Loaded += OnWindowLoaded;
     }
@@ -90,6 +98,7 @@ public partial class MainWindow : Window
         {
             e.Cancel = true;
             Hide();
+            HiddenToTray?.Invoke();
             return;
         }
 
@@ -149,6 +158,12 @@ public partial class MainWindow : Window
     private void OnCloseButtonClick(object sender, RoutedEventArgs e) =>
         Close();
 
+    private void OnOpenUpdateSettingsFromBannerClick(object sender, RoutedEventArgs e)
+    {
+        _viewModel.ActiveSection = PrimaryNavSection.Settings;
+        _viewModel.Settings.SelectedCategory = SettingsCategory.Updates;
+    }
+
     private void ToggleMaximizeRestore()
     {
         WindowState = WindowState == WindowState.Maximized
@@ -187,30 +202,101 @@ public partial class MainWindow : Window
         _viewModel.UpdateViewportWidth(e.NewSize.Width);
     }
 
-    private async void OnQuickImportTextBoxPreviewKeyDown(object sender, KeyEventArgs e)
+    private async void OnSettingsManualImportTextBoxPreviewKeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.ImeProcessed)
         {
-            _isQuickImportImeComposing = true;
+            _isManualImportImeComposing = true;
             return;
         }
 
-        if (e.Key == Key.Enter && !_isQuickImportImeComposing)
+        if (e.Key == Key.Enter && !_isManualImportImeComposing)
         {
             e.Handled = true;
-            await _viewModel.QuickImportOrScanAsync().ConfigureAwait(true);
+            await _viewModel.Settings.ImportManualGamePathAsync().ConfigureAwait(true);
             return;
         }
 
-        _isQuickImportImeComposing = false;
+        _isManualImportImeComposing = false;
+    }
+
+    private void OnTrainerSidebarSearchPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.ImeProcessed)
+        {
+            _isTrainerSearchImeComposing = true;
+            return;
+        }
+
+        if (e.Key == Key.Enter)
+        {
+            if (_isTrainerSearchImeComposing)
+            {
+                return;
+            }
+
+            e.Handled = true;
+            if (_viewModel.TrainerSidebarGames.Count == 1)
+            {
+                _viewModel.SelectTrainerSidebarGameCommand.Execute(_viewModel.TrainerSidebarGames[0]);
+            }
+
+            return;
+        }
+
+        if (e.Key == Key.Escape && !_isTrainerSearchImeComposing && !string.IsNullOrEmpty(_viewModel.TrainerSidebarSearchText))
+        {
+            _viewModel.TrainerSidebarSearchText = string.Empty;
+            e.Handled = true;
+            return;
+        }
+
+        _isTrainerSearchImeComposing = false;
+    }
+
+    private void OnManagedPopupOpened(object? sender, EventArgs e)
+    {
+        if (sender is Popup popup)
+        {
+            _openPopups.Add(popup);
+        }
+    }
+
+    private void OnManagedPopupClosed(object? sender, EventArgs e)
+    {
+        if (sender is Popup popup)
+        {
+            _openPopups.Remove(popup);
+        }
     }
 
     private void OnWindowPreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Escape && GameHeaderMoreToggle.IsChecked == true)
+        if (e.Key == Key.Escape)
         {
-            GameHeaderMoreToggle.IsChecked = false;
-            e.Handled = true;
+            bool closedAny = false;
+            if (GameHeaderMoreToggle.IsChecked == true)
+            {
+                GameHeaderMoreToggle.IsChecked = false;
+                closedAny = true;
+            }
+
+            if (_openPopups.Count > 0)
+            {
+                foreach (Popup popup in _openPopups.ToArray())
+                {
+                    if (popup.IsOpen)
+                    {
+                        popup.IsOpen = false;
+                        closedAny = true;
+                    }
+                }
+            }
+
+            if (closedAny)
+            {
+                e.Handled = true;
+            }
         }
     }
 
@@ -233,7 +319,7 @@ public partial class MainWindow : Window
         }
 
         // WPF Button fires Click BEFORE executing ICommand. Defer closing the Popup until Background priority
-        // so the bound Command (e.g. TestInGameOverlayToastCommand) always executes completely first!
+        // so the bound Command always executes completely first!
         _ = Dispatcher.BeginInvoke(
             DispatcherPriority.Background,
             new Action(() =>

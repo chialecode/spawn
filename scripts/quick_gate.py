@@ -4,10 +4,11 @@ Requires Python 3.12+ standard library only.
 Executes in strict sequence with BELOW_NORMAL_PRIORITY_CLASS | CREATE_NO_WINDOW on Windows
 and isolated temporary data directories (SPAWN_DATA_DIR / SPAWN_VAULT_DIR):
 1. python -B scripts/check_docs.py
-2. dotnet build Spawn.sln -c Release -nologo -v quiet
-3. dotnet test Spawn.sln -c Release --no-build -nologo --verbosity minimal
+2. python -B scripts/test_release.py (offline release plan, manifest, signing & PDB tests)
+3. dotnet build Spawn.sln -c Release -nologo -v quiet
+4. dotnet test Spawn.sln -c Release --no-build -nologo --verbosity minimal
    (offline network tripwire: HTTP(S)_PROXY -> dead local port)
-4. git diff --check
+5. git diff --check
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ import time
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BUDGET_SECONDS = 60.0
+BUDGET_SECONDS = 300.0
 
 BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
 CREATE_NO_WINDOW = 0x08000000
@@ -120,12 +121,12 @@ def build_network_tripwire_env(base_env: dict[str, str]) -> dict[str, str]:
 
 
 def parse_dotnet_test_counts(output: str) -> dict[str, int]:
-    """Extract aggregated passed/failed/skipped/total counts from dotnet test output."""
+    """Extract aggregated passed/failed/skipped/total/suites counts from dotnet test output."""
     passed = 0
     failed = 0
     skipped = 0
     total = 0
-    matched_any = False
+    suites = 0
 
     # Matches English and Chinese vstest/dotnet test minimal summary lines.
     en_pattern = re.compile(
@@ -143,15 +144,16 @@ def parse_dotnet_test_counts(output: str) -> dict[str, int]:
     for line in output.splitlines():
         m = en_pattern.search(line) or en_fail_pattern.search(line) or zh_pattern.search(line)
         if m:
-            matched_any = True
+            suites += 1
             failed += int(m.group(1))
             passed += int(m.group(2))
             skipped += int(m.group(3))
             total += int(m.group(4))
 
-    if not matched_any:
+    if suites == 0:
         return {}
     return {
+        "suites": suites,
         "passed": passed,
         "failed": failed,
         "skipped": skipped,
@@ -183,6 +185,7 @@ def main() -> int:
 
     commands: tuple[tuple[str, list[str]], ...] = (
         ("check_docs", [sys.executable, "-B", "scripts/check_docs.py"]),
+        ("test_release", [sys.executable, "-B", "scripts/test_release.py"]),
         ("dotnet_build", ["dotnet", "build", "Spawn.sln", "-c", "Release", "-nologo", "-v", "quiet"]),
         (
             "dotnet_test",
@@ -209,7 +212,7 @@ def main() -> int:
             shown_cmd = " ".join(cmd if cmd[0] != sys.executable else ["python", *cmd[1:]])
             print(f"[quick-gate] -> {step_name}: {shown_cmd}", flush=True)
 
-            step_env = build_network_tripwire_env(env) if step_name == "dotnet_test" else env
+            step_env = build_network_tripwire_env(env) if step_name in {"dotnet_test", "test_release"} else env
             proc = subprocess.run(
                 cmd,
                 cwd=repo_root,

@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RootNamespace>Spawn.TrainerWorker.UnitTests</RootNamespace>
+    <AssemblyName>Spawn.TrainerWorker.UnitTests</AssemblyName>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Spawn.Contracts\Spawn.Contracts.csproj" />
+    <ProjectReference Include="..\..\src\Spawn.Core\Spawn.Core.csproj" />
+    <ProjectReference Include="..\..\src\Spawn.TrainerWorker\Spawn.TrainerWorker.csproj" />
+    <ProjectReference Include="..\Spawn.TrainerWorker.TestStub\Spawn.TrainerWorker.TestStub.csproj"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <Target Name="CopyTrainerWorkerTestStub" AfterTargets="Build">
+    <PropertyGroup>
+      <_TestStubOutDir>..\Spawn.TrainerWorker.TestStub\bin\$(Configuration)\$(TargetFramework)\</_TestStubOutDir>
+    </PropertyGroup>
+    <ItemGroup>
+      <_TestStubFiles Include="$(_TestStubOutDir)Spawn.TrainerWorker.TestStub.*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_TestStubFiles)"
+          DestinationFolder="$(OutDir)TestStub\"
+          SkipUnchangedFiles="true" />
+  </Target>
+</Project>

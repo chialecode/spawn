@@ -1,6 +1,6 @@
 # SPAWN 数据模型与存储格式正本（Data Model & Storage Specification）
 
-> **文档状态**：Active（M1 基线锁定）
+> **文档状态**：Active（M1 基线锁定；M3 同步 SQLite Schema `v4` 修改器四表、`games` 扩展列与沙箱/快照目录布局）
 > **适用范围**：`spawn.db` SQLite WAL 数据库契约、核心表结构 DDL、`SPAWN_Vault` 物理目录拓扑、`FastCDC` 分块算法与 `32MB SPPK` 云同步二进制协议
 > **关联文档**：[ADR-0004 存储与 Junction 拓扑](../decisions/0004-cas-fastcdc-storage-and-mod-junction-topology.md) · [系统顶层架构](system-architecture.md) · [存档与修改器规格](../modules/progress-saves-and-trainer.md) · [Mod 与极客工具规格](../modules/nexus-mods-and-utilities.md)
 
@@ -25,6 +25,9 @@ SPAWN 的全部状态由**关系型元数据索引库（`spawn.db`）**与**不�
 │   └── <credential-id>.sec                # 经 CurrentUser DPAPI 加密的 S3/WebDAV/Webhook 独立密文文件
 ├── logs\
 │   └── spawn-<yyyyMMdd>.jsonl             # 结构化滚动诊断日志（自动脱敏路径与令牌）
+├── cache\
+│   ├── gbe_fork\                          # 锁定的离线成就兼容层缓存池
+│   └── trainers\                          # M3 修改器发现索引缓存（fling-all-trainers.html / fling-archive-index.html）
 └── vault\                                 # 默认本地内容寻址库（跨盘游戏分卷库挂载为 <目标盘根>\SPAWN_Vault\ 以启用同卷硬链接）
     ├── Blobs\                             # Mod 原始不可变内容寻址池 (按 BLAKE3 前四位两级分片)
     │   └── 4a\f1\4af19c...e802.blob       # 只读属性 (ReadOnly)，供同卷 Profile 视图建立硬链接
@@ -37,12 +40,16 @@ SPAWN 的全部状态由**关系型元数据索引库（`spawn.db`）**与**不�
     ├── Saves\
     │   └── <GameId>\
     │       └── Slot_<ProfileId>\          # 当前 Profile 绑定的独立活跃存档槽位目录
+    ├── Snapshots\
+    │   └── PreTrainer\<GameId>\<SnapshotId>\ # M3 启动修改器前轻量存档快照（files\、registry_snapshot.json、原子 manifest.json）
     ├── Schemas\
     │   └── Icons\<Platform>_<AppId>\      # 缓存的解锁彩色图标与 SkiaSharp Rec.709 预合成灰阶图标
     ├── Reports\
     │   └── <yyyyMM>\                      # Workflow 生成的暗黑毛玻璃汇总战报长图与异常现场截图
     └── Sandbox\
-        └── Trainers\<GameId>\             # 隔离解压的外部修改器工作目录 (引导单次添加 Defender 目录排除)
+        └── Trainers\                      # M3 外部修改器沙箱根（唯一允许 Opt-in 添加 Defender 排除；支持纯 ASCII 自定义根）
+            ├── .staging\<guid>\           # 下载与本地导入暂存校验区，通过后原子移动
+            └── <GameId>\<TrainerId>\      # 成品修改器目录（钉扎本地 SHA-256，启动前 TOCTOU 复核）
 ```
 
 ---
@@ -80,6 +87,10 @@ erDiagram
     game_profiles ||--o{ save_snapshots : "关联Mod指纹"
     save_snapshots ||--o{ snapshot_files : "包含逻辑文件清单"
     games ||--o{ trainer_catalog : "绑定外部修改器"
+    games ||--o| trainer_title_map : "缓存英文标准名"
+    trainer_catalog ||--o{ trainer_hotkey_bindings : "定义热键映射"
+    games ||--o{ pre_trainer_snapshots : "启动前轻量存档快照"
+    trainer_catalog ||--o{ pre_trainer_snapshots : "触发关联修改器"
 
     games ||--o| achievement_game_schemas : "绑定成就元数据"
     achievement_game_schemas ||--o{ achievement_definitions : "定义单项成就"
@@ -118,6 +129,12 @@ CREATE TABLE IF NOT EXISTS games (
     MetadataJson            TEXT NOT NULL DEFAULT '{}',     -- 发行商、标签、Bangumi/VNDB/IGDB 评分与多源关联 ID
     CreatedAtUtc            TEXT NOT NULL
 );
+
+-- M3 Schema v4 实际在 `SpawnDatabase` 既有 snake_case `games` 主表上经 `PRAGMA table_info(games)` 幂等追加四列：
+--   steam_build_id                 TEXT                      -- Steam ACF buildid 版本指纹
+--   steam_last_updated             TEXT                      -- Steam ACF LastUpdated (ISO-8601 UTC)
+--   verified_offline_bypass        INTEGER NOT NULL DEFAULT 0 -- 混合单机受控离线放行确认位（绝不改写 anti_cheat_tier）
+--   verified_offline_bypass_at_utc TEXT                      -- 玩家显式确认离线放行时间戳 (ISO-8601 UTC)
 
 CREATE INDEX IF NOT EXISTS ix_games_platform_external_id ON games(PlatformSource, ExternalAppId);
 
@@ -195,7 +212,79 @@ CREATE TABLE IF NOT EXISTS profile_switch_journal (
 );
 ```
 
-### 4.3 `Ludusavi` 规则库、`FastCDC` 块引用与修改器目录表（Progress 域）
+### 4.3 修改器安全管家（`M3` Schema `v4` 实装）与存档时间机器（`M4` 轨道，Progress 域）
+
+`M3` Schema `v4` 幂等迁移实装于 `src/Spawn.Core/SpawnDatabase.Trainer.cs`（全 `snake_case`，严格对齐 [Progress 模块规格 §3.1](../modules/progress-saves-and-trainer.md)）：
+
+```sql
+CREATE TABLE IF NOT EXISTS trainer_catalog (
+    trainer_id                  TEXT PRIMARY KEY,
+    game_id                     TEXT NOT NULL REFERENCES games(game_id) ON DELETE CASCADE,
+    provider                    TEXT NOT NULL DEFAULT 'LocalImport', -- 'FlingMain' | 'FlingArchive' | 'LocalImport'
+    display_name                TEXT,
+    version_label               TEXT,
+    source_page_url             TEXT,
+    source_updated_at           TEXT,
+    sandbox_relative_path       TEXT NOT NULL,                       -- 相对沙箱根路径（<GameId>\<TrainerId>\<Exe>）
+    file_sha256                 TEXT NOT NULL,                       -- 本地钉扎 SHA-256（每次启动前 TOCTOU 复核）
+    file_size                   INTEGER,
+    pe_machine                  TEXT,
+    requires_admin              INTEGER NOT NULL DEFAULT 0,
+    authenticode_status         TEXT,                                -- 仅作信息标签，不作安全前提
+    parse_mode                  TEXT NOT NULL DEFAULT 'FreeHosted',  -- 'Structured' | 'FreeHosted'
+    bound_build_id              TEXT,
+    bound_exe_size              INTEGER,
+    bound_exe_last_write_utc    TEXT,
+    imported_at_utc             TEXT NOT NULL,
+    last_launched_at_utc        TEXT
+);
+
+CREATE INDEX IF NOT EXISTS ix_trainer_catalog_game_id ON trainer_catalog(game_id);
+
+CREATE TABLE IF NOT EXISTS trainer_title_map (
+    game_id                 TEXT PRIMARY KEY REFERENCES games(game_id) ON DELETE CASCADE,
+    english_title           TEXT NOT NULL,                           -- 英文标准名缓存（废除 Slug 硬拼）
+    title_source            TEXT NOT NULL DEFAULT 'Cleaner',         -- 'AcfName' | 'SteamAppDetails' | 'GogInfo' | 'Cleaner' | 'User'
+    user_search_override    TEXT,
+    fling_page_url          TEXT,
+    updated_at_utc          TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS trainer_hotkey_bindings (
+    trainer_id      TEXT NOT NULL REFERENCES trainer_catalog(trainer_id) ON DELETE CASCADE,
+    entry_id        TEXT NOT NULL,
+    label           TEXT NOT NULL,
+    tooltip         TEXT,
+    original_chord  TEXT NOT NULL,
+    mapped_chord    TEXT,
+    entry_kind      TEXT NOT NULL DEFAULT 'Toggle',                  -- 'Toggle' | 'Trigger'
+    proxy_state     INTEGER NOT NULL DEFAULT 0,                      -- 代理显示状态（可一键重置）
+    sort_order      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (trainer_id, entry_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_trainer_hotkey_bindings_sort
+    ON trainer_hotkey_bindings(trainer_id, sort_order ASC);
+
+CREATE TABLE IF NOT EXISTS pre_trainer_snapshots (
+    snapshot_id             TEXT PRIMARY KEY,
+    game_id                 TEXT NOT NULL REFERENCES games(game_id) ON DELETE CASCADE,
+    trainer_id              TEXT REFERENCES trainer_catalog(trainer_id) ON DELETE SET NULL,
+    trigger_kind            TEXT NOT NULL DEFAULT 'PreTrainer',      -- 'PreTrainer' | 'PreRestoreSafety'
+    status                  TEXT NOT NULL DEFAULT 'Completed',       -- 'Completed' | 'Skipped' | 'Failed'
+    skip_reason             TEXT,
+    file_count              INTEGER NOT NULL DEFAULT 0,
+    total_bytes             INTEGER NOT NULL DEFAULT 0,
+    manifest_relative_path  TEXT,
+    created_at_utc          TEXT NOT NULL,
+    restored_at_utc         TEXT
+);
+
+CREATE INDEX IF NOT EXISTS ix_pre_trainer_snapshots_game_created
+    ON pre_trainer_snapshots(game_id, created_at_utc DESC);
+```
+
+以下四表归属 `M4` 存档时间机器轨道（按 `D-25` 顺延保留，`M3` 不建表）：
 
 ```sql
 CREATE TABLE IF NOT EXISTS ludusavi_rules (
@@ -245,19 +334,6 @@ CREATE TABLE IF NOT EXISTS snapshot_files (
     FileBlake3              TEXT NOT NULL,
     ChunkSequenceJson       TEXT NOT NULL,                  -- 有序 [ChunkBlake3, ...] 重组清单
     PRIMARY KEY (SnapshotId, LogicalPath)
-);
-
-CREATE TABLE IF NOT EXISTS trainer_catalog (
-    TrainerId               TEXT PRIMARY KEY,
-    GameId                  TEXT NOT NULL REFERENCES games(GameId) ON DELETE CASCADE,
-    Provider                TEXT NOT NULL,                  -- 'FLiNG_Official' | 'FLiNG_Archive' | 'LocalCustom' | 'NativeCT_V2'
-    TargetGameBuild         TEXT,
-    ExecutableSandboxPath   TEXT NOT NULL,
-    FileSha256              TEXT NOT NULL,
-    HotkeysSchemaJson       TEXT NOT NULL DEFAULT '[]',     -- 解析出的 [{SlotId, KeyGesture, LabelZh, LabelEn}]
-    MuteStartMusic          INTEGER NOT NULL DEFAULT 1,
-    EffectVolumeScalar      REAL NOT NULL DEFAULT 0.35,
-    ImportedAtUtc           TEXT NOT NULL
 );
 ```
 

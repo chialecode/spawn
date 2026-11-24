@@ -22,5 +22,5 @@ SPAWN 是面向硬核极客玩家的纯本地全能游戏中枢，同时纳管�
 ## 4. 凭据、存档隐私与跨权限 IPC 边界
 
 - **本地凭据加密**：对象存储（Cloudflare R2 / S3）、WebDAV 云盘（坚果云 / NAS）、元数据刮削 API 及战报推送 Token 统一以当前登录用户范围的 Windows DPAPI 密文存储于 `%LOCALAPPDATA%\spawn\secrets\<credential-id>.sec`（开发版为 `spawn-dev`），绑定通道身份附加熵，绝不明文落盘、绝不写入日志或命令行参数。
-- **命名管道最小权限 ACL**：跨完整性级别 `gRPC over Named Pipes` 统一通过 `NamedPipeServerStreamAcl` 显式配置 SDDL，仅授权当前登录用户 SID 读写并显式拒绝 `NETWORK` SID，防止局域网访问或低权限旁路劫持。
+- **命名管道最小权限 ACL 与分级按需提权**：跨完整性级别 `NamedPipeJsonRpc` 统一通过 `NamedPipeServerStreamAcl` 显式配置 SDDL，仅授权当前登录用户 SID 读写并显式拒绝 `NETWORK` SID，对跨 IL 修改器会话采用倒置角色（Medium IL `Spawn.Host` 作单实例服务端、Worker 作客户端反向连入）与双向 PID/`0x1000` 路径/256-bit `LaunchNonce` 互验，防止局域网访问或低权限旁路劫持；高权限 Worker 一律按 `D-11` 分级按需提权（免 UAC 仅限未来 `%ProgramFiles%` 受管理员 ACL 保护的自包含提权包 `LOOP-07`，严禁为 `%LOCALAPPDATA%` 下任何文件注册高权限计划任务）。
 - **零遥测与本地数据主权**：SPAWN 不收集、不上传任何玩家游戏库清单、游玩时长、存档内容或硬件指纹；所有外部网络请求均仅在用户显式启用刮削、云同步、修改器检索或战报推送时按配置发往目标端点。

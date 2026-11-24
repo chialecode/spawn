@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Spawn.Contracts;
+using Spawn.Core.AntiCheat;
 
 namespace Spawn.Core;
 
@@ -16,58 +17,19 @@ public sealed class AntiCheatLockdownException(
 }
 
 /// <summary>
-/// Implements four-tier anti-cheat directory signature inspection, protected game lockdown,
-/// residual kernel daemon exit monitoring (<c>SGuard64.exe</c>, <c>EasyAntiCheat_EOS.exe</c>, <c>BEService.exe</c>),
+/// Implements depth-6 four-tier anti-cheat directory signature inspection, protected game lockdown,
+/// residual companion daemon &amp; session kernel anti-cheat driver exit monitoring (<c>REQ-SEC-05</c>),
 /// and the mandatory 15-second post-exit cooldown window.
 /// </summary>
 public sealed class AntiCheatGuardService : IAntiCheatGuardService, IDisposable
 {
     public static readonly TimeSpan DefaultMandatoryCooldown = TimeSpan.FromSeconds(15);
 
-    private static readonly HashSet<string> ResidualGuardProcessNames = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "SGuard64.exe",
-        "SGuardSvc64.exe",
-        "EasyAntiCheat.exe",
-        "EasyAntiCheat_EOS.exe",
-        "BEService.exe",
-        "BEService_x64.exe",
-    };
-
-    private static readonly (string Name, AntiCheatTier Tier, string Signature, bool MatchDirectory)[] SignatureRules =
-    [
-        // Tier 3 — Ring-0 kernel anti-cheat
-        ("SGuard64.exe", AntiCheatTier.Tier3, "ACE:SGuard64", false),
-        ("SGuardSvc64.exe", AntiCheatTier.Tier3, "ACE:SGuardSvc64", false),
-        ("ACE-BASE.sys", AntiCheatTier.Tier3, "ACE:ACE-BASE.sys", false),
-        ("ACE-GAME.sys", AntiCheatTier.Tier3, "ACE:ACE-GAME.sys", false),
-        ("AntiCheatExpert", AntiCheatTier.Tier3, "ACE:AntiCheatExpert", true),
-        ("vgk.sys", AntiCheatTier.Tier3, "Vanguard:vgk.sys", false),
-        ("randgrid.sys", AntiCheatTier.Tier3, "Ricochet:randgrid.sys", false),
-
-        // Tier 2 — User/light-kernel multiplayer anti-cheat
-        ("EasyAntiCheat", AntiCheatTier.Tier2, "EasyAntiCheat", true),
-        ("EasyAntiCheat.exe", AntiCheatTier.Tier2, "EasyAntiCheat", false),
-        ("EasyAntiCheat_EOS.exe", AntiCheatTier.Tier2, "EasyAntiCheat:EOS", false),
-        ("EasyAntiCheat_x64.dll", AntiCheatTier.Tier2, "EasyAntiCheat:x64", false),
-        ("EasyAntiCheat_x86.dll", AntiCheatTier.Tier2, "EasyAntiCheat:x86", false),
-        ("BattlEye", AntiCheatTier.Tier2, "BattlEye", true),
-        ("BEService.exe", AntiCheatTier.Tier2, "BattlEye:BEService", false),
-        ("BEService_x64.exe", AntiCheatTier.Tier2, "BattlEye:BEService_x64", false),
-        ("BEClient_x64.dll", AntiCheatTier.Tier2, "BattlEye:BEClient_x64", false),
-        ("GameGuard.des", AntiCheatTier.Tier2, "nProtect:GameGuard", false),
-
-        // Tier 1 — Online single-player / gacha kernel protection
-        ("HoYoKProtect.sys", AntiCheatTier.Tier1, "HoYoKProtect", false),
-        ("mhyprot2.sys", AntiCheatTier.Tier1, "HoYoProtect:mhyprot2", false),
-        ("mhyprot3.sys", AntiCheatTier.Tier1, "HoYoProtect:mhyprot3", false),
-        ("KRSDKExternal.exe", AntiCheatTier.Tier1, "KuroSDK", false),
-    ];
-
     private readonly TimeProvider _timeProvider;
     private readonly TimeSpan _cooldownDuration;
     private readonly TimeSpan _pollInterval;
     private readonly Func<IReadOnlyList<string>> _residualProcessProbe;
+    private readonly Func<IReadOnlyList<string>> _sessionDriverProbe;
     private readonly Func<HighRiskEnvironmentReport> _highRiskEnvironmentProbe;
     private readonly string? _persistedStateFilePath;
     private readonly Lock _stateLock = new();
@@ -88,10 +50,17 @@ public sealed class AntiCheatGuardService : IAntiCheatGuardService, IDisposable
     /// <param name="timeProvider">Clock used for cooldown accounting (virtual clock in tests).</param>
     /// <param name="cooldownDuration">Mandatory post-exit cooldown (defaults to 15s).</param>
     /// <param name="residualProcessProbe">Residual anti-cheat daemon detector (defaults to a Toolhelp name scan).</param>
-    /// <param name="pollInterval">Residual daemon polling interval.</param>
+    /// <param name="pollInterval">Residual daemon &amp; session kernel driver polling interval.</param>
     /// <param name="highRiskEnvironmentProbe">Pre-launch CE / <c>dbk64</c> / sensitive Worker detector.</param>
     /// <param name="persistedStateFilePath">
     /// Optional JSON file that keeps the lock across SPAWN restarts (protected session or unexpired cooldown).
+    /// </param>
+    /// <param name="sessionDriverProbe">
+    /// Optional session kernel anti-cheat driver detector (defaults to read-only <c>K32EnumDeviceDrivers</c> + SCM
+    /// when <paramref name="residualProcessProbe"/> is not mocked).
+    /// </param>
+    /// <param name="trainerSandboxRootsProvider">
+    /// Optional provider returning trainer sandbox roots checked for orphan processes during high-risk sweeps.
     /// </param>
     public AntiCheatGuardService(
         TimeProvider? timeProvider = null,
@@ -99,16 +68,25 @@ public sealed class AntiCheatGuardService : IAntiCheatGuardService, IDisposable
         Func<IReadOnlyList<string>>? residualProcessProbe = null,
         TimeSpan? pollInterval = null,
         Func<HighRiskEnvironmentReport>? highRiskEnvironmentProbe = null,
-        string? persistedStateFilePath = null)
+        string? persistedStateFilePath = null,
+        Func<IReadOnlyList<string>>? sessionDriverProbe = null,
+        Func<IEnumerable<string>>? trainerSandboxRootsProvider = null)
     {
         _timeProvider = timeProvider ?? TimeProvider.System;
         _cooldownDuration = cooldownDuration ?? DefaultMandatoryCooldown;
         _pollInterval = pollInterval ?? TimeSpan.FromMilliseconds(250);
         _residualProcessProbe = residualProcessProbe ?? DefaultDetectResidualGuardProcesses;
-        _highRiskEnvironmentProbe = highRiskEnvironmentProbe ?? DefaultInspectHighRiskEnvironment;
+        _sessionDriverProbe = sessionDriverProbe
+            ?? (residualProcessProbe is null ? DefaultDetectSessionAntiCheatDrivers : static () => []);
+        _highRiskEnvironmentProbe = highRiskEnvironmentProbe
+            ?? (trainerSandboxRootsProvider is not null
+                ? () => new HighRiskEnvironmentReport(
+                    HighRiskEnvironmentProbe.DetectHighRiskProcesses(trainerSandboxRootsProvider()),
+                    HighRiskEnvironmentProbe.DetectHighRiskDrivers())
+                : DefaultInspectHighRiskEnvironment);
         _persistedStateFilePath = string.IsNullOrWhiteSpace(persistedStateFilePath) ? null : persistedStateFilePath;
 
-        // Guard start-up: (1) resume a lock persisted by a previous SPAWN instance, (2) probe live residual daemons.
+        // Guard start-up: (1) resume a lock persisted by a previous SPAWN instance, (2) probe live residual daemons/drivers.
         RestorePersistedLockOnStartup();
         ProbeResidualGuardsAndLockIfNeeded();
     }
@@ -139,7 +117,7 @@ public sealed class AntiCheatGuardService : IAntiCheatGuardService, IDisposable
         ScanDirectoryDepthBounded(
             new DirectoryInfo(installDir),
             currentDepth: 0,
-            maxDepth: 4,
+            maxDepth: AntiCheatFeatureCatalog.DefaultScanMaxDepth,
             ref highestTier,
             ref primarySignature,
             matchedIndicators);
@@ -170,7 +148,7 @@ public sealed class AntiCheatGuardService : IAntiCheatGuardService, IDisposable
                 CurrentSnapshot.RemainingCooldownSeconds);
         }
 
-        // Live re-check on every request: a residual daemon (e.g. SGuard64.exe left by a game started outside SPAWN)
+        // Live re-check on every request: a residual daemon or session kernel driver left by a game started outside SPAWN
         // immediately (re-)enters the residual-watch + full 15s cooldown flow.
         ProbeResidualGuardsAndLockIfNeeded();
 
@@ -240,6 +218,39 @@ public sealed class AntiCheatGuardService : IAntiCheatGuardService, IDisposable
         }
     }
 
+    /// <summary>
+    /// Immediately places the guard into <see cref="AntiCheatGuardPhase.ResidualGuardWatch"/> (followed by the full
+    /// 15-second cooldown once residual processes and session kernel drivers clear) when the 2-second watchdog detects
+    /// an external anti-cheat process/driver or protected game launch.
+    /// </summary>
+    public void NotifyExternalAntiCheatDetected(IReadOnlyList<string> detectedIndicators, string? triggeringGameId = null)
+    {
+        var indicators = detectedIndicators is { Count: > 0 }
+            ? detectedIndicators.Distinct(StringComparer.OrdinalIgnoreCase).ToArray()
+            : ["ExternalAntiCheatDetected"];
+
+        CancellationToken token;
+        lock (_stateLock)
+        {
+            if (_phase == AntiCheatGuardPhase.ProtectedRunning)
+            {
+                return;
+            }
+
+            CancelCooldownCtsNoLock();
+            _cooldownCts = new CancellationTokenSource();
+            token = _cooldownCts.Token;
+            _phase = AntiCheatGuardPhase.ResidualGuardWatch;
+            _activeProtectedGameId = triggeringGameId ?? _activeProtectedGameId;
+            _cooldownEndsAtUtc = null;
+            _detectedResidualProcesses = indicators;
+            PersistStateNoLock();
+        }
+
+        PublishCurrentSnapshot();
+        StartBackgroundWatch(resumeCooldownEndUtc: null, token);
+    }
+
     public static IReadOnlyList<string> DefaultDetectResidualGuardProcesses()
     {
         var entries = SafeProcessInspector.EnumerateProcesses(resolveFullPaths: false);
@@ -247,10 +258,42 @@ public sealed class AntiCheatGuardService : IAntiCheatGuardService, IDisposable
 
         foreach (var entry in entries)
         {
-            if (ResidualGuardProcessNames.Contains(entry.ExeFileName)
+            if (AntiCheatFeatureCatalog.IsResidualGuardProcessName(entry.ExeFileName)
                 && SafeProcessInspector.IsProcessAlive(entry.ProcessId))
             {
                 found.Add(entry.ExeFileName);
+            }
+        }
+
+        return [.. found];
+    }
+
+    /// <summary>
+    /// Read-only detection of active session kernel anti-cheat drivers (e.g., <c>EasyAntiCheat_EOS.sys</c>,
+    /// <c>BEDaisy.sys</c>, <c>ACE-BASE.sys</c>, <c>NeacSafe64.sys</c>) via <c>K32EnumDeviceDrivers</c> and SCM.
+    /// Excludes boot-time persistent <c>vgk.sys</c> so post-exit cooldown can complete on Vanguard-installed systems.
+    /// </summary>
+    public static IReadOnlyList<string> DefaultDetectSessionAntiCheatDrivers()
+    {
+        var found = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (string driverBaseName in HighRiskEnvironmentProbe.EnumerateLoadedDriverBaseNames())
+        {
+            if (AntiCheatFeatureCatalog.TryMatchSessionAntiCheatDriver(driverBaseName, out string canonical))
+            {
+                found.Add(canonical);
+            }
+        }
+
+        foreach (var svc in HighRiskEnvironmentProbe.EnumerateActiveDriverServices())
+        {
+            if (AntiCheatFeatureCatalog.TryMatchSessionAntiCheatDriver(svc.DriverFileName, out string canonicalByFile))
+            {
+                found.Add(canonicalByFile);
+            }
+            else if (AntiCheatFeatureCatalog.TryMatchSessionAntiCheatDriver(svc.ServiceName, out string canonicalByService))
+            {
+                found.Add(canonicalByService);
             }
         }
 
@@ -261,9 +304,9 @@ public sealed class AntiCheatGuardService : IAntiCheatGuardService, IDisposable
         new(HighRiskEnvironmentProbe.DetectHighRiskProcesses(), HighRiskEnvironmentProbe.DetectHighRiskDrivers());
 
     /// <summary>
-    /// Shared residual-watch + cooldown state machine: wait until every residual daemon is gone, then enforce the full
-    /// cooldown; any resurgence during cooldown restarts the whole flow. <paramref name="resumeCooldownEndUtc"/> resumes an
-    /// unexpired cooldown restored after a SPAWN restart.
+    /// Shared residual-watch + cooldown state machine: wait until every residual daemon AND session kernel AC driver
+    /// is gone, then enforce the full cooldown; any resurgence during cooldown restarts the whole flow.
+    /// <paramref name="resumeCooldownEndUtc"/> resumes an unexpired cooldown restored after a SPAWN restart.
     /// </summary>
     private async Task RunResidualWatchAndCooldownAsync(DateTimeOffset? resumeCooldownEndUtc, CancellationToken token)
     {
@@ -275,7 +318,7 @@ public sealed class AntiCheatGuardService : IAntiCheatGuardService, IDisposable
 
             if (pendingCooldownEnd is null)
             {
-                // Step 1: Wait until all residual anti-cheat guard daemons (e.g., SGuard64.exe) have exited.
+                // Step 1: Wait until all residual anti-cheat guard daemons AND session kernel AC drivers have unloaded.
                 while (true)
                 {
                     token.ThrowIfCancellationRequested();
@@ -347,7 +390,7 @@ public sealed class AntiCheatGuardService : IAntiCheatGuardService, IDisposable
                 continue;
             }
 
-            // Step 3: Cooldown elapsed cleanly with zero residual daemon activity.
+            // Step 3: Cooldown elapsed cleanly with zero residual daemon or session kernel driver activity.
             lock (_stateLock)
             {
                 token.ThrowIfCancellationRequested();
@@ -367,8 +410,8 @@ public sealed class AntiCheatGuardService : IAntiCheatGuardService, IDisposable
     }
 
     /// <summary>
-    /// Live residual daemon probe used at guard start-up and before every high-risk operation. Any detection outside a
-    /// protected session (re-)starts the residual-watch + full cooldown flow.
+    /// Live residual daemon &amp; session kernel driver probe used at guard start-up and before every high-risk operation.
+    /// Any detection outside a protected session (re-)starts the residual-watch + full cooldown flow.
     /// </summary>
     private void ProbeResidualGuardsAndLockIfNeeded()
     {
@@ -388,12 +431,12 @@ public sealed class AntiCheatGuardService : IAntiCheatGuardService, IDisposable
 
             if (_phase == AntiCheatGuardPhase.ResidualGuardWatch && _cooldownCts is not null)
             {
-                // A watch loop is already waiting for these daemons to exit.
+                // A watch loop is already waiting for these daemons/drivers to exit.
                 _detectedResidualProcesses = residuals;
                 return;
             }
 
-            // IdleSafe or CooldownLocked: (re-)enter residual watch so the full cooldown restarts after the daemon exits.
+            // IdleSafe or CooldownLocked: (re-)enter residual watch so the full cooldown restarts after unload.
             CancelCooldownCtsNoLock();
             _cooldownCts = new CancellationTokenSource();
             token = _cooldownCts.Token;
@@ -474,14 +517,39 @@ public sealed class AntiCheatGuardService : IAntiCheatGuardService, IDisposable
 
     private IReadOnlyList<string> SafeProbeResiduals()
     {
+        var combined = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         try
         {
-            return _residualProcessProbe();
+            foreach (string proc in _residualProcessProbe())
+            {
+                if (!string.IsNullOrWhiteSpace(proc))
+                {
+                    combined.Add(proc);
+                }
+            }
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            return [];
+            // Ignore transient process probe error.
         }
+
+        try
+        {
+            foreach (string drv in _sessionDriverProbe())
+            {
+                if (!string.IsNullOrWhiteSpace(drv))
+                {
+                    combined.Add(drv);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            // Ignore transient driver probe error.
+        }
+
+        return combined.Count == 0 ? [] : [.. combined];
     }
 
     private async Task DelayWithTimeProviderAsync(TimeSpan delay, CancellationToken cancellationToken)
@@ -676,14 +744,9 @@ public sealed class AntiCheatGuardService : IAntiCheatGuardService, IDisposable
         ref string? primarySignature,
         List<string> matchedIndicators)
     {
-        foreach (var rule in SignatureRules)
+        foreach (var rule in AntiCheatFeatureCatalog.DirectorySignatureRules)
         {
-            if (rule.MatchDirectory != isDirectory)
-            {
-                continue;
-            }
-
-            if (!string.Equals(entryName, rule.Name, StringComparison.OrdinalIgnoreCase))
+            if (!rule.Matches(entryName, isDirectory))
             {
                 continue;
             }

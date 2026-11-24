@@ -76,6 +76,69 @@ public static class UiFormatters
         _ => "Tier 0 纯净单机",
     };
 
+    public static string FormatAntiCheatTierHexColor(AntiCheatTier tier) => tier switch
+    {
+        AntiCheatTier.Tier0 => "#10B981",
+        AntiCheatTier.Tier1 => "#F59E0B",
+        AntiCheatTier.Tier2 => "#DC2626",
+        AntiCheatTier.Tier3 => "#DC2626",
+        _ => "#10B981",
+    };
+
+    public static string BuildVirusTotalFileUrl(string sha256)
+    {
+        if (string.IsNullOrWhiteSpace(sha256))
+        {
+            return string.Empty;
+        }
+
+        string clean = sha256.Trim().ToLowerInvariant();
+        return $"https://www.virustotal.com/gui/file/{Uri.EscapeDataString(clean)}";
+    }
+
+    public static string FormatTrainerProviderLabel(TrainerProviderKind provider) => provider switch
+    {
+        TrainerProviderKind.FlingMain => "flingtrainer.com",
+        TrainerProviderKind.FlingArchive => "archive.flingtrainer.com",
+        _ => "本地导入",
+    };
+
+    public static string FormatTrainerVersionConfidenceLabel(TrainerVersionConfidence confidence) => confidence switch
+    {
+        TrainerVersionConfidence.RangeMatched => "版本范围匹配",
+        TrainerVersionConfidence.PossiblyOutdated => "可能已过期",
+        _ => "建议按更新日期核对",
+    };
+
+    public static string FormatTrainerAuthenticodeLabel(TrainerAuthenticodeStatus status) => status switch
+    {
+        TrainerAuthenticodeStatus.ValidSigned => "已数字签名",
+        TrainerAuthenticodeStatus.InvalidOrUntrustedSignature => "签名无效/不受信任",
+        TrainerAuthenticodeStatus.Unsigned => "无数字签名（外部修改器常态）",
+        _ => "未检测",
+    };
+
+    public static string FormatPreTrainerSnapshotStatus(PreTrainerSnapshotStatus status, string? skipReason) => status switch
+    {
+        PreTrainerSnapshotStatus.Completed => "已备份",
+        PreTrainerSnapshotStatus.Skipped => string.IsNullOrWhiteSpace(skipReason) ? "已跳过" : $"已跳过（{skipReason}）",
+        PreTrainerSnapshotStatus.Failed => string.IsNullOrWhiteSpace(skipReason) ? "备份失败" : $"备份失败（{skipReason}）",
+        _ => "未知",
+    };
+
+    public static string FormatDefenderStatusBadge(DefenderExclusionStatus status) => status switch
+    {
+        DefenderExclusionStatus.AlreadyExcluded => "已排除 · 就绪",
+        DefenderExclusionStatus.AddedAndVerified => "已添加并回读验证",
+        DefenderExclusionStatus.TamperProtectionBlocked => "篡改保护拦截（需手动添加）",
+        DefenderExclusionStatus.ThirdPartyAntivirusPassiveMode => "第三方杀软接管（被动模式）",
+        DefenderExclusionStatus.SmartAppControlNotice => "Smart App Control 强制模式",
+        DefenderExclusionStatus.UacCancelledByUser => "已取消 UAC",
+        DefenderExclusionStatus.VerificationReadbackFailed => "回读核验未通过",
+        DefenderExclusionStatus.Failed => "校验未通过",
+        _ => "未配置或待检测",
+    };
+
     public static string FormatOverlayThemeLabel(OverlayThemeKind theme) => theme switch
     {
         OverlayThemeKind.Ps5Trophy => "PS5 奖杯（100% 自动白金连发）",

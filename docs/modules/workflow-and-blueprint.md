@@ -4,7 +4,7 @@
 | :--- | :--- |
 | **模块代号** | `spawn.workflow` |
 | **承载子工程** | `Spawn.Modules.Workflow`（DAG 图拓扑模型、蓝图节点校验与配置管理）、`Spawn.Host`（`Nodify` 蓝图画布与 DAG 编排面板）、`Spawn.WorkflowWorker`（二次元外部生态调度、`MaaFramework` 宿主、`BBChannel` 桥接与电源/幕布管理）、`Spawn.BlueprintWorker`（Kismet 虚拟机、`WGC`+`OpenCV`+`PaddleOCR` 感知与 L1~L4 输入驱动），统一基于 `.NET 10 LTS`（`net10.0-windows`） |
-| **所属进程域与权限** | 编辑器 UI 与模型校验驻留于 `Spawn.Host.exe`（`Medium IL 0x2000`，零敏感导入表）；外部编排运行于 `Spawn.WorkflowWorker.exe`；蓝图执行与输入模拟物理隔离于 `Spawn.BlueprintWorker.exe`（默认 `Medium IL`，遇管理员游戏经计划任务静默拉起 `High IL 0x3000`） |
+| **所属进程域与权限** | 编辑器 UI 与模型校验驻留于 `Spawn.Host.exe`（`Medium IL 0x2000`，零敏感导入表）；外部编排运行于 `Spawn.WorkflowWorker.exe`（按 `D-11` 分级按需提权，免 UAC 仅限 `LOOP-07`）；蓝图执行与输入模拟物理隔离于 `Spawn.BlueprintWorker.exe`（按 `D-11` 分级按需提权，默认 `Medium IL`，遇管理员游戏按需拉起 `High IL 0x3000`，免 UAC 仅限 `LOOP-07`） |
 | **覆盖需求与决策** | `REQ-WFL-01` ~ `REQ-WFL-07`、`REQ-SEC-01` ~ `REQ-SEC-06`、`D-01`、`D-05`、`D-06`、`D-11`、`NFR-01` |
 | **目标交付里程碑** | `M5`（二次元外部代肝生态并发 DAG 顶层编排器：`REQ-WFL-01` ~ `06`） / `M6`（`Nodify` 类 UE 蓝图可视化按键/识图脚本虚拟机与发光单步调试：`REQ-WFL-07`） |
 | **关联设计正本** | [ADR-0002：原生 WPF 与 Nodify 技术栈](../decisions/0002-pure-native-wpf-and-nodify-ui-stack.md) · [ADR-0003：反作弊进程隔离](../decisions/0003-anti-cheat-guard-and-process-isolation.md) · [ADR-0005：外部生态元编排](../decisions/0005-external-ecosystem-orchestration-and-uiaccess-overlay.md) · [交互与核心工作流](../design/interaction-and-workflows.md) · [IPC 与安全契约](../design/ipc-and-security-contracts.md) |
@@ -23,7 +23,7 @@
    - **四维资源锁并发 DAG 与无人值守闭环**：提供“1 个前台 PC 原生客户端 + N 个后台模拟器实例”无冲突并行调度、双视界防卡死看门狗、S3 硬件定时唤醒、临时关闭 HDR 防过曝、OLED 全黑防烧屏幕布 / `IddCx` 虚拟屏、`SkiaSharp` 汇总战报长图多渠道推送及 60 秒可取消安全睡眠。
 2. **子系统二：类 UE 可视化蓝图脚本引擎（`Spawn.Host` 画布 + `Spawn.BlueprintWorker.exe` 运行时）**
    - **100% 纯可视化无代码体验**：基于 `miroiu/nodify` 实现白线执行流（`ExecPin`）与多色强类型数据流（`DataPin<T>`）、悬空连线搜索菜单、内联屏幕 ROI 框选器、红点断点挂起、`Step Over` 单步推进与引脚实时值气泡监视（`Pin Watch`）。
-   - **高性能感知与四级可插拔驱动**：在 `BlueprintWorker` 内集成 `Windows.Graphics.Capture`、带 Alpha 掩码与多尺度归一化的 `OpenCvSharp4`、离线 `Sdcb.PaddleOCR` 以及 L1~L4 四级输入执行器，并通过计划任务免 UAC 静默提权解决管理员游戏 UIPI 输入拦截。
+   - **高性能感知与四级可插拔驱动**：在 `BlueprintWorker` 内集成 `Windows.Graphics.Capture`、带 Alpha 掩码与多尺度归一化的 `OpenCvSharp4`、离线 `Sdcb.PaddleOCR` 以及 L1~L4 四级输入执行器，并按 `D-11` 分级按需提权（免 UAC 仅限 `LOOP-07`）解决管理员游戏 UIPI 输入拦截。
 
 ### 1.2 明确排除边界（Out-of-Scope）
 
@@ -60,7 +60,7 @@ public interface IInputActuator : IDisposable
     ValueTask MoveAndClickAsync(NormalizedScreenPoint point, MouseButtonKind button, CancellationToken ct = default);
 }
 
-// Spawn.BlueprintWorker <-> Spawn.Host (gRPC Duplex Stream over Named Pipes + MMF 帧预览)
+// Spawn.BlueprintWorker <-> Spawn.Host (NamedPipeJsonRpc 双向通道 + MMF 帧预览)
 public interface IBlueprintDebugStreamContract
 {
     IAsyncEnumerable<BlueprintDebugFrame> SubscribeExecutionPulseAsync(Guid sessionId, CancellationToken ct = default);
@@ -231,9 +231,9 @@ flowchart LR
    - **L2（标准前台系统输入）**：调用 `SendInput` 注入 `KEYEVENTF_SCANCODE` 硬件扫描码及带三次贝塞尔微弧度曲线的平滑鼠标移动。
    - **L3（WHQL 签名虚拟手柄总线）**：对接开源 `ViGEmBus v1.22.0` + `Nefarius.ViGEm.Client` 创建虚拟 `Xbox 360` / `DualShock 4` 控制器——即使游戏不接收后台键鼠消息，只要开启游戏内“后台保持手柄输入”，即可在不抢占玩家物理鼠标的情况下后台自动推摇杆按键！
    - **L4（可选外部硬件 HID 桥接）**：面向拥有 `KMBox Net`（本地 UDP 报文）或 `KMBox B+`（CH340 `115200` 波特率串口指令）的极客玩家提供标准实现槽，严格受同一套 `AntiCheatGuard` 门禁约束（仅限 `Tier 0/1` 安全范围）。
-3. **管理员权限游戏 UIPI 拦截三级无感破局（`REQ-WFL-07`, `D-11`）**：
+3. **管理员权限游戏 UIPI 拦截分级按需提权破局（`REQ-WFL-07`, `D-11`）**：
    - 问题根因：诸多单机与二次元客户端（如原神/星铁启动游戏本体）以管理员权限（`High IL 0x3000`）运行；根据 Windows 内核 UIPI 规则，`Medium IL (0x2000)` 进程发出的 `SendInput` 与 `PostMessageW` 会被内核静默丢弃！
-   - 破局链路：激活蓝图前，`Spawn.Host` 以 `OpenProcess(0x1000)` + `OpenProcessToken` 读取目标游戏 `TokenIntegrityLevel`；若检测到 `RID >= 0x3000`，宿主不弹烦人的 UAC 框，而是调用首次引导单次创建的当前用户限定计划任务 `schtasks /Run /TN "\SPAWN\SpawnBlueprintElevatedWorker"` **静默拉起 `High IL` 的 `Spawn.BlueprintWorker.exe`**，通过显式授予当前用户 SID 的 SDDL 命名管道回连 `Spawn.Host` 完成同权输入（或直接选用不受 UIPI 窗口树限制的 L3 `ViGEmBus` 虚拟手柄）。
+   - 破局链路：激活蓝图前，`Spawn.Host` 以 `OpenProcess(0x1000)` + `OpenProcessToken` 读取目标游戏 `TokenIntegrityLevel`；若检测到 `RID >= 0x3000`，宿主按 `D-11` 分级按需提权策略（[ADR-0006](../decisions/0006-m3-external-trainer-manager-elevation-and-ipc.md)）通过 `ShellExecuteExW(runas)` 经单次 UAC 按需拉起 `High IL` 的 `Spawn.BlueprintWorker.exe`，通过显式授予当前用户 SID 的倒置 SDDL `NamedPipeJsonRpc` 管道回连 `Spawn.Host` 完成同权输入（免 UAC 仅限未来 `%ProgramFiles%` 受管理员 ACL 保护的自包含提权包 `LOOP-07`，严禁为 `%LOCALAPPDATA%` 用户可写目录注册高权限计划任务）；或直接选用不受 UIPI 窗口树限制的 L3 `ViGEmBus` 虚拟手柄。
 
 ---
 

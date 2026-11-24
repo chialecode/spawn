@@ -33,7 +33,7 @@ Spawn.sln
 │   ├── Spawn.Core/                      # 纯净共享底座：SQLite WAL 仓储、AntiCheatGuard 预检与 15s 冷却状态机、0x1000 安全进程查询、DPAPI 凭据、NamedPipe SDDL ACL 封装
 │   ├── Spawn.Modules.Launcher/          # [Spawn] JobObject IOCP + 0x1000 破壳追踪、三态精准时长、CCD HDR/转区/CPU Sets 自愈管线、三级漏斗离线刮削
 │   ├── Spawn.Modules.Nexus/             # [Nexus] CAS 硬链接部署 + XxHash3 可变配置回收、5 阶段 WAL + NTFS Junction 原子切换、四大引擎编排与极客工具箱纯净侧
-│   ├── Spawn.Modules.Progress/          # [Progress 纯净侧] Ludusavi 原生解析、FastCDC+BLAKE3+Zstd 时间机器、SPPK Packfile 云同步、FLiNG 检索与 A0+A WASAPI 会话静音
+│   ├── Spawn.Modules.Progress/          # [Progress 纯净侧，M3 已建项] 洁净室 FLiNG 发现/解析/下载、本地导入、A0+A WASAPI 会话静音、启动前轻量存档快照、Defender 排除助手；M4 轨道：Ludusavi/FastCDC/SPPK
 │   ├── Spawn.Modules.Achievement/       # [Achievement 纯净侧] 15+ 离线模拟器解析、四层 FSW 状态机、Comet 127.0.0.1:9977 GOG 守护、隐藏成就瀑布流、gbe_fork 事务激活器
 │   ├── Spawn.Modules.Workflow/          # [Workflow 纯净侧] 二次元排班配置模型、interface.json 元数据映射、蓝图有向图序列化契约与主宿主调度代理
 │   │
@@ -41,14 +41,17 @@ Spawn.sln
 │   ├── Spawn.OverlayHost/               # 🔵 独立置顶覆盖层 EXE (Medium+UIAccess IL)：DirectComposition+SkiaSharp 144Hz 弹窗 + Alt+Z 锁鼠交互面板（受 IAT 门禁硬锁！）
 │   │
 │   ├── Spawn.BlueprintWorker/           # 🟠 按需隔离子进程 EXE：Kismet 异步蓝图 VM + RawInput + WGC/OpenCvSharp4/PaddleOCR + SendInput/PostMessage/ViGEmBus/KMBox
-│   ├── Spawn.TrainerWorker/             # 🟠 按需隔离子进程 EXE (High IL)：FLiNG 沙箱托管(KILL_ON_JOB_CLOSE) + 35ms 硬件扫描码代理 + NtSuspendProcess + AlphaVSS + 二期 .CT/SigScan/Iced 引擎
+│   ├── Spawn.TrainerWorker/             # 🟠 按需隔离子进程 EXE（M3 已建项，asInvoker，发布于 Workers\Trainer\；按需 Medium/High IL）：修改器 KILL_ON_JOB_CLOSE 原子托管 + MAPVK_VK_TO_VSC_EX 热键代理（M3 零跨进程内存 API）+ M6 收窄原生修改后端
 │   ├── Spawn.WorkflowWorker/            # 🟠 按需隔离子进程 EXE (High IL)：并发资源锁 DAG + 内嵌 Maa.Framework C# + MaaFgo/BBC 双端口桥接 + 二游 CLI 适配器群 + 唤醒/防黑屏/战报长图
 │   └── Spawn.LegacyHook.Helper/         # ⚪ 默认不加载可选包：仅面向极少数纯离线老独占全屏单机的 RTSS OSD / Vulkan Layer 辅助
 └── tests/
-    ├── Spawn.Architecture.GateTests/    # ★ 一票否决门禁：校验 csproj 引用图 + PEReader 静态扫描 Host/OverlayHost 导入表零敏感 Win32 API！
-    ├── Spawn.Core.UnitTests/            # M2 核心与领域全量单测：SpawnPaths/SQLite/DPAPI、16+ 模拟器、GOG Comet、LIMBO 原生存档、进程追踪与 IPC
-    ├── Spawn.Achievement.Tests/         # (M3+ 按需拆分专项) 扩展成就样本回归与高刷压力夹具
-    └── Spawn.Integration.Tests/         # (M3+ 按需扩充) 多 Worker 跨进程端到端集成测试
+    ├── Spawn.Architecture.GateTests/    # ★ 一票否决门禁：校验 csproj 引用图 + PEReader 静态扫描 Host/OverlayHost/Modules.Progress 零敏感导入 + TrainerWorker 零跨进程内存/调试 API + 全仓 project.assets.json 禁用包审计
+    ├── Spawn.Core.UnitTests/            # M2~M3 核心与领域单测：SpawnPaths/SQLite v4 迁移与 CRUD/DPAPI、反作弊四层判定与看门狗、16+ 模拟器、GOG Comet、LIMBO 原生存档、进程追踪与 IPC
+    ├── Spawn.Modules.Progress.UnitTests/# M3 已建项：Progress 模块目录发现/下载导入、A0+A WASAPI 静音、启动前快照、Defender 助手单测
+    ├── Spawn.TrainerWorker.UnitTests/   # M3 已建项：TrainerWorker 作业对象、进程树清零、命令白名单与热键映射单测（含 TestStub 复制输出）
+    ├── Spawn.TrainerWorker.TestStub/    # M3 已建项：无窗口无害合成多子进程桩程序（供 TrainerWorker 作业对象隔离测试使用）
+    ├── Spawn.Achievement.Tests/         # (M4+ 按需拆分专项) 扩展成就样本回归与高刷压力夹具
+    └── Spawn.Integration.Tests/         # (M4+ 按需扩充) 多 Worker 跨进程端到端集成测试
 ```
 
 ---
@@ -79,10 +82,10 @@ flowchart TD
 1. **严禁反向或跨宿主耦合**：
    - `Spawn.Contracts` 严禁引用任何其他项目或平台专属 UI/Win32 包；
    - `Spawn.Host`、`Spawn.OverlayHost` 及五个 `Spawn.Modules.*` **严禁直接或间接引用任何 `Spawn.*Worker` 或 `Spawn.LegacyHook.Helper` 项目**；
-   - 各个 `Spawn.*Worker` 之间彼此独立，严禁相互项目引用，所有状态协同统一经 `Spawn.Host` 的 Named Pipe gRPC 总线仲裁。
+   - 各个 `Spawn.*Worker` 之间彼此独立，严禁相互项目引用，所有状态协同统一经 `Spawn.Host` 的 `NamedPipeJsonRpc` 总线仲裁。
 2. **高敏与重型 NuGet 隔离红线**：
    - `OpenCvSharp4`、`Sdcb.PaddleOCR`、`Nefarius.ViGEm.Client` 仅允许出现在 `Spawn.BlueprintWorker`；
-   - `Reloaded.Memory.SigScan`、`Iced`、`AlphaVSS` 仅允许出现在 `Spawn.TrainerWorker`；
+   - `Iced`（`M6`）、`Vortice.XInput`（`LOOP-08`）仅允许出现在 `Spawn.TrainerWorker`，`AlphaVSS` 仅允许出现在 `M4` 存档时间机器的独立提权辅助进程；`Reloaded.Memory` 家族全仓禁止；`SharpCompress`、`AngleSharp` 仅允许出现在 `Spawn.Modules.Progress`；
    - `Maa.Framework`、`Hi3Helper.Sophon` 仅允许出现在 `Spawn.WorkflowWorker`；
    - 违反上述任一规则将直接触发 `Spawn.Architecture.GateTests` 编译与门禁失败（详见 [质量门禁](quality-gates.md)）。
 3. **按里程碑渐进建项原则**：只创建当前里程碑有真实代码与消费者的 `.csproj` 子工程，不为尚未进入的远期阶段预先堆砌空壳代码库。

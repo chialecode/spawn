@@ -10,6 +10,7 @@ using Spawn.Contracts;
 using Spawn.Core;
 using Spawn.Host.Helpers;
 using Spawn.Host.Services;
+using Spawn.Modules.Progress.Security;
 
 namespace Spawn.Host.ViewModels;
 
@@ -28,14 +29,22 @@ public sealed partial class SettingsViewModel : ObservableObject
     private readonly IOverlayIpcClient _overlayIpcClient;
     private readonly IAntiCheatGuardService _antiCheatGuard;
     private readonly ThemeManagerService _themeManager;
+    private readonly IDefenderExclusionAssistant? _defenderAssistant;
+    private readonly ITrainerAudioController? _trainerAudioController;
+    private readonly ITrainerRuntimeService? _trainerRuntime;
+    private readonly Action<string> _openExternalUrl;
     private bool _suppressAutoSave;
 
     public event Action<string>? StatusFeedbackRequested;
     public event Func<IReadOnlyList<string>, Task>? ScanDirectoriesRequested;
+    public event Func<string, Task>? ManualGameImportRequested;
     public event Action<bool>? GlobalSpoilerPreferenceChanged;
 
     [ObservableProperty]
     private SettingsCategory _selectedCategory = SettingsCategory.GeneralAndLibrary;
+
+    [ObservableProperty]
+    private string _manualGameImportPathText = string.Empty;
 
     [ObservableProperty]
     private int _selectedAfkTimeoutSec = 300;
@@ -91,7 +100,79 @@ public sealed partial class SettingsViewModel : ObservableObject
     [ObservableProperty]
     private string _antiCheatStatusSummary = "Tier 0 安全就绪 · 零敏感导入表";
 
+    // Trainer & Security Sandbox Settings (Category 6: SettingsCategory.TrainerAndSandbox)
+    [ObservableProperty]
+    private string _trainerCustomSandboxRootInput = string.Empty;
+
+    [ObservableProperty]
+    private string? _appliedCustomTrainerSandboxRoot;
+
+    [ObservableProperty]
+    private TrainerAudioMode _selectedTrainerAudioMode = TrainerAudioMode.FullMute;
+
+    [ObservableProperty]
+    private double _trainerCueVolumePercent = 35.0;
+
+    [ObservableProperty]
+    private bool _trainerEnableA0PreMute = true;
+
+    [ObservableProperty]
+    private int _trainerHotkeyHoldMs = TrainerSettingsDto.DefaultHotkeyHoldMs;
+
+    [ObservableProperty]
+    private bool _trainerDefaultScanCodeMode;
+
+    [ObservableProperty]
+    private bool _trainerStopWithGameExit = true;
+
+    [ObservableProperty]
+    private bool _trainerHideOriginalWindowOnLaunch;
+
+    [ObservableProperty]
+    private bool _trainerCreatePreSnapshot = true;
+
+    [ObservableProperty]
+    private int _selectedTrainerSnapshotRetentionCount = TrainerSettingsDto.DefaultPreSnapshotRetentionCount;
+
+    [ObservableProperty]
+    private int _selectedTrainerSnapshotMaxSizeMb = TrainerSettingsDto.DefaultPreSnapshotMaxSizeMb;
+
+    [ObservableProperty]
+    private bool _trainerIncludeFlingArchive;
+
+    [ObservableProperty]
+    private bool _trainerStrictVanguardMode;
+
+    [ObservableProperty]
+    private DefenderExclusionStatusReport? _defenderStatusReport;
+
+    [ObservableProperty]
+    private bool _isDefenderWorking;
+
     public ObservableCollection<ScanDirectoryEntry> ScanDirectories { get; } = [];
+    public UpdateViewModel Update { get; }
+
+    public IReadOnlyList<NamedOption<TrainerAudioMode>> TrainerAudioModeOptions { get; } =
+    [
+        new(TrainerAudioMode.FullMute, "完全静音（默认推荐：A0 + WASAPI 静音）"),
+        new(TrainerAudioMode.KeepCuesExperimental, "实验性：保留提示音（仅新版 FLiNG A0 生效）"),
+        new(TrainerAudioMode.Passthrough, "不干预修改器音频"),
+    ];
+
+    public IReadOnlyList<NamedOption<int>> TrainerSnapshotRetentionOptions { get; } =
+    [
+        new(3, "保留最近 3 份"),
+        new(5, "保留最近 5 份（默认）"),
+        new(10, "保留最近 10 份"),
+    ];
+
+    public IReadOnlyList<NamedOption<int>> TrainerSnapshotMaxSizeMbOptions { get; } =
+    [
+        new(128, "128 MB"),
+        new(256, "256 MB（默认）"),
+        new(512, "512 MB"),
+        new(1024, "1024 MB"),
+    ];
 
     public ObservableCollection<NamedOption<string>> AudioOutputDeviceOptions { get; } =
     [
@@ -141,10 +222,48 @@ public sealed partial class SettingsViewModel : ObservableObject
     {
         SettingsCategory.AchievementAndSteamApi => "成就与 Steam API",
         SettingsCategory.OverlayAndSound => "弹窗外观与音效",
+        SettingsCategory.TrainerAndSandbox => "修改器与安全沙箱",
         SettingsCategory.AppearanceTheme => "外观主题",
+        SettingsCategory.Updates => "更新",
         SettingsCategory.AboutAndVersion => "关于与版本",
         _ => "常规与游戏库",
     };
+
+    public string EffectiveTrainerSandboxRoot => !string.IsNullOrWhiteSpace(AppliedCustomTrainerSandboxRoot)
+        ? AppliedCustomTrainerSandboxRoot!
+        : _paths.TrainerSandboxDirectory;
+
+    public bool HasCustomTrainerSandboxRoot => !string.IsNullOrWhiteSpace(AppliedCustomTrainerSandboxRoot);
+
+    public bool ShowTrainerCueVolumeSlider => SelectedTrainerAudioMode == TrainerAudioMode.KeepCuesExperimental;
+
+    public string TrainerCueVolumeDisplayText =>
+        string.Create(CultureInfo.InvariantCulture, $"{Math.Round(TrainerCueVolumePercent):0}%");
+
+    public string TrainerHotkeyHoldMsDisplayText =>
+        string.Create(CultureInfo.InvariantCulture, $"{TrainerHotkeyHoldMs} ms");
+
+    public string DefenderStatusBadgeText => DefenderStatusReport is null
+        ? "未检测"
+        : UiFormatters.FormatDefenderStatusBadge(DefenderStatusReport.Status);
+
+    public string DefenderStatusMessage => DefenderStatusReport?.Message
+        ?? "仅在您点击下方按钮时才会触发单次 UAC，且仅排除单一修改器沙箱目录（绝不排除游戏目录、%LOCALAPPDATA% 或 Downloads）。";
+
+    public bool IsDefenderExcluded => DefenderStatusReport?.IsExcluded == true;
+
+    public bool ShowSmartAppControlCard =>
+        DefenderStatusReport?.IsSmartAppControlEnforced == true
+        || DefenderStatusReport?.Status == DefenderExclusionStatus.SmartAppControlNotice;
+
+    public bool ShowDefenderManualGuidance =>
+        DefenderStatusReport is not null
+        && !DefenderStatusReport.IsExcluded
+        && DefenderStatusReport.Status is DefenderExclusionStatus.TamperProtectionBlocked
+            or DefenderExclusionStatus.ThirdPartyAntivirusPassiveMode
+            or DefenderExclusionStatus.VerificationReadbackFailed
+            or DefenderExclusionStatus.UacCancelledByUser
+            or DefenderExclusionStatus.Failed;
 
     public string BuildProductName => _buildSnapshot.DisplayProductName;
     public bool IsDevOrSourceBuild => _buildSnapshot.IsDevOrSourceChannel;
@@ -175,7 +294,12 @@ public sealed partial class SettingsViewModel : ObservableObject
         ISteamApiKeyProvider steamApiKeyProvider,
         IOverlayIpcClient overlayIpcClient,
         IAntiCheatGuardService antiCheatGuard,
-        ThemeManagerService themeManager)
+        ThemeManagerService themeManager,
+        IDefenderExclusionAssistant? defenderAssistant = null,
+        ITrainerAudioController? trainerAudioController = null,
+        Action<string>? openExternalUrl = null,
+        ITrainerRuntimeService? trainerRuntime = null,
+        UpdateViewModel? updateViewModel = null)
     {
         _paths = paths;
         _buildSnapshot = SpawnBuildInfo.GetSnapshot(paths.Identity);
@@ -184,6 +308,12 @@ public sealed partial class SettingsViewModel : ObservableObject
         _overlayIpcClient = overlayIpcClient;
         _antiCheatGuard = antiCheatGuard;
         _themeManager = themeManager;
+        _defenderAssistant = defenderAssistant;
+        _trainerAudioController = trainerAudioController;
+        _trainerRuntime = trainerRuntime;
+        _openExternalUrl = openExternalUrl ?? OpenExternalUriDefault;
+        Update = updateViewModel ?? new UpdateViewModel(updateService: null, openExternalUrl: _openExternalUrl);
+        Update.StatusFeedbackRequested += msg => StatusFeedbackRequested?.Invoke(msg);
 
         RefreshAntiCheatSummary(_antiCheatGuard.CurrentSnapshot);
         _antiCheatGuard.StateChanged += (_, snap) => RefreshAntiCheatSummary(snap);
@@ -226,8 +356,30 @@ public sealed partial class SettingsViewModel : ObservableObject
             RefreshSteamClientSoundStatus();
             RefreshAudioOutputDevicesCore(notifyFeedback: false);
 
+            TrainerSettingsDto trainerSettings = await _db.GetTrainerSettingsAsync(cancellationToken).ConfigureAwait(true);
+            AppliedCustomTrainerSandboxRoot = trainerSettings.CustomSandboxRoot;
+            TrainerCustomSandboxRootInput = trainerSettings.CustomSandboxRoot ?? string.Empty;
+            SelectedTrainerAudioMode = trainerSettings.AudioMode;
+            TrainerCueVolumePercent = Math.Round(trainerSettings.CueVolume * 100.0);
+            TrainerEnableA0PreMute = trainerSettings.EnableA0PreMute;
+            TrainerHotkeyHoldMs = trainerSettings.HotkeyHoldMs;
+            TrainerDefaultScanCodeMode = trainerSettings.DefaultScanCodeMode;
+            TrainerStopWithGameExit = trainerSettings.StopWithGameExit;
+            TrainerHideOriginalWindowOnLaunch = trainerSettings.HideOriginalWindowOnLaunch;
+            TrainerCreatePreSnapshot = trainerSettings.CreatePreTrainerSnapshot;
+            SelectedTrainerSnapshotRetentionCount = trainerSettings.PreTrainerSnapshotRetentionCount;
+            SelectedTrainerSnapshotMaxSizeMb = trainerSettings.PreTrainerSnapshotMaxSizeMb;
+            TrainerIncludeFlingArchive = trainerSettings.IncludeFlingArchiveInSearch;
+            TrainerStrictVanguardMode = trainerSettings.StrictVanguardMode;
+            OnPropertyChanged(nameof(EffectiveTrainerSandboxRoot));
+            OnPropertyChanged(nameof(HasCustomTrainerSandboxRoot));
+            OnPropertyChanged(nameof(ShowTrainerCueVolumeSlider));
+            OnPropertyChanged(nameof(TrainerCueVolumeDisplayText));
+            OnPropertyChanged(nameof(TrainerHotkeyHoldMsDisplayText));
+
             await ReloadScanDirectoriesAsync(cancellationToken).ConfigureAwait(true);
             await RefreshSteamApiKeyStatusAsync(cancellationToken).ConfigureAwait(true);
+            await Update.InitializeAsync(cancellationToken).ConfigureAwait(true);
         }
         finally
         {
@@ -322,6 +474,57 @@ public sealed partial class SettingsViewModel : ObservableObject
         }
     }
 
+    partial void OnSelectedTrainerAudioModeChanged(TrainerAudioMode value)
+    {
+        OnPropertyChanged(nameof(ShowTrainerCueVolumeSlider));
+        PersistTrainerSettingsIfReady();
+    }
+
+    partial void OnTrainerCueVolumePercentChanged(double value)
+    {
+        OnPropertyChanged(nameof(TrainerCueVolumeDisplayText));
+        PersistTrainerSettingsIfReady();
+    }
+
+    partial void OnTrainerEnableA0PreMuteChanged(bool value) => PersistTrainerSettingsIfReady();
+
+    partial void OnTrainerHotkeyHoldMsChanged(int value)
+    {
+        int clamped = Math.Clamp(value, TrainerSettingsDto.MinHotkeyHoldMs, TrainerSettingsDto.MaxHotkeyHoldMs);
+        if (clamped != value)
+        {
+            TrainerHotkeyHoldMs = clamped;
+            return;
+        }
+
+        OnPropertyChanged(nameof(TrainerHotkeyHoldMsDisplayText));
+        PersistTrainerSettingsIfReady();
+    }
+
+    partial void OnTrainerDefaultScanCodeModeChanged(bool value) => PersistTrainerSettingsIfReady();
+    partial void OnTrainerStopWithGameExitChanged(bool value) => PersistTrainerSettingsIfReady();
+    partial void OnTrainerHideOriginalWindowOnLaunchChanged(bool value) => PersistTrainerSettingsIfReady();
+    partial void OnTrainerCreatePreSnapshotChanged(bool value) => PersistTrainerSettingsIfReady();
+    partial void OnSelectedTrainerSnapshotRetentionCountChanged(int value) => PersistTrainerSettingsIfReady();
+    partial void OnSelectedTrainerSnapshotMaxSizeMbChanged(int value) => PersistTrainerSettingsIfReady();
+    partial void OnTrainerIncludeFlingArchiveChanged(bool value) => PersistTrainerSettingsIfReady();
+    partial void OnTrainerStrictVanguardModeChanged(bool value) => PersistTrainerSettingsIfReady();
+
+    partial void OnAppliedCustomTrainerSandboxRootChanged(string? value)
+    {
+        OnPropertyChanged(nameof(EffectiveTrainerSandboxRoot));
+        OnPropertyChanged(nameof(HasCustomTrainerSandboxRoot));
+    }
+
+    partial void OnDefenderStatusReportChanged(DefenderExclusionStatusReport? value)
+    {
+        OnPropertyChanged(nameof(DefenderStatusBadgeText));
+        OnPropertyChanged(nameof(DefenderStatusMessage));
+        OnPropertyChanged(nameof(IsDefenderExcluded));
+        OnPropertyChanged(nameof(ShowSmartAppControlCard));
+        OnPropertyChanged(nameof(ShowDefenderManualGuidance));
+    }
+
     [RelayCommand]
     private void SelectCategory(SettingsCategory category) => SelectedCategory = category;
 
@@ -345,7 +548,17 @@ public sealed partial class SettingsViewModel : ObservableObject
             return;
         }
 
-        string normalized = Path.TrimEndingDirectorySeparator(Path.GetFullPath(dialog.FolderName));
+        await AddScanDirectoryPathAsync(dialog.FolderName, triggerImmediateScan: true).ConfigureAwait(true);
+    }
+
+    public async Task AddScanDirectoryPathAsync(string folderPath, bool triggerImmediateScan = false)
+    {
+        if (string.IsNullOrWhiteSpace(folderPath))
+        {
+            return;
+        }
+
+        string normalized = Path.TrimEndingDirectorySeparator(Path.GetFullPath(folderPath.Trim().Trim('"')));
         var customDirs = await _db.GetSettingJsonAsync<List<string>>(AppSettingKeys.LibraryScanDirectories, []).ConfigureAwait(true);
         if (!customDirs.Contains(normalized, StringComparer.OrdinalIgnoreCase))
         {
@@ -354,9 +567,285 @@ public sealed partial class SettingsViewModel : ObservableObject
             await ReloadScanDirectoriesAsync().ConfigureAwait(true);
         }
 
-        if (ScanDirectoriesRequested is not null)
+        if (triggerImmediateScan && ScanDirectoriesRequested is not null)
         {
             await ScanDirectoriesRequested([normalized]).ConfigureAwait(true);
+        }
+    }
+
+    [RelayCommand]
+    private async Task BrowseAndImportSingleGameFolderAsync()
+    {
+        var dialog = new OpenFolderDialog
+        {
+            Title = "选择要导入的单机游戏文件夹",
+            Multiselect = false,
+        };
+
+        string? initialDir = _paths.LocalGamesDirectory;
+        if (!string.IsNullOrWhiteSpace(initialDir) && Directory.Exists(initialDir))
+        {
+            dialog.InitialDirectory = initialDir;
+        }
+
+        if (dialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(dialog.FolderName))
+        {
+            ManualGameImportPathText = dialog.FolderName;
+            await ImportManualGamePathAsync().ConfigureAwait(true);
+        }
+    }
+
+    [RelayCommand]
+    private async Task BrowseAndImportSingleGameExeAsync()
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "选择要导入的单机游戏主程序 (.exe)",
+            Filter = "可执行文件 (*.exe)|*.exe",
+            CheckFileExists = true,
+            Multiselect = false,
+        };
+
+        if (dialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(dialog.FileName))
+        {
+            ManualGameImportPathText = dialog.FileName;
+            await ImportManualGamePathAsync().ConfigureAwait(true);
+        }
+    }
+
+    [RelayCommand]
+    public async Task ImportManualGamePathAsync()
+    {
+        string raw = ManualGameImportPathText.Trim().Trim('"');
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            StatusFeedbackRequested?.Invoke("请输入或浏览选择游戏文件夹 / 主程序 (.exe) 路径");
+            return;
+        }
+
+        if (ManualGameImportRequested is not null)
+        {
+            await ManualGameImportRequested(raw).ConfigureAwait(true);
+            ManualGameImportPathText = string.Empty;
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Trainer & Security Sandbox Commands (Category 6)
+    // -------------------------------------------------------------------------
+
+    [RelayCommand]
+    private void BrowseCustomSandboxRoot()
+    {
+        var dialog = new OpenFolderDialog
+        {
+            Title = "选择纯 ASCII 自定义修改器沙箱根目录",
+            Multiselect = false,
+        };
+
+        if (dialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(dialog.FolderName))
+        {
+            TrainerCustomSandboxRootInput = dialog.FolderName;
+        }
+    }
+
+    [RelayCommand]
+    public async Task ApplyCustomSandboxRootAsync()
+    {
+        if (_trainerRuntime?.ActiveSession is not null)
+        {
+            StatusFeedbackRequested?.Invoke("当前有修改器正在运行，请先停止修改器后再切换或迁移沙箱根目录。");
+            return;
+        }
+
+        string raw = TrainerCustomSandboxRootInput.Trim().Trim('"');
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            await ResetDefaultSandboxRootAsync().ConfigureAwait(true);
+            return;
+        }
+
+        var games = await _db.GetAllGamesAsync().ConfigureAwait(true);
+        var gameDirs = games.Select(static g => g.InstallDir).ToArray();
+
+        if (!DefenderExclusionAssistant.TryValidateCustomAsciiSandboxRoot(raw, _paths, gameDirs, out string normalized, out string? rejectReason))
+        {
+            StatusFeedbackRequested?.Invoke(rejectReason ?? "自定义沙箱目录校验未通过");
+            return;
+        }
+
+        string previousRoot = EffectiveTrainerSandboxRoot;
+        try
+        {
+            var (succeeded, _, message) = await DefenderExclusionAssistant.MigrateSandboxContentsAsync(previousRoot, normalized).ConfigureAwait(true);
+            if (!succeeded)
+            {
+                StatusFeedbackRequested?.Invoke(message);
+                return;
+            }
+
+            AppliedCustomTrainerSandboxRoot = normalized;
+            TrainerCustomSandboxRootInput = normalized;
+            DefenderStatusReport = null;
+            PersistTrainerSettingsIfReady();
+            StatusFeedbackRequested?.Invoke(message);
+        }
+        catch (Exception ex)
+        {
+            StatusFeedbackRequested?.Invoke($"迁移修改器沙箱目录失败：{ex.Message}");
+        }
+    }
+
+    [RelayCommand]
+    public async Task ResetDefaultSandboxRootAsync()
+    {
+        if (_trainerRuntime?.ActiveSession is not null)
+        {
+            StatusFeedbackRequested?.Invoke("当前有修改器正在运行，请先停止修改器后再恢复默认沙箱根目录。");
+            return;
+        }
+
+        string previousRoot = EffectiveTrainerSandboxRoot;
+        string defaultRoot = _paths.TrainerSandboxDirectory;
+
+        try
+        {
+            if (!string.Equals(previousRoot, defaultRoot, StringComparison.OrdinalIgnoreCase))
+            {
+                var (succeeded, _, message) = await DefenderExclusionAssistant.MigrateSandboxContentsAsync(previousRoot, defaultRoot, destinationIsSpawnOwnedDefaultRoot: true).ConfigureAwait(true);
+                if (!succeeded)
+                {
+                    StatusFeedbackRequested?.Invoke(message);
+                    return;
+                }
+            }
+
+            AppliedCustomTrainerSandboxRoot = null;
+            TrainerCustomSandboxRootInput = string.Empty;
+            DefenderStatusReport = null;
+            PersistTrainerSettingsIfReady();
+            StatusFeedbackRequested?.Invoke($"已恢复默认修改器沙箱根目录：{defaultRoot}");
+        }
+        catch (Exception ex)
+        {
+            StatusFeedbackRequested?.Invoke($"恢复默认修改器沙箱目录失败：{ex.Message}");
+        }
+    }
+
+    [RelayCommand]
+    public async Task InspectDefenderExclusionAsync()
+    {
+        if (_defenderAssistant is null || IsDefenderWorking)
+        {
+            return;
+        }
+
+        IsDefenderWorking = true;
+        try
+        {
+            DefenderStatusReport = await _defenderAssistant.InspectStatusAsync(EffectiveTrainerSandboxRoot).ConfigureAwait(true);
+            StatusFeedbackRequested?.Invoke(DefenderStatusReport.Message);
+        }
+        catch (Exception ex)
+        {
+            StatusFeedbackRequested?.Invoke($"检测 Defender 状态失败：{ex.Message}");
+        }
+        finally
+        {
+            IsDefenderWorking = false;
+        }
+    }
+
+    [RelayCommand]
+    public async Task RequestDefenderExclusionAsync()
+    {
+        if (_defenderAssistant is null || IsDefenderWorking)
+        {
+            return;
+        }
+
+        IsDefenderWorking = true;
+        try
+        {
+            DefenderStatusReport = await _defenderAssistant.RequestExclusionAsync(EffectiveTrainerSandboxRoot).ConfigureAwait(true);
+            StatusFeedbackRequested?.Invoke(DefenderStatusReport.Message);
+        }
+        catch (Exception ex)
+        {
+            StatusFeedbackRequested?.Invoke($"配置 Defender 沙箱排除失败：{ex.Message}");
+        }
+        finally
+        {
+            IsDefenderWorking = false;
+        }
+    }
+
+    [RelayCommand]
+    public void CopySandboxPath()
+    {
+        try
+        {
+            Clipboard.SetText(EffectiveTrainerSandboxRoot);
+            StatusFeedbackRequested?.Invoke($"已复制单一沙箱目录路径：{EffectiveTrainerSandboxRoot}");
+        }
+        catch (Exception ex)
+        {
+            StatusFeedbackRequested?.Invoke($"复制沙箱路径失败：{ex.Message}");
+        }
+    }
+
+    [RelayCommand]
+    public void OpenDefenderSettings()
+    {
+        try
+        {
+            _openExternalUrl(DefenderExclusionAssistant.DefenderExclusionsSettingsUri);
+            StatusFeedbackRequested?.Invoke("已尝试打开 Windows 安全中心排除项页面，请粘贴刚刚复制的单一沙箱路径");
+        }
+        catch
+        {
+            try
+            {
+                _openExternalUrl(DefenderExclusionAssistant.DefenderSettingsFallbackUri);
+                StatusFeedbackRequested?.Invoke("已打开 Windows 安全中心设置（ms-settings:windowsdefender），请进入病毒和威胁防护 → 管理设置 → 排除项");
+            }
+            catch (Exception ex)
+            {
+                StatusFeedbackRequested?.Invoke($"无法打开 Windows 安全中心：{ex.Message}");
+            }
+        }
+    }
+
+    [RelayCommand]
+    public void OpenSmartAppControlLearnMore()
+    {
+        try
+        {
+            _openExternalUrl(DefenderExclusionAssistant.SmartAppControlLearnMoreUrl);
+        }
+        catch (Exception ex)
+        {
+            StatusFeedbackRequested?.Invoke($"无法打开微软说明页面：{ex.Message}");
+        }
+    }
+
+    [RelayCommand]
+    public async Task RestoreTrainerA0BackupsAsync()
+    {
+        if (_trainerAudioController is null)
+        {
+            StatusFeedbackRequested?.Invoke("当前运行环境未挂载修改器音频控制器");
+            return;
+        }
+
+        try
+        {
+            await _trainerAudioController.RestoreA0BackupsAsync().ConfigureAwait(true);
+            StatusFeedbackRequested?.Invoke("已还原所有 FLiNG 修改器 A0 音频预写备份（.spawn_bak）并清理 SPAWN 新建配置");
+        }
+        catch (Exception ex)
+        {
+            StatusFeedbackRequested?.Invoke($"还原 A0 备份失败：{ex.Message}");
         }
     }
 
@@ -657,6 +1146,44 @@ public sealed partial class SettingsViewModel : ObservableObject
         };
 
         _ = _db.SaveOverlaySettingsAsync(dto);
+    }
+
+    private void PersistTrainerSettingsIfReady()
+    {
+        if (_suppressAutoSave)
+        {
+            return;
+        }
+
+        var dto = new TrainerSettingsDto
+        {
+            CustomSandboxRoot = string.IsNullOrWhiteSpace(AppliedCustomTrainerSandboxRoot)
+                ? null
+                : AppliedCustomTrainerSandboxRoot.Trim(),
+            AudioMode = SelectedTrainerAudioMode,
+            CueVolume = Math.Clamp(TrainerCueVolumePercent / 100.0, 0.0, 1.0),
+            EnableA0PreMute = TrainerEnableA0PreMute,
+            HotkeyHoldMs = Math.Clamp(TrainerHotkeyHoldMs, TrainerSettingsDto.MinHotkeyHoldMs, TrainerSettingsDto.MaxHotkeyHoldMs),
+            CreatePreTrainerSnapshot = TrainerCreatePreSnapshot,
+            PreTrainerSnapshotRetentionCount = SelectedTrainerSnapshotRetentionCount,
+            PreTrainerSnapshotMaxSizeMb = SelectedTrainerSnapshotMaxSizeMb,
+            StopWithGameExit = TrainerStopWithGameExit,
+            HideOriginalWindowOnLaunch = TrainerHideOriginalWindowOnLaunch,
+            StrictVanguardMode = TrainerStrictVanguardMode,
+            IncludeFlingArchiveInSearch = TrainerIncludeFlingArchive,
+            DefaultScanCodeMode = TrainerDefaultScanCodeMode,
+        };
+
+        _ = _db.SaveTrainerSettingsAsync(dto);
+    }
+
+    private static void OpenExternalUriDefault(string uri)
+    {
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = uri,
+            UseShellExecute = true,
+        });
     }
 
     [RelayCommand]

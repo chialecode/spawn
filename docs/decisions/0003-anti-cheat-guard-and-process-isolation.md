@@ -41,9 +41,9 @@ SPAWN 同时服务两类安全敏感度截然相反的游戏群体：
 3. **Explorer Shell COM 切断父子血缘与启动前清场**：启动 `Tier 2/3` 游戏前，强制终止所有运行中的特权 Worker 并扫描系统是否存在 `dbk64.sys` / `WinRing0` 等高危驱动（发现则弹窗阻断启动）；随后强制通过 `IShellDispatch2.ShellExecute` 委派 `explorer.exe` 拉起游戏，确保游戏父进程为系统桌面外壳。
 4. **反作弊残影 15 秒强制退出冷却期**：`Tier 2/3` 游戏主进程退出后，全域熔断锁持续监测 `SGuard64.exe`、`SGuardSvc64.exe`、`EasyAntiCheat_EOS.exe`、`BEService.exe` 直至其彻底退出，再执行 **15 秒不可跳过冷却倒计时**后方可恢复特权 Worker 可用态。
 
-### 3.3 免 UAC 弹窗静默提权与 SDDL 管道契约
-- 首次需要 High IL 能力时引导用户单次确认注册绑定精确路径的 Windows 计划任务（`LogonType = InteractiveToken`, `RunLevel = HighestAvailable`），后续按需毫秒级静默拉起 High IL Worker，零 UAC 黑屏打断。
-- 跨 IL `gRPC over Named Pipes` 统一使用 `NamedPipeServerStreamAcl.Create` 显式授权当前登录用户 SID 并 `Deny` `NetworkSid`。
+### 3.3 分级按需提权与命名管道 ACL 契约（2026-11-21 由 [ADR-0006](0006-m3-external-trainer-manager-elevation-and-ipc.md) 修订）
+- 原“首次引导注册计划任务静默拉起 High IL Worker”方案因 `D-23` 按用户安装目录对当前用户可写、构成无 UAC 本地提权风险而废止：High IL Worker 改为分级按需提权（无管理员清单直启 Medium IL / 每会话 1 次 `runas` UAC），免 UAC 计划任务仅限未来 `%ProgramFiles%` 受保护自包含提权包（`LOOP-07`）。
+- 跨进程通信统一使用零依赖 `NamedPipeJsonRpc`，服务端以 `NamedPipeServerStreamAcl.Create` 显式授权当前登录用户 SID 并 `Deny` `NetworkSid`；跨完整性级别时由 Medium IL `Spawn.Host` 担任服务端、Worker 担任客户端（倒置角色满足 MIC），并执行双向 PID / 路径 / `LaunchNonce` 互验。
 
 ## 4. 影响与后果
 

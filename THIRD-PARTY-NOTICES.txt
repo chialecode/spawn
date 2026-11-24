@@ -1,0 +1,137 @@
+SPAWN — Third-Party Open-Source Notices
+=======================================
+
+SPAWN itself is licensed under the Apache License, Version 2.0 (see LICENSE).
+This notice documents third-party open-source packages, embedded datasets, and
+optional on-demand dynamically linked components referenced or supported by
+SPAWN. Each component remains subject to its upstream copyright and license.
+
+1. Clean-Room & Zero-Copyleft Assurance
+---------------------------------------
+- All NuGet packages across the SPAWN solution transitive dependency graph
+  (audited via every project's obj/project.assets.json) are under permissive
+  licenses (MIT, Apache-2.0, BSD-3-Clause, or Microsoft Win32Metadata build-time
+  SDK metadata). Zero GPL, AGPL, or LGPL NuGet packages are referenced.
+- Prohibited packages (including Reloaded.Memory*, SevenZipExtractor,
+  Squid-Box.SevenZipSharp, Keystone, Memory.dll, MinHook, EasyHook, Squalr) are
+  enforced as hard build/test failures by Spawn.Architecture.GateTests.
+- External third-party tools that a user may already have installed locally
+  (such as 7z.exe fallback extraction) are never bundled with SPAWN and are only
+  invoked as external processes when needed.
+
+2. M3 Progress Module & Trainer Worker Components (Permissive / MIT)
+--------------------------------------------------------------------
+- SharpCompress 0.50.9
+  License: MIT License
+  Project: https://github.com/adamhathcock/sharpcompress
+  Scope:   Referenced exclusively by Spawn.Modules.Progress (archive extraction).
+
+- AngleSharp 1.10.3
+  License: MIT License
+  Project: https://github.com/AngleSharp/AngleSharp
+  Scope:   Referenced exclusively by Spawn.Modules.Progress (HTML DOM parsing).
+
+- Microsoft.Windows.CsWin32 0.3.371
+  License: MIT License
+  Project: https://github.com/microsoft/CsWin32
+  Scope:   Build-time source generator (PrivateAssets="all") for Win32 P/Invoke
+           definitions in Spawn.TrainerWorker (transitively uses Microsoft
+           Win32Metadata / WDK metadata packages strictly at compile time).
+
+- AreWeAntiCheatYet Embedded Offline Dataset Projection
+  License: MIT License
+  Project: https://github.com/AreWeAntiCheatYet/AreWeAntiCheatYet
+  Notice:  Copyright (c) AreWeAntiCheatYet Contributors.
+  Scope:   Read-only compact offline projection embedded in Spawn.Core
+           (src/Spawn.Core/AntiCheat/areweanticheatyet-index.json) for Layer 2
+           anti-cheat tier protection.
+
+3. Core Desktop, Graphics, Audio & Storage Components
+-----------------------------------------------------
+- NAudio.Wasapi 2.4.0 (and transitive NAudio.Core 2.4.0)
+  License: MIT License
+  Project: https://github.com/naudio/NAudio
+  Scope:   WASAPI audio session volume control and achievement unlock playback.
+
+- WPF-UI 4.2.1
+  License: MIT License
+  Project: https://github.com/lepoco/wpfui
+  Scope:   Fluent WPF UI component family pinned in Directory.Packages.props.
+
+- SkiaSharp 3.119.4 (with SkiaSharp.NativeAssets.Win32 3.119.4 & SkiaSharp.Views.WPF 3.119.4)
+  License: MIT License
+  Project: https://github.com/mono/SkiaSharp
+  Scope:   Hardware/software 2D graphics rendering and grayscale icon synthesis.
+
+- CommunityToolkit.Mvvm 8.4.2
+  License: MIT License
+  Project: https://github.com/CommunityToolkit/dotnet
+  Scope:   Source-generated MVVM observables and commands in Spawn.Host.
+
+- Google.Protobuf 3.36.2
+  License: BSD-3-Clause License
+  Project: https://github.com/protocolbuffers/protobuf
+  Scope:   Protocol Buffers wire format decoding for GOG Comet local telemetry.
+
+- Microsoft.Data.Sqlite 10.0.15 (with SQLitePCLRaw.* 2.1.13)
+  License: MIT License (Microsoft.Data.Sqlite), Apache-2.0 (SQLitePCLRaw.*),
+           Public Domain (SQLite)
+  Project: https://github.com/dotnet/efcore | https://github.com/ericsink/SQLitePCL.raw
+  Scope:   Local SQLite WAL metadata storage (spawn.db).
+
+- .NET 10 Runtime Extensions & System Packages 10.0.15
+  Packages: Microsoft.Extensions.DependencyInjection, Microsoft.Extensions.Http,
+            Microsoft.Extensions.Logging, Microsoft.Extensions.Configuration,
+            Microsoft.Extensions.Options, Microsoft.Win32.SystemEvents,
+            System.Drawing.Common, System.IO.Hashing,
+            System.Security.Cryptography.ProtectedData
+  License: MIT License
+  Project: https://github.com/dotnet/runtime
+
+4. Test-Only Dependencies (Not Distributed in Installers)
+---------------------------------------------------------
+- xUnit 2.9.3 & xunit.runner.visualstudio 3.1.5 — Apache-2.0
+  Project: https://github.com/xunit/xunit
+- Microsoft.NET.Test.Sdk 17.14.2 (with Microsoft.CodeCoverage / TestPlatform &
+  Newtonsoft.Json 13.0.3) — MIT License
+
+5. Optional On-Demand Dynamically Linked LGPL-3.0 Components
+------------------------------------------------------------
+- Detanup01/gbe_fork (pinned release-2026_09_27 / emu-win-release-vs22.7z)
+  License: GNU Lesser General Public License v3.0 (LGPL-3.0)
+  Project: https://github.com/Detanup01/gbe_fork
+  SHA-256: 300186c34f49a9ea75b33ce2af299267cc1dad0225cf45e81a229578d4e11c85
+  Compliance Notice:
+    Detanup01/gbe_fork is NEVER statically linked or bundled inside SPAWN
+    executables or installers. When a user explicitly enables the optional
+    offline achievement enabler for a Tier 0 single-player title, SPAWN
+    downloads the pinned release archive on demand into the local user cache
+    (%LOCALAPPDATA%\spawn[-dev]\cache\gbe_fork\), verifies its SHA-256 digest,
+    deploys the unmodified dynamic library alongside THIRD-PARTY-NOTICES-gbe_fork.txt,
+    and preserves the user's freedom to inspect, replace, or revert the dynamic
+    library (with a byte-exact SHA-256 backup of the original DLL).
+
+6. Standard License Texts (Summary)
+-----------------------------------
+MIT License:
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+
+BSD-3-Clause License (Google.Protobuf):
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted provided that the conditions of the 3-clause BSD
+  license (copyright notice retention, binary notice retention, and non-endorsement)
+  are met. See https://github.com/protocolbuffers/protobuf/blob/main/LICENSE.

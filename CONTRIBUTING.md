@@ -1,6 +1,6 @@
 # SPAWN 开发与贡献指南
 
-开始任何文档修订或代码开发前，请先阅读 [AGENTS.md](AGENTS.md)、[项目关键事实](docs/project-baseline.md) 与 [当前执行状态](docs/delivery/status.md)。项目当前已完成 `M1` 文档治理、顶层架构与五大模块规格正本建设，将于 `M2` 起初始化 `Spawn.sln` 多进程隔离工程（首发交付纯净桌面主壳、游戏库与启动接管、以及 Steamrip/GOG 单机成就捕获与 Overlay 闭环）。
+开始任何文档修订或代码开发前，请先阅读 [AGENTS.md](AGENTS.md)、[项目关键事实](docs/project-baseline.md) 与 [当前执行状态](docs/delivery/status.md)。项目已完成 `M1`（[PR #1](https://github.com/chialecode/spawn/pull/1)）治理契约基线与 `M2`（[PR #2](https://github.com/chialecode/spawn/pull/2)）原生启动器、游戏数据清理及单机成就 Overlay 闭环，当前沿 `M3` ~ `M6` 路线推进（各阶段进展与验证证据以 [当前执行状态](docs/delivery/status.md) 为准）。
 
 ---
 
@@ -11,7 +11,7 @@ SPAWN 面向 **Windows 10 (21H1, Build 19043+) / Windows 11 x64** 开发与运�
 | 组件类别 | 版本要求 | 用途说明 | 快速安装命令（`winget`） |
 | :--- | :--- | :--- | :--- |
 | **Python 3** | `3.12+`（仅标准库） | 运行 `scripts/check_docs.py`、`scripts/quick_gate.py` 等自动化工程门禁脚本 | `winget install --id Python.Python.3.12 --source winget` |
-| **.NET 10 SDK (LTS)** | `10.0.x`（本机实测 `10.0.404` 已就绪） | 编译 `Spawn.sln`（`net10.0-windows`、WPF、gRPC Named Pipes、CsWin32 Source Generator、xUnit 门禁） | `winget install --id Microsoft.DotNet.SDK.10 --source winget` |
+| **.NET 10 SDK (LTS)** | `10.0.x`（本机实测 `10.0.404` 已就绪） | 编译 `Spawn.sln`（`net10.0-windows`、WPF、`NamedPipeJsonRpc`、CsWin32 Source Generator、xUnit 门禁） | `winget install --id Microsoft.DotNet.SDK.10 --source winget` |
 | **Windows SDK & C++ Build Tools** | `10.0.26100.0+` / VS 2022 `17.12+`（或 VS Build Tools） | Win32 / DirectComposition / WASAPI 元数据、原生互操作调试与打包支持 | 通过 Visual Studio Installer 勾选“.NET 桌面开发”或安装 Build Tools |
 | **Git & GitHub CLI** | Git `2.45+` / `gh 2.60+` | 本地单阶段提交、DCO 签名校验与经用户明确授权后的低频 PR 管理 | `winget install --id Git.Git` / `winget install --id GitHub.cli` |
 
@@ -46,8 +46,8 @@ SPAWN 面向 **Windows 10 (21H1, Build 19043+) / Windows 11 x64** 开发与运�
 | 适用时机 | 执行命令 | 门禁职责说明 |
 | :--- | :--- | :--- |
 | **文档与卫生门禁（M1 起每次必跑）** | `python scripts/check_docs.py`<br/>`git diff --check` | 校验必需治理文件、`document-registry.json` 全覆盖、相对链接与锚点有效性、拦截本机绝对路径与外部兄弟项目名泄露、校验空白与行尾规范 |
-| **日常快速门禁（M2 建立后增量修改使用）** | `python scripts/quick_gate.py` | 5 分钟内静默低优先级完成文档检查、`dotnet format --verify-no-changes`、受影响工程增量编译、单元测试与 `PEReader` 导入表快速断言 |
-| **整阶段交付门禁（M2 建立后阶段收尾跑一次）** | `dotnet build Spawn.sln -c Release -warnaserror`<br/>`dotnet test Spawn.sln -c Release --no-build` | 全量构建零警告、`Spawn.Architecture.GateTests` PE 导入表零污染审计、15+ 离线模拟器/Comet 成就解析与 FastCDC/WAL 确定性回归测试 |
+| **日常快速门禁（M2 起增量修改使用）** | `python -B scripts/quick_gate.py` | 5 分钟内静默低优先级串联文档治理检查、Release 全量编译、`Spawn.sln` 全量测试（含 `PEReader` IAT 审计、离线网络绊线与 `spawn-dev-test` 打包隔离演练）与 `git diff --check` |
+| **整阶段交付门禁（M2 起阶段收尾跑一次）** | `dotnet build Spawn.sln -c Release`<br/>`dotnet test Spawn.sln -c Release --no-build`<br/>`dotnet list Spawn.sln package --vulnerable --include-transitive` | 全量构建零警告、`Spawn.Architecture.GateTests` Clean Host / Worker `PEReader` 静态审计、全量单元与集成测试及零已知漏洞 / 零 Copyleft 传递依赖核查 |
 
 ---
 

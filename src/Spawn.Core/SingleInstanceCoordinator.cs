@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+using System.Text.Json;
 using Spawn.Contracts;
 
 namespace Spawn.Core;
@@ -10,19 +12,21 @@ public sealed record SpawnCommandLineOptions(
     bool IsBackgroundTray,
     bool IsActivate,
     string? ExplicitIdentity,
-    IReadOnlyList<string> RawArgs)
+    IReadOnlyList<string> RawArgs,
+    string? RestartReason = null)
 {
     public static SpawnCommandLineOptions Parse(IReadOnlyList<string>? args)
     {
         if (args is null || args.Count == 0)
         {
-            return new SpawnCommandLineOptions(false, false, false, null, []);
+            return new SpawnCommandLineOptions(false, false, false, null, [], null);
         }
 
         bool quitForUpdate = false;
         bool background = false;
         bool activate = false;
         string? identity = null;
+        string? restartReason = null;
 
         for (int i = 0; i < args.Count; i++)
         {
@@ -48,9 +52,17 @@ public sealed record SpawnCommandLineOptions(
             {
                 identity = arg["--identity=".Length..].Trim();
             }
+            else if (string.Equals(arg, "--restart-reason", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Count)
+            {
+                restartReason = args[++i]?.Trim();
+            }
+            else if (arg.StartsWith("--restart-reason=", StringComparison.OrdinalIgnoreCase))
+            {
+                restartReason = arg["--restart-reason=".Length..].Trim();
+            }
         }
 
-        return new SpawnCommandLineOptions(quitForUpdate, background, activate, identity, args);
+        return new SpawnCommandLineOptions(quitForUpdate, background, activate, identity, args, restartReason);
     }
 }
 
@@ -84,26 +96,30 @@ public sealed record SingleInstanceStartupResult(
 /// Supports secondary window activation (<c>--activate</c>) and installer graceful shutdown (<c>--quit-for-update</c>)
 /// without force-killing processes or disturbing running games.
 /// </summary>
-public sealed class SingleInstanceCoordinator : IAsyncDisposable, IDisposable
+public sealed partial class SingleInstanceCoordinator : IAsyncDisposable, IDisposable
 {
     public const string MethodActivate = "instance.activate";
     public const string MethodQuitForUpdate = "instance.quitForUpdate";
     public const string MethodPing = "instance.ping";
+    private const uint AsfwAny = 0xFFFFFFFF;
 
     private readonly ManualResetEventSlim _releaseMutexSignal = new(false);
     private readonly TaskCompletionSource _mutexReleasedTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private NamedPipeJsonRpcServer? _controlServer;
     private Thread? _mutexOwnerThread;
     private volatile bool _ownsPrimaryMutex;
+    private volatile string _lastQuitForUpdateReason = UpdateRestartReason.DevInstall;
     private int _disposed;
 
     public string Identity { get; }
     public string MutexName => $"{Identity}-instance";
     public string ControlPipeName => $"{Identity}-control";
     public bool IsPrimaryInstance => _ownsPrimaryMutex;
+    public string LastQuitForUpdateReason => _lastQuitForUpdateReason;
 
     public event Func<IReadOnlyList<string>, CancellationToken, Task>? ActivateRequested;
     public event Func<CancellationToken, Task>? QuitForUpdateRequested;
+    public event Func<string, CancellationToken, Task>? QuitForUpdateWithReasonRequested;
 
     public SingleInstanceCoordinator(SpawnPaths paths)
         : this((paths ?? throw new ArgumentNullException(nameof(paths))).Identity)
@@ -134,6 +150,7 @@ public sealed class SingleInstanceCoordinator : IAsyncDisposable, IDisposable
             var (wasRunning, exitedCleanly) = await SignalQuitForUpdateAsync(
                 Identity,
                 quitWaitTimeout ?? TimeSpan.FromSeconds(25),
+                options.RestartReason,
                 cancellationToken).ConfigureAwait(false);
 
             return new SingleInstanceStartupResult(
@@ -171,14 +188,26 @@ public sealed class SingleInstanceCoordinator : IAsyncDisposable, IDisposable
     /// Sends a graceful <c>--quit-for-update</c> request to a running instance of <paramref name="identity"/>
     /// and waits until its <c>&lt;Identity&gt;-instance</c> mutex is cleanly released (never force-killing).
     /// </summary>
+    public static Task<(bool WasRunning, bool ExitedCleanly)> SignalQuitForUpdateAsync(
+        string? identity,
+        TimeSpan? waitTimeout,
+        CancellationToken cancellationToken) =>
+        SignalQuitForUpdateAsync(identity, waitTimeout, restartReason: null, cancellationToken);
+
+    /// <summary>
+    /// Sends a graceful <c>--quit-for-update</c> request with an explicit restart reason (defaulting to
+    /// <see cref="UpdateRestartReason.DevInstall"/>) and waits until the primary mutex is cleanly released.
+    /// </summary>
     public static async Task<(bool WasRunning, bool ExitedCleanly)> SignalQuitForUpdateAsync(
         string? identity = null,
         TimeSpan? waitTimeout = null,
+        string? restartReason = null,
         CancellationToken cancellationToken = default)
     {
         string safeIdentity = SanitizeIdentityToken(string.IsNullOrWhiteSpace(identity) ? SpawnBuildInfo.Identity : identity.Trim());
         string mutexName = $"{safeIdentity}-instance";
         string pipeName = $"{safeIdentity}-control";
+        string normalizedReason = UpdateRestartReason.Normalize(restartReason);
 
         if (!IsMutexCurrentlyHeld(mutexName))
         {
@@ -189,9 +218,9 @@ public sealed class SingleInstanceCoordinator : IAsyncDisposable, IDisposable
         try
         {
             await using var client = new NamedPipeJsonRpcClient(pipeName);
-            rpcSent = await client.InvokeAsync<object?, bool>(
+            rpcSent = await client.InvokeAsync<string?, bool>(
                 MethodQuitForUpdate,
-                null,
+                normalizedReason,
                 connectTimeout: TimeSpan.FromSeconds(2),
                 cancellationToken: cancellationToken).ConfigureAwait(false);
         }
@@ -223,6 +252,16 @@ public sealed class SingleInstanceCoordinator : IAsyncDisposable, IDisposable
     {
         try
         {
+            // Allow the already-running primary instance to take foreground focus when launched from Start Menu / Desktop.
+            try
+            {
+                _ = AllowSetForegroundWindow(AsfwAny);
+            }
+            catch
+            {
+                // Best-effort focus handoff on Windows.
+            }
+
             await using var client = new NamedPipeJsonRpcClient(controlPipeName);
             return await client.InvokeAsync<IReadOnlyList<string>, bool>(
                 MethodActivate,
@@ -257,10 +296,29 @@ public sealed class SingleInstanceCoordinator : IAsyncDisposable, IDisposable
             return true;
         });
 
-        server.RegisterHandler<object?, bool>(MethodQuitForUpdate, (_, _) =>
+        server.RegisterHandler<JsonElement?, bool>(MethodQuitForUpdate, (incomingPayload, _ct) =>
         {
-            var handler = QuitForUpdateRequested;
-            if (handler is not null)
+            string? parsedReason = null;
+            if (incomingPayload.HasValue)
+            {
+                if (incomingPayload.Value.ValueKind == JsonValueKind.String)
+                {
+                    parsedReason = incomingPayload.Value.GetString();
+                }
+                else if (incomingPayload.Value.ValueKind == JsonValueKind.Object
+                         && incomingPayload.Value.TryGetProperty("reason", out JsonElement reasonProp)
+                         && reasonProp.ValueKind == JsonValueKind.String)
+                {
+                    parsedReason = reasonProp.GetString();
+                }
+            }
+
+            string normalizedReason = UpdateRestartReason.Normalize(parsedReason);
+            _lastQuitForUpdateReason = normalizedReason;
+
+            var reasonHandler = QuitForUpdateWithReasonRequested;
+            var legacyHandler = QuitForUpdateRequested;
+            if (reasonHandler is not null || legacyHandler is not null)
             {
                 // Run asynchronously after sending RPC ACK so client receives immediate confirmation before pipe closes.
                 _ = Task.Run(async () =>
@@ -268,7 +326,15 @@ public sealed class SingleInstanceCoordinator : IAsyncDisposable, IDisposable
                     await Task.Delay(25, CancellationToken.None).ConfigureAwait(false);
                     try
                     {
-                        await handler(CancellationToken.None).ConfigureAwait(false);
+                        if (reasonHandler is not null)
+                        {
+                            await reasonHandler(normalizedReason, CancellationToken.None).ConfigureAwait(false);
+                        }
+
+                        if (legacyHandler is not null)
+                        {
+                            await legacyHandler(CancellationToken.None).ConfigureAwait(false);
+                        }
                     }
                     catch
                     {
@@ -430,4 +496,8 @@ public sealed class SingleInstanceCoordinator : IAsyncDisposable, IDisposable
     {
         DisposeAsync().AsTask().GetAwaiter().GetResult();
     }
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool AllowSetForegroundWindow(uint dwProcessId);
 }

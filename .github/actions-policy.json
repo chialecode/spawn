@@ -9,7 +9,9 @@
     "verified_allowed": false,
     "patterns_allowed": [
       "actions/checkout@*",
-      "actions/setup-dotnet@*"
+      "actions/setup-dotnet@*",
+      "actions/upload-artifact@*",
+      "actions/download-artifact@*"
     ]
   },
   "workflowPermissions": {

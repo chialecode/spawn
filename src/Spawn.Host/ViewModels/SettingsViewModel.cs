@@ -10,6 +10,7 @@ using Spawn.Contracts;
 using Spawn.Core;
 using Spawn.Host.Helpers;
 using Spawn.Host.Services;
+using Spawn.Modules.Progress.Catalog;
 using Spawn.Modules.Progress.Security;
 
 namespace Spawn.Host.ViewModels;
@@ -232,6 +233,13 @@ public sealed partial class SettingsViewModel : ObservableObject
     public string EffectiveTrainerSandboxRoot => !string.IsNullOrWhiteSpace(AppliedCustomTrainerSandboxRoot)
         ? AppliedCustomTrainerSandboxRoot!
         : _paths.TrainerSandboxDirectory;
+
+    public string TrainerSourceProvenanceTitle { get; } = TrainerSourceProvenance.SettingsProvenanceTitle;
+    public string TrainerSourceProvenanceDescription { get; } = TrainerSourceProvenance.SettingsProvenanceDescription;
+    public string TrainerOverviewProvenanceSummary { get; } = TrainerSourceProvenance.OverviewProvenanceSummaryText;
+    public string TrainerOverviewEmptyStateDescription { get; } = TrainerSourceProvenance.OverviewEmptyStateDescriptionText;
+    public string TrainerExternalMainDomain { get; } = FlingUrlPolicy.MainHost;
+    public string TrainerExternalArchiveDomain { get; } = FlingUrlPolicy.ArchiveHost;
 
     public bool HasCustomTrainerSandboxRoot => !string.IsNullOrWhiteSpace(AppliedCustomTrainerSandboxRoot);
 

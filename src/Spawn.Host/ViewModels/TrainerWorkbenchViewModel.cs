@@ -9,6 +9,7 @@ using Microsoft.Win32;
 using Spawn.Contracts;
 using Spawn.Core;
 using Spawn.Host.Helpers;
+using Spawn.Modules.Progress.Catalog;
 using Spawn.Modules.Progress.Security;
 
 namespace Spawn.Host.ViewModels;
@@ -31,6 +32,7 @@ public sealed partial class TrainerWorkbenchViewModel : ObservableObject, IDispo
     private readonly IGameLibraryService _libraryService;
     private readonly IGameLaunchService _launchService;
     private readonly Action<string> _openExternalUrl;
+    private readonly Action<string> _copyToClipboard;
 
     private GameListItemViewModel? _currentGame;
     private TrainerCandidate? _pendingMultiExeCandidate;
@@ -278,11 +280,25 @@ public sealed partial class TrainerWorkbenchViewModel : ObservableObject, IDispo
     public bool HasLatestSnapshotNotice => !string.IsNullOrWhiteSpace(LatestSnapshotNoticeText);
     public bool IsDownloading => RuntimeState == TrainerRuntimeState.Downloading;
 
-    // Active trainer metadata summary
+    // Provenance disclosures & active trainer metadata summary
+    public string OnlineDiscoveryDisclosureTitle { get; } = TrainerSourceProvenance.OnlineDiscoveryDisclosureTitle;
+    public string OnlineDiscoveryDisclosureBody { get; } = TrainerSourceProvenance.OnlineDiscoveryDisclosureBody;
+    public string UnboundProvenanceHintText { get; } = TrainerSourceProvenance.UnboundProvenanceHintText;
+
+    public TrainerSourceProvenanceInfo? ActiveTrainerProvenance =>
+        ActiveTrainer is null ? null : TrainerSourceProvenance.DescribeRecord(ActiveTrainer);
+
     public string TrainerDisplayTitle => ActiveTrainer?.DisplayName ?? "未绑定修改器";
-    public string TrainerSourceDomainText => ActiveTrainer is null
-        ? string.Empty
-        : UiFormatters.FormatTrainerProviderLabel(ActiveTrainer.Provider);
+    public bool IsActiveTrainerExternalWebSource => ActiveTrainerProvenance?.IsExternalWebsite == true;
+    public string TrainerSourceDomainText => ActiveTrainerProvenance?.BadgeText ?? string.Empty;
+    public string TrainerSourceHostText => ActiveTrainerProvenance?.SourceHost ?? string.Empty;
+    public bool HasValidExternalSourceUrl => ActiveTrainerProvenance?.HasValidHttpsSourceUrl == true;
+    public string TrainerSourcePageUrl => ActiveTrainerProvenance?.ValidatedHttpsSourceUrl ?? string.Empty;
+    public string TrainerSourcePageDisplayLine => HasValidExternalSourceUrl
+        ? $"来源网页：{TrainerSourcePageUrl}"
+        : string.Empty;
+    public string TrainerSourceCompactOriginText => ActiveTrainerProvenance?.CompactOriginSummary ?? string.Empty;
+    public string TrainerSourceProvenanceNoteText => ActiveTrainerProvenance?.DetailedDisclosureText ?? string.Empty;
     public string TrainerVersionAndDateText => ActiveTrainer is null
         ? string.Empty
         : $"{ActiveTrainer.VersionLabel ?? "本地版本"}{(string.IsNullOrWhiteSpace(ActiveTrainer.SourceUpdatedAt) ? string.Empty : $" · {ActiveTrainer.SourceUpdatedAt}")}";
@@ -308,7 +324,8 @@ public sealed partial class TrainerWorkbenchViewModel : ObservableObject, IDispo
         IAntiCheatGuardService antiCheatGuard,
         IGameLibraryService libraryService,
         IGameLaunchService launchService,
-        Action<string>? openExternalUrl = null)
+        Action<string>? openExternalUrl = null,
+        Action<string>? copyToClipboard = null)
     {
         _paths = paths ?? throw new ArgumentNullException(nameof(paths));
         _db = db ?? throw new ArgumentNullException(nameof(db));
@@ -320,6 +337,7 @@ public sealed partial class TrainerWorkbenchViewModel : ObservableObject, IDispo
         _libraryService = libraryService ?? throw new ArgumentNullException(nameof(libraryService));
         _launchService = launchService ?? throw new ArgumentNullException(nameof(launchService));
         _openExternalUrl = openExternalUrl ?? OpenUrlWithShell;
+        _copyToClipboard = copyToClipboard ?? CopyTextToSystemClipboard;
 
         UpdateGuardSnapshot(_antiCheatGuard.CurrentSnapshot);
         _runtimeService.StateChanged += OnRuntimeStateChanged;
@@ -553,7 +571,7 @@ public sealed partial class TrainerWorkbenchViewModel : ObservableObject, IDispo
         }
 
         IsBusy = true;
-        BusyMessage = "正在按英文标准名检索 FLiNG 官方源…";
+        BusyMessage = "正在按英文标准名检索第三方外部网站 FLiNG Trainer (flingtrainer.com)…";
         RuntimeState = TrainerRuntimeState.Matching;
         ShowBrowserFallbackCard = false;
         ShowQuarantineCard = false;
@@ -574,7 +592,8 @@ public sealed partial class TrainerWorkbenchViewModel : ObservableObject, IDispo
                     cand,
                     LoadCandidateDetailsAsync,
                     DownloadCandidateAsync,
-                    OpenExternalUrlSafe));
+                    OpenExternalUrlSafe,
+                    CopyCandidatePageUrlSafe));
             }
 
             if (result.FallbackToBrowserRecommended)
@@ -582,7 +601,7 @@ public sealed partial class TrainerWorkbenchViewModel : ObservableObject, IDispo
                 RuntimeState = TrainerRuntimeState.FallbackBrowser;
                 ShowBrowserFallbackCard = true;
                 FallbackBrowserUrl = result.FallbackBrowserUrl ?? "https://flingtrainer.com/";
-                BrowserFallbackMessage = result.Message ?? "源站触发人机验证（403/Challenge），已停止自动请求。请在默认浏览器打开原页下载后直接拖放至本窗口导入。";
+                BrowserFallbackMessage = result.Message ?? "外部源站触发人机验证（403/Challenge），已停止自动请求。请在默认浏览器打开该外部网页下载后直接拖放至本窗口导入。";
                 StatusFeedbackRequested?.Invoke(BrowserFallbackMessage, true);
             }
             else
@@ -590,8 +609,8 @@ public sealed partial class TrainerWorkbenchViewModel : ObservableObject, IDispo
                 RuntimeState = HasBoundTrainer ? TrainerRuntimeState.Ready : TrainerRuntimeState.Unbound;
                 StatusFeedbackRequested?.Invoke(
                     result.Candidates.Count > 0
-                        ? $"已找到 {result.Candidates.Count} 个候选修改器条目，请选择版本后点击下载"
-                        : (result.Message ?? "未匹配到候选修改器，可调整英文搜索词或直接导入本地修改器文件"),
+                        ? $"已在第三方外部网站检索到 {result.Candidates.Count} 个候选条目，请核对来源后点击下载"
+                        : (result.Message ?? "未匹配到候选修改器，可调整英文搜索词或直接手动导入本机修改器文件"),
                     result.Candidates.Count == 0);
             }
         }
@@ -932,11 +951,36 @@ public sealed partial class TrainerWorkbenchViewModel : ObservableObject, IDispo
     }
 
     [RelayCommand]
+    public void OpenActiveTrainerSourcePage()
+    {
+        if (ActiveTrainer is null
+            || !TrainerSourceProvenance.TryNormalizeHttpsSourceUrl(ActiveTrainer.SourcePageUrl, out string safeHttpsUrl, out string host))
+        {
+            return;
+        }
+
+        OpenExternalUrlSafe(safeHttpsUrl);
+        StatusFeedbackRequested?.Invoke($"已在默认浏览器打开修改器外部来源网页（{host}）", false);
+    }
+
+    [RelayCommand]
+    public void CopyActiveTrainerSourceUrl()
+    {
+        if (ActiveTrainer is null
+            || !TrainerSourceProvenance.TryNormalizeHttpsSourceUrl(ActiveTrainer.SourcePageUrl, out string safeHttpsUrl, out string host))
+        {
+            return;
+        }
+
+        CopyTextSafe(safeHttpsUrl, $"已复制修改器外部来源网页链接（{host}）");
+    }
+
+    [RelayCommand]
     public void OpenFallbackBrowser()
     {
-        if (!string.IsNullOrWhiteSpace(FallbackBrowserUrl))
+        if (TrainerSourceProvenance.TryNormalizeHttpsSourceUrl(FallbackBrowserUrl, out string safeHttpsUrl, out _))
         {
-            OpenExternalUrlSafe(FallbackBrowserUrl!);
+            OpenExternalUrlSafe(safeHttpsUrl);
         }
     }
 
@@ -1104,7 +1148,8 @@ public sealed partial class TrainerWorkbenchViewModel : ObservableObject, IDispo
         IsBusy = true;
         RuntimeState = TrainerRuntimeState.Downloading;
         DownloadProgressPercent = 0;
-        DownloadStageText = "正在从官方源下载所选修改器…";
+        string downloadHost = TrainerSourceProvenance.ResolveSourceHost(candidate.Provider, candidate.PageUrl);
+        DownloadStageText = $"正在从第三方外部网站 ({downloadHost}) 下载所选修改器…";
         ShowBrowserFallbackCard = false;
         ShowQuarantineCard = false;
         NotifyAllDerivedStates();
@@ -1164,7 +1209,7 @@ public sealed partial class TrainerWorkbenchViewModel : ObservableObject, IDispo
 
             await NotifyTrainerCatalogChangedAsync(ActiveTrainer.GameId).ConfigureAwait(true);
             StatusFeedbackRequested?.Invoke(
-                $"已校验并导入修改器「{ActiveTrainer.DisplayName}」（SHA-256 已钉扎 · 共 {Hotkeys.Count} 条热键）",
+                $"已校验并导入修改器「{ActiveTrainer.DisplayName}」（{TrainerSourceDomainText} · SHA-256 已钉扎 · 共 {Hotkeys.Count} 条热键）",
                 false);
             return;
         }
@@ -1377,16 +1422,37 @@ public sealed partial class TrainerWorkbenchViewModel : ObservableObject, IDispo
             ? TrainerCatalogChangedRequested(gameId)
             : Task.CompletedTask;
 
-    private void OpenExternalUrlSafe(string url)
+    private void CopyCandidatePageUrlSafe(string url) =>
+        CopyTextSafe(url, $"已复制外部网站页面链接：{url}");
+
+    private void CopyTextSafe(string text, string successMessage)
     {
-        if (string.IsNullOrWhiteSpace(url))
+        if (string.IsNullOrWhiteSpace(text))
         {
             return;
         }
 
         try
         {
-            _openExternalUrl(url);
+            _copyToClipboard(text);
+            StatusFeedbackRequested?.Invoke(successMessage, false);
+        }
+        catch (Exception ex)
+        {
+            StatusFeedbackRequested?.Invoke($"复制链接失败：{ex.Message}", true);
+        }
+    }
+
+    private void OpenExternalUrlSafe(string url)
+    {
+        if (!TrainerSourceProvenance.TryNormalizeHttpsSourceUrl(url, out string safeHttpsUrl, out _))
+        {
+            return;
+        }
+
+        try
+        {
+            _openExternalUrl(safeHttpsUrl);
         }
         catch (Exception ex)
         {
@@ -1396,12 +1462,20 @@ public sealed partial class TrainerWorkbenchViewModel : ObservableObject, IDispo
 
     private static void OpenUrlWithShell(string url)
     {
+        if (!TrainerSourceProvenance.TryNormalizeHttpsSourceUrl(url, out string safeHttpsUrl, out _))
+        {
+            return;
+        }
+
         Process.Start(new ProcessStartInfo
         {
-            FileName = url,
+            FileName = safeHttpsUrl,
             UseShellExecute = true,
         });
     }
+
+    private static void CopyTextToSystemClipboard(string text) =>
+        Clipboard.SetText(text);
 
     private void NotifyAllDerivedStates()
     {
@@ -1440,8 +1514,16 @@ public sealed partial class TrainerWorkbenchViewModel : ObservableObject, IDispo
         OnPropertyChanged(nameof(HasGameUpdateDriftNotice));
         OnPropertyChanged(nameof(HasLatestSnapshotNotice));
         OnPropertyChanged(nameof(IsDownloading));
+        OnPropertyChanged(nameof(ActiveTrainerProvenance));
         OnPropertyChanged(nameof(TrainerDisplayTitle));
+        OnPropertyChanged(nameof(IsActiveTrainerExternalWebSource));
         OnPropertyChanged(nameof(TrainerSourceDomainText));
+        OnPropertyChanged(nameof(TrainerSourceHostText));
+        OnPropertyChanged(nameof(HasValidExternalSourceUrl));
+        OnPropertyChanged(nameof(TrainerSourcePageUrl));
+        OnPropertyChanged(nameof(TrainerSourcePageDisplayLine));
+        OnPropertyChanged(nameof(TrainerSourceCompactOriginText));
+        OnPropertyChanged(nameof(TrainerSourceProvenanceNoteText));
         OnPropertyChanged(nameof(TrainerVersionAndDateText));
         OnPropertyChanged(nameof(TrainerFileMetaText));
         OnPropertyChanged(nameof(TrainerPinnedSha256Short));

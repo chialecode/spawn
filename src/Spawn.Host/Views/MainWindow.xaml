@@ -872,16 +872,38 @@
                                                    Foreground="{DynamicResource PrimaryTextBrush}"
                                                    VerticalAlignment="Center" />
                                         <Border CornerRadius="4"
-                                                Background="{DynamicResource SubtleSurfaceBrush}"
-                                                BorderBrush="{DynamicResource DividerBrush}"
                                                 BorderThickness="1"
-                                                Padding="6,1"
+                                                Padding="6,1.5"
                                                 Margin="8,0,0,0"
-                                                VerticalAlignment="Center">
+                                                VerticalAlignment="Center"
+                                                ToolTip="{Binding TrainerSourceProvenanceNoteText}">
+                                            <Border.Style>
+                                                <Style TargetType="Border">
+                                                    <Setter Property="Background" Value="{DynamicResource SubtleSurfaceBrush}" />
+                                                    <Setter Property="BorderBrush" Value="{DynamicResource DividerBrush}" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsActiveTrainerExternalWebSource}" Value="True">
+                                                            <Setter Property="Background" Value="{DynamicResource InfoBannerBackgroundBrush}" />
+                                                            <Setter Property="BorderBrush" Value="{DynamicResource InfoBannerBorderBrush}" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Border.Style>
                                             <TextBlock Text="{Binding TrainerSourceDomainText}"
-                                                       FontFamily="{StaticResource SpawnMonoFont}"
-                                                       FontSize="11"
-                                                       Foreground="{DynamicResource SecondaryTextBrush}" />
+                                                       FontSize="11.5">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock">
+                                                        <Setter Property="Foreground" Value="{DynamicResource SecondaryTextBrush}" />
+                                                        <Setter Property="FontWeight" Value="Normal" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsActiveTrainerExternalWebSource}" Value="True">
+                                                                <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+                                                                <Setter Property="FontWeight" Value="SemiBold" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
                                         </Border>
                                         <TextBlock Text="{Binding TrainerVersionAndDateText}"
                                                    FontSize="12"
@@ -902,6 +924,19 @@
                                                    FontSize="12"
                                                    Foreground="{DynamicResource SecondaryTextBrush}" />
                                     </WrapPanel>
+                                    <TextBlock Text="{Binding TrainerSourceProvenanceNoteText}"
+                                               FontSize="12"
+                                               Foreground="{DynamicResource SecondaryTextBrush}"
+                                               TextWrapping="Wrap"
+                                               Margin="0,4,0,0" />
+                                    <TextBlock Text="{Binding TrainerSourcePageDisplayLine}"
+                                               ToolTip="{Binding TrainerSourcePageUrl}"
+                                               FontFamily="{StaticResource SpawnMonoFont}"
+                                               FontSize="11.5"
+                                               Foreground="{DynamicResource MutedTextBrush}"
+                                               TextTrimming="CharacterEllipsis"
+                                               Margin="0,2,0,0"
+                                               Visibility="{Binding HasValidExternalSourceUrl, Converter={StaticResource BoolToVis}}" />
                                 </StackPanel>
 
                                 <StackPanel Visibility="{Binding HasBoundTrainer, Converter={StaticResource InvBoolToVis}}">
@@ -909,11 +944,16 @@
                                                FontSize="14.5"
                                                FontWeight="SemiBold"
                                                Foreground="{DynamicResource PrimaryTextBrush}" />
-                                    <TextBlock Text="点击右侧「匹配修改器」按英文标准名检索 FLiNG 官方源，或点击「导入本地文件」/ 直接拖入 .exe .zip .rar .7z"
+                                    <TextBlock Text="点击右侧「匹配修改器」按英文标准名检索第三方外部网站 FLiNG Trainer (flingtrainer.com)，或点击「导入本地文件」/ 直接拖入本机 .exe .zip .rar .7z"
                                                FontSize="12.5"
                                                Foreground="{DynamicResource SecondaryTextBrush}"
                                                TextWrapping="Wrap"
                                                Margin="0,3,0,0" />
+                                    <TextBlock Text="{Binding UnboundProvenanceHintText}"
+                                               FontSize="11.5"
+                                               Foreground="{DynamicResource MutedTextBrush}"
+                                               TextWrapping="Wrap"
+                                               Margin="0,4,0,0" />
                                 </StackPanel>
                             </StackPanel>
 
@@ -998,6 +1038,16 @@
                                                         Content="打开沙箱目录"
                                                         Click="OnAnyPopupMenuItemClick"
                                                         Command="{Binding OpenTrainerSandboxFolderCommand}" />
+                                                <Button Style="{StaticResource FloatingMenuItemButtonStyle}"
+                                                        Content="在浏览器打开来源网页"
+                                                        Click="OnAnyPopupMenuItemClick"
+                                                        Command="{Binding OpenActiveTrainerSourcePageCommand}"
+                                                        Visibility="{Binding HasValidExternalSourceUrl, Converter={StaticResource BoolToVis}}" />
+                                                <Button Style="{StaticResource FloatingMenuItemButtonStyle}"
+                                                        Content="复制来源网页链接"
+                                                        Click="OnAnyPopupMenuItemClick"
+                                                        Command="{Binding CopyActiveTrainerSourceUrlCommand}"
+                                                        Visibility="{Binding HasValidExternalSourceUrl, Converter={StaticResource BoolToVis}}" />
                                                 <Button Style="{StaticResource FloatingMenuItemButtonStyle}"
                                                         Content="校验 SHA-256"
                                                         Click="OnAnyPopupMenuItemClick"
@@ -1207,80 +1257,141 @@
                             BorderThickness="1"
                             Padding="10,8"
                             Margin="0,8,0,0"
-                            MaxHeight="190"
+                            MaxHeight="248"
                             Visibility="{Binding HasMatchCandidates, Converter={StaticResource BoolToVis}}">
-                        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                            <ItemsControl ItemsSource="{Binding MatchCandidates}">
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate DataType="{x:Type vm:TrainerCandidateItemViewModel}">
-                                        <Border BorderBrush="{DynamicResource DividerBrush}"
-                                                BorderThickness="0,0,0,1"
-                                                Padding="4,7">
-                                            <Grid>
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="*" />
-                                                    <ColumnDefinition Width="Auto" />
-                                                </Grid.ColumnDefinitions>
-                                                <StackPanel Grid.Column="0" Margin="0,0,10,0">
-                                                    <WrapPanel Orientation="Horizontal">
-                                                        <TextBlock Text="{Binding Title}"
-                                                                   FontSize="13"
-                                                                   FontWeight="SemiBold"
-                                                                   Foreground="{DynamicResource PrimaryTextBrush}" />
-                                                        <Border CornerRadius="4"
-                                                                Background="{DynamicResource PageBackgroundBrush}"
-                                                                BorderBrush="{DynamicResource DividerBrush}"
-                                                                BorderThickness="1"
-                                                                Padding="5,1"
-                                                                Margin="6,0,0,0">
-                                                            <TextBlock Text="{Binding ConfidenceBadgeText}"
-                                                                       FontSize="11"
-                                                                       Foreground="{DynamicResource SecondaryTextBrush}" />
-                                                        </Border>
-                                                    </WrapPanel>
-                                                    <TextBlock Text="{Binding VersionSummaryText}"
-                                                               FontSize="11.5"
-                                                               Foreground="{DynamicResource MutedTextBrush}"
-                                                               Margin="0,2,0,0" />
-                                                    <ComboBox Margin="0,5,0,0"
-                                                              MaxWidth="360"
-                                                              HorizontalAlignment="Left"
-                                                              Height="26"
-                                                              FontSize="11.5"
-                                                              ItemsSource="{Binding Attachments}"
-                                                              SelectedItem="{Binding SelectedAttachment, Mode=TwoWay}"
-                                                              DisplayMemberPath="FileName"
-                                                              Visibility="{Binding HasAttachments, Converter={StaticResource BoolToVis}}" />
-                                                </StackPanel>
-                                                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                                                    <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
-                                                            Height="28"
-                                                            Padding="10,0"
-                                                            FontSize="11.5"
-                                                            Margin="0,0,6,0"
-                                                            Content="查看版本"
-                                                            Command="{Binding LoadDetailsCommand}"
-                                                            Visibility="{Binding HasAttachments, Converter={StaticResource InvBoolToVis}}" />
-                                                    <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
-                                                            Height="28"
-                                                            Padding="10,0"
-                                                            FontSize="11.5"
-                                                            Margin="0,0,6,0"
-                                                            Content="浏览器"
-                                                            Command="{Binding OpenInBrowserCommand}" />
-                                                    <Button Style="{StaticResource PrimaryCapsuleButtonStyle}"
-                                                            Height="28"
-                                                            Padding="12,0"
-                                                            FontSize="11.5"
-                                                            Content="{Binding DownloadButtonLabel}"
-                                                            Command="{Binding DownloadCommand}" />
-                                                </StackPanel>
-                                            </Grid>
-                                        </Border>
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
-                        </ScrollViewer>
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+
+                            <!-- External Website Provenance Banner -->
+                            <Border Grid.Row="0"
+                                    CornerRadius="6"
+                                    Background="{DynamicResource InfoBannerBackgroundBrush}"
+                                    BorderBrush="{DynamicResource InfoBannerBorderBrush}"
+                                    BorderThickness="1"
+                                    Padding="10,7"
+                                    Margin="0,0,0,6">
+                                <StackPanel>
+                                    <TextBlock Text="{Binding OnlineDiscoveryDisclosureTitle}"
+                                               FontSize="12"
+                                               FontWeight="SemiBold"
+                                               Foreground="{DynamicResource AccentBrush}" />
+                                    <TextBlock Text="{Binding OnlineDiscoveryDisclosureBody}"
+                                               FontSize="11.5"
+                                               Foreground="{DynamicResource SecondaryTextBrush}"
+                                               TextWrapping="Wrap"
+                                               Margin="0,2,0,0" />
+                                </StackPanel>
+                            </Border>
+
+                            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                                <ItemsControl ItemsSource="{Binding MatchCandidates}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate DataType="{x:Type vm:TrainerCandidateItemViewModel}">
+                                            <Border BorderBrush="{DynamicResource DividerBrush}"
+                                                    BorderThickness="0,0,0,1"
+                                                    Padding="4,7">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <StackPanel Grid.Column="0" Margin="0,0,10,0">
+                                                        <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                            <TextBlock Text="{Binding Title}"
+                                                                       FontSize="13"
+                                                                       FontWeight="SemiBold"
+                                                                       Foreground="{DynamicResource PrimaryTextBrush}"
+                                                                       VerticalAlignment="Center" />
+                                                            <Border CornerRadius="4"
+                                                                    Background="{DynamicResource InfoBannerBackgroundBrush}"
+                                                                    BorderBrush="{DynamicResource InfoBannerBorderBrush}"
+                                                                    BorderThickness="1"
+                                                                    Padding="5,1"
+                                                                    Margin="6,0,0,0"
+                                                                    VerticalAlignment="Center"
+                                                                    ToolTip="{Binding ProvenanceHintText}">
+                                                                <TextBlock Text="{Binding ProviderLabel}"
+                                                                           FontSize="11"
+                                                                           FontWeight="SemiBold"
+                                                                           Foreground="{DynamicResource AccentBrush}" />
+                                                            </Border>
+                                                            <Border CornerRadius="4"
+                                                                    Background="{DynamicResource PageBackgroundBrush}"
+                                                                    BorderBrush="{DynamicResource DividerBrush}"
+                                                                    BorderThickness="1"
+                                                                    Padding="5,1"
+                                                                    Margin="6,0,0,0"
+                                                                    VerticalAlignment="Center">
+                                                                <TextBlock Text="{Binding ConfidenceBadgeText}"
+                                                                           FontSize="11"
+                                                                           Foreground="{DynamicResource SecondaryTextBrush}" />
+                                                            </Border>
+                                                        </WrapPanel>
+                                                        <TextBlock Text="{Binding VersionSummaryText}"
+                                                                   FontSize="11.5"
+                                                                   Foreground="{DynamicResource MutedTextBrush}"
+                                                                   Margin="0,2,0,0" />
+                                                        <TextBlock Text="{Binding SourceUrlDisplayText}"
+                                                                   ToolTip="{Binding ValidatedHttpsPageUrl}"
+                                                                   FontFamily="{StaticResource SpawnMonoFont}"
+                                                                   FontSize="11"
+                                                                   Foreground="{DynamicResource SecondaryTextBrush}"
+                                                                   TextTrimming="CharacterEllipsis"
+                                                                   Margin="0,2,0,0" />
+                                                        <ComboBox Margin="0,5,0,0"
+                                                                  MaxWidth="360"
+                                                                  HorizontalAlignment="Left"
+                                                                  Height="26"
+                                                                  FontSize="11.5"
+                                                                  ItemsSource="{Binding Attachments}"
+                                                                  SelectedItem="{Binding SelectedAttachment, Mode=TwoWay}"
+                                                                  DisplayMemberPath="FileName"
+                                                                  Visibility="{Binding HasAttachments, Converter={StaticResource BoolToVis}}" />
+                                                    </StackPanel>
+                                                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                                        <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                                                                Height="28"
+                                                                Padding="10,0"
+                                                                FontSize="11.5"
+                                                                Margin="0,0,6,0"
+                                                                Content="查看版本"
+                                                                Command="{Binding LoadDetailsCommand}"
+                                                                Visibility="{Binding HasAttachments, Converter={StaticResource InvBoolToVis}}" />
+                                                        <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                                                                Height="28"
+                                                                Padding="10,0"
+                                                                FontSize="11.5"
+                                                                Margin="0,0,6,0"
+                                                                Content="打开源站网页"
+                                                                ToolTip="{Binding ValidatedHttpsPageUrl}"
+                                                                Command="{Binding OpenInBrowserCommand}"
+                                                                Visibility="{Binding HasValidHttpsPageUrl, Converter={StaticResource BoolToVis}}" />
+                                                        <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                                                                Height="28"
+                                                                Padding="10,0"
+                                                                FontSize="11.5"
+                                                                Margin="0,0,6,0"
+                                                                Content="复制链接"
+                                                                ToolTip="复制该外部网站来源链接"
+                                                                Command="{Binding CopyPageUrlCommand}"
+                                                                Visibility="{Binding HasValidHttpsPageUrl, Converter={StaticResource BoolToVis}}" />
+                                                        <Button Style="{StaticResource PrimaryCapsuleButtonStyle}"
+                                                                Height="28"
+                                                                Padding="12,0"
+                                                                FontSize="11.5"
+                                                                Content="{Binding DownloadButtonLabel}"
+                                                                Command="{Binding DownloadCommand}" />
+                                                    </StackPanel>
+                                                </Grid>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </ScrollViewer>
+                        </Grid>
                     </Border>
                 </StackPanel>
             </StackPanel>
@@ -3369,6 +3480,13 @@
                                     </WrapPanel>
                                 </Grid>
                             </Border>
+
+                            <!-- Concise Provenance & External Website Boundary Note -->
+                            <TextBlock Text="{Binding Settings.TrainerOverviewProvenanceSummary}"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource SecondaryTextBrush}"
+                                       TextWrapping="Wrap"
+                                       Margin="0,8,0,0" />
                         </StackPanel>
                     </Border>
 
@@ -3605,34 +3723,77 @@
                                                     </Border>
                                                 </WrapPanel>
 
-                                                <WrapPanel Orientation="Horizontal" Margin="0,4,0,0">
-                                                    <TextBlock Text="{Binding ProviderLabel}"
-                                                               FontFamily="{StaticResource SpawnMonoFont}"
+                                                <WrapPanel Orientation="Horizontal" Margin="0,4,0,0" VerticalAlignment="Center">
+                                                    <Border CornerRadius="4"
+                                                            BorderThickness="1"
+                                                            Padding="6,1"
+                                                            Margin="0,0,6,0"
+                                                            VerticalAlignment="Center"
+                                                            ToolTip="{Binding SourceDetailedDisclosureText}">
+                                                        <Border.Style>
+                                                            <Style TargetType="Border">
+                                                                <Setter Property="Background" Value="{DynamicResource SubtleSurfaceBrush}" />
+                                                                <Setter Property="BorderBrush" Value="{DynamicResource DividerBrush}" />
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding IsExternalWebsiteSource}" Value="True">
+                                                                        <Setter Property="Background" Value="{DynamicResource InfoBannerBackgroundBrush}" />
+                                                                        <Setter Property="BorderBrush" Value="{DynamicResource InfoBannerBorderBrush}" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </Border.Style>
+                                                        <TextBlock Text="{Binding ProviderLabel}"
+                                                                   FontSize="11">
+                                                            <TextBlock.Style>
+                                                                <Style TargetType="TextBlock">
+                                                                    <Setter Property="Foreground" Value="{DynamicResource SecondaryTextBrush}" />
+                                                                    <Setter Property="FontWeight" Value="Normal" />
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding IsExternalWebsiteSource}" Value="True">
+                                                                            <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+                                                                            <Setter Property="FontWeight" Value="SemiBold" />
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </TextBlock.Style>
+                                                        </TextBlock>
+                                                    </Border>
+                                                    <TextBlock Text="SHA-256: "
                                                                FontSize="11.5"
-                                                               Foreground="{DynamicResource SecondaryTextBrush}" />
-                                                    <TextBlock Text=" · SHA-256: "
-                                                               FontSize="11.5"
-                                                               Foreground="{DynamicResource MutedTextBrush}" />
+                                                               Foreground="{DynamicResource MutedTextBrush}"
+                                                               VerticalAlignment="Center" />
                                                     <TextBlock Text="{Binding ShortSha256}"
                                                                ToolTip="{Binding FullSha256}"
                                                                FontFamily="{StaticResource SpawnMonoFont}"
                                                                FontSize="11.5"
-                                                               Foreground="{DynamicResource SecondaryTextBrush}" />
+                                                               Foreground="{DynamicResource SecondaryTextBrush}"
+                                                               VerticalAlignment="Center" />
                                                     <TextBlock Text=" · "
                                                                FontSize="11.5"
-                                                               Foreground="{DynamicResource MutedTextBrush}" />
+                                                               Foreground="{DynamicResource MutedTextBrush}"
+                                                               VerticalAlignment="Center" />
                                                     <TextBlock Text="{Binding FileMetaShortText}"
                                                                FontFamily="{StaticResource SpawnMonoFont}"
                                                                FontSize="11.5"
-                                                               Foreground="{DynamicResource MutedTextBrush}" />
+                                                               Foreground="{DynamicResource MutedTextBrush}"
+                                                               VerticalAlignment="Center" />
                                                     <TextBlock Text=" · "
                                                                FontSize="11.5"
-                                                               Foreground="{DynamicResource MutedTextBrush}" />
+                                                               Foreground="{DynamicResource MutedTextBrush}"
+                                                               VerticalAlignment="Center" />
                                                     <TextBlock Text="{Binding LastLaunchedText}"
                                                                FontFamily="{StaticResource SpawnMonoFont}"
                                                                FontSize="11.5"
-                                                               Foreground="{DynamicResource MutedTextBrush}" />
+                                                               Foreground="{DynamicResource MutedTextBrush}"
+                                                               VerticalAlignment="Center" />
                                                 </WrapPanel>
+
+                                                <TextBlock Text="{Binding SourceOriginSummaryText}"
+                                                           ToolTip="{Binding SourceDetailedDisclosureText}"
+                                                           FontSize="11.5"
+                                                           Foreground="{DynamicResource MutedTextBrush}"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           Margin="0,3,0,0" />
                                             </StackPanel>
 
                                             <!-- Row Primary Launch/Stop Button + Floating ⋯ Menu (PlacementTarget.Tag bridge!) -->
@@ -3691,6 +3852,16 @@
                                                                         Click="OnAnyPopupMenuItemClick"
                                                                         Command="{Binding OpenSandboxFolderCommand}" />
                                                                 <Button Style="{StaticResource FloatingMenuItemButtonStyle}"
+                                                                        Content="在浏览器打开来源网页"
+                                                                        Click="OnAnyPopupMenuItemClick"
+                                                                        Command="{Binding OpenSourcePageCommand}"
+                                                                        Visibility="{Binding HasValidSourcePageUrl, Converter={StaticResource BoolToVis}}" />
+                                                                <Button Style="{StaticResource FloatingMenuItemButtonStyle}"
+                                                                        Content="复制来源网页链接"
+                                                                        Click="OnAnyPopupMenuItemClick"
+                                                                        Command="{Binding CopySourcePageUrlCommand}"
+                                                                        Visibility="{Binding HasValidSourcePageUrl, Converter={StaticResource BoolToVis}}" />
+                                                                <Button Style="{StaticResource FloatingMenuItemButtonStyle}"
                                                                         Content="校验 SHA-256"
                                                                         Click="OnAnyPopupMenuItemClick"
                                                                         Command="{Binding VerifyIntegrityCommand}" />
@@ -3747,7 +3918,7 @@
                                        Foreground="{DynamicResource PrimaryTextBrush}"
                                        HorizontalAlignment="Center"
                                        Margin="0,14,0,0" />
-                            <TextBlock Text="在左侧选择任意单机游戏（Tier 0 或已核验离线单机），即可按英文标准名匹配官方修改器，或直接将本地 .exe / .zip / .rar / .7z 修改器拖入工作台导入至隔离沙箱。"
+                            <TextBlock Text="{Binding Settings.TrainerOverviewEmptyStateDescription}"
                                        FontSize="13"
                                        Foreground="{DynamicResource SecondaryTextBrush}"
                                        TextAlignment="Center"
@@ -4403,6 +4574,43 @@
 
                         <!-- Category 6: Trainer & Security Sandbox (SettingsCategory.TrainerAndSandbox) -->
                         <StackPanel Visibility="{Binding SelectedCategory, Converter={StaticResource EqToVis}, ConverterParameter=TrainerAndSandbox}">
+                            <!-- 0. Trainer Source Provenance & External Website Boundary Disclosure -->
+                            <Border BorderBrush="{DynamicResource DividerBrush}"
+                                    BorderThickness="0,0,0,1"
+                                    Padding="0,12,0,16">
+                                <StackPanel>
+                                    <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding TrainerSourceProvenanceTitle}"
+                                                   FontSize="14"
+                                                   FontWeight="SemiBold"
+                                                   VerticalAlignment="Center" />
+                                        <Border CornerRadius="4"
+                                                Background="{DynamicResource InfoBannerBackgroundBrush}"
+                                                BorderBrush="{DynamicResource InfoBannerBorderBrush}"
+                                                BorderThickness="1"
+                                                Padding="7,1.5"
+                                                Margin="10,0,0,0"
+                                                VerticalAlignment="Center">
+                                            <TextBlock Text="非 SPAWN 内置 · 外部网站按需直连 / 本地导入"
+                                                       FontSize="11"
+                                                       FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource AccentBrush}" />
+                                        </Border>
+                                    </WrapPanel>
+                                    <TextBlock Text="{Binding TrainerSourceProvenanceDescription}"
+                                               FontSize="12.5"
+                                               Foreground="{DynamicResource SecondaryTextBrush}"
+                                               TextWrapping="Wrap"
+                                               Margin="0,6,0,0" />
+                                    <TextBlock Text="在线检索外部站点白名单：https://flingtrainer.com · https://archive.flingtrainer.com（Opt-in） | 本地文件标识：本地导入 · 用户手动添加"
+                                               FontFamily="{StaticResource SpawnMonoFont}"
+                                               FontSize="11.5"
+                                               Foreground="{DynamicResource MutedTextBrush}"
+                                               TextWrapping="Wrap"
+                                               Margin="0,6,0,0" />
+                                </StackPanel>
+                            </Border>
+
                             <!-- 1. Pure-ASCII Custom Sandbox Root -->
                             <Border BorderBrush="{DynamicResource DividerBrush}"
                                     BorderThickness="0,0,0,1"
@@ -4729,7 +4937,7 @@
                             <Border Padding="0,16,0,0">
                                 <StackPanel>
                                     <CheckBox Style="{StaticResource ModernSwitchCheckBoxStyle}"
-                                              Content="检索修改器时包含 FLiNG 归档站历史索引（Opt-in，7 天本地缓存，默认关闭）"
+                                              Content="检索修改器时包含第三方外部网站 FLiNG 归档站历史索引（archive.flingtrainer.com · Opt-in，7 天本地缓存，默认关闭）"
                                               IsChecked="{Binding TrainerIncludeFlingArchive, Mode=TwoWay}" />
 
                                     <CheckBox Style="{StaticResource ModernSwitchCheckBoxStyle}"

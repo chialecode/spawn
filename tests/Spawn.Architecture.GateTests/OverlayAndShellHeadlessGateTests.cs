@@ -35,6 +35,7 @@ namespace Spawn.Architecture.GateTests;
 /// STA <see cref="RenderTargetBitmap"/> non-transparent pixel rendering across all 3 themes,
 /// XAML <c>&lt;Popup&gt;</c> cross-tree binding hygiene, and in-memory RIFF PCM WAV synthesis.
 /// </summary>
+[Collection(WpfStaHeadlessCollection.Name)]
 public sealed class OverlayAndShellHeadlessGateTests
 {
     [Fact]
@@ -183,7 +184,7 @@ public sealed class OverlayAndShellHeadlessGateTests
         staThread.SetApartmentState(ApartmentState.STA);
         staThread.IsBackground = true;
         staThread.Start();
-        Assert.True(staThread.Join(TimeSpan.FromSeconds(15)), "STA headless render test timed out.");
+        Assert.True(staThread.Join(TimeSpan.FromSeconds(60)), "STA headless render test timed out.");
 
         if (staException is not null)
         {

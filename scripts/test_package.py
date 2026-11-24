@@ -24,6 +24,7 @@ SCRIPTS_DIR = REPO_ROOT / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
+import generate_icons  # noqa: E402
 import package as pkg  # noqa: E402
 
 UNIFIED_RECEIPT_FIELDS = (
@@ -321,6 +322,30 @@ class InstallDecisionTests(unittest.TestCase):
         receipt = pkg.new_install_receipt(self.profile, "0.1.1-dev.2")
         for field in UNIFIED_RECEIPT_FIELDS:
             self.assertIn(field, receipt)
+
+
+class GenerateIconsCheckTests(unittest.TestCase):
+    def test_check_flag_verifies_committed_assets_and_detects_tampering(self) -> None:
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            self.assertEqual(generate_icons.main(["--check"]), 0)
+        self.assertIn("check passed", out.getvalue())
+
+        assets_dir = REPO_ROOT / "assets"
+        with tempfile.TemporaryDirectory(prefix="spawn-icons-check-") as td:
+            tmp_assets = Path(td)
+            for name in ("icon.png", "icon.ico", "icon-dev.png", "icon-dev.ico"):
+                (tmp_assets / name).write_bytes((assets_dir / name).read_bytes())
+
+            tampered = tmp_assets / "icon-dev.ico"
+            raw = bytearray(tampered.read_bytes())
+            raw[-1] ^= 0xFF
+            tampered.write_bytes(bytes(raw))
+
+            err = io.StringIO()
+            with mock.patch("sys.stderr", err):
+                self.assertEqual(generate_icons.main(["--check", "--assets-dir", str(tmp_assets)]), 1)
+            self.assertIn("icon-dev.ico", err.getvalue())
 
 
 if __name__ == "__main__":

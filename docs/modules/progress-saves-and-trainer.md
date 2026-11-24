@@ -295,15 +295,18 @@ stateDiagram-v2
 - 仅在用户首次启用修改器或触发隔离时展示透明同意卡，绝不在启动时自动弹 UAC；排除范围**仅** `vault\Sandbox\Trainers\`（含 `.staging`），严禁排除游戏目录、`%LOCALAPPDATA%` 或 `Downloads`。
 - 流程与降级见 [IPC 契约 §6.1](../design/ipc-and-security-contracts.md)：预读 `TPExclusions`/`ManagedDefenderProductType` → 单次 UAC WMI `MSFT_MpPreference.Add`（零 `powershell.exe`）→ 强制回读核验；失败时“复制沙箱路径 + 打开 `windowsdefender://exclusions`（回退 `ms-settings:windowsdefender`）”。
 - Windows 11 Smart App Control 无法被 Defender 排除项绕过：识别拦截后向用户解释并提供微软官方说明链接，绝不尝试编程关闭。
-- 每张修改器卡片展示来源域名、日期、体积、本地 `SHA-256`，并提供用户点击才打开的“在 VirusTotal 查看此哈希”（仅打开 `https://www.virustotal.com/gui/file/<sha256>`，绝不上传文件）。
+- 每张修改器卡片与候选条目必须以高辨识度来源徽标与来源说明明确区分**外部第三方网站**与**本地手动导入**：
+  - 外部网站来源标示为 `外部网站 · FLiNG Trainer (<实际主机名，默认 flingtrainer.com>)` 或 `外部网站 · FLiNG Trainer 归档站 (<archive.flingtrainer.com>)`，并在候选列表、已绑定工作台、全库修改器总览及设置页明确说明其来自第三方外部站点（非 SPAWN 内置、编写或镜像托管），仅在用户主动触发时直连源站获取，经本地 `SHA-256` 钉扎并在独立 `TrainerWorker` 沙箱中隔离运行；记录有合法 `https://` `source_page_url` 时展示源站网页地址并在 `⋯` 菜单提供“在浏览器打开来源网页”与“复制来源网页链接”（仅限显式点击触发，拒绝非 `https://` 协议）。
+  - 本地导入来源标示为 `本地导入 · 用户手动添加`（展示沙箱文件名或既有来源记录）。
+  - 每张修改器卡片同步展示日期、体积、本地 `SHA-256`，并提供用户点击才打开的“在 VirusTotal 查看此哈希”（仅打开 `https://www.virustotal.com/gui/file/<sha256>`，绝不上传文件）。
 
 ### 4.8 UI 集成契约（`D-20`，细节同步至 [DESIGN.md](../design-rules/DESIGN.md) 与 [交互与工作流设计](../design/interaction-and-workflows.md)）
 
 - **Column 1 独立一级入口 + 侧栏总览 + 详情子页签双向同步**：
   - Column 1（`52px` 图标栏）挂载已完整落地的第 3 个非空壳业务一级入口 **③ 修改器（`PrimaryNavSection.Trainers`）**，采用 `1.6px` / 选中 `2.0px` 线性滑块图标，存在活跃修改器会话时右上角同步点亮 `8px` 翡翠绿 `#10B981` 状态圆点；
   - Column 2（`264px` 上下文侧栏）在修改器视图顶部提供刷新按钮、固定 **`全部修改器总览`** 入口、带中文输入法（IME）组合态 `Enter` 防误触保护的检索框，以及按优先级排序的游戏列表（运行中修改器 → 已就绪已绑定修改器 → 可用单机 `Tier 0` / 混合单机 → 受保护屏蔽游戏）；
-  - Column 3（右侧主面板）在选中 `全部修改器总览` 时展示全库统计摘要条、安全沙箱路径与 Defender 快捷栏、活跃运行横幅及 `Recycling` 虚拟化已纳管修改器列表（支持直启/停止、打开沙箱、校验 SHA-256、VirusTotal 外链及经 `PlacementTarget.Tag` 桥接的 `⋯` 菜单移除；无修改器时显示空状态引导）；选中侧栏任意游戏时复用共享 `TrainerWorkbenchTemplate` 渲染单游戏工作台，并与游戏详情页 **`成就 (x/y) | 游戏数据 | 修改器`**（`GameDetailSubTab.Trainers`，头部 `⋯` 菜单含“打开修改器”）保持实时状态与选中项双向同步；设置页保留第 6 分类 **`修改器与安全沙箱`**（`SettingsCategory.TrainerAndSandbox`）。
-- 单区域唯一主按钮：未绑定 → `匹配修改器`（次要“导入本地文件”）；就绪 → `启动修改器`（`⋯` 菜单：重新匹配、导入覆盖、打开沙箱目录、校验 SHA-256、重置开关显示、在 VirusTotal 查看哈希、红字“移除”，严格经 `PlacementTarget.Tag` 桥接 `DataContext`）；运行中 → 翡翠绿 `运行中 · 停止修改器`（次要“显示 / 隐藏原窗口”）。
+  - Column 3（右侧主面板）在选中 `全部修改器总览` 时展示全库统计摘要条、安全沙箱路径与 Defender 快捷栏、外部网站与本地导入来源边界说明、活跃运行横幅及 `Recycling` 虚拟化已纳管修改器列表（支持直启/停止、打开沙箱、打开/复制有效 `https://` 外部来源网页、校验 SHA-256、VirusTotal 外链及经 `PlacementTarget.Tag` 桥接的 `⋯` 菜单移除；无修改器时显示明确区分外部网站检索与本地导入的空状态引导）；选中侧栏任意游戏时复用共享 `TrainerWorkbenchTemplate` 渲染单游戏工作台，并与游戏详情页 **`成就 (x/y) | 游戏数据 | 修改器`**（`GameDetailSubTab.Trainers`，头部 `⋯` 菜单含“打开修改器”）保持实时状态与选中项双向同步；设置页保留第 6 分类 **`修改器与安全沙箱`**（`SettingsCategory.TrainerAndSandbox`，顶部常驻修改器来源声明与外部网站白名单边界说明）。
+- 单区域唯一主按钮：未绑定 → `匹配修改器`（次要“导入本地文件”）；就绪 → `启动修改器`（`⋯` 菜单：重新匹配、导入覆盖、打开沙箱目录、打开/复制外部来源网页链接（有效 `https://` 时可见）、校验 SHA-256、重置开关显示、在 VirusTotal 查看哈希、红字“移除”，严格经 `PlacementTarget.Tag` 桥接 `DataContext`）；运行中 → 翡翠绿 `运行中 · 停止修改器`（次要“显示 / 隐藏原窗口”）。
 - 安全视觉：修复 `AntiCheatBadgeText` 硬编码绿色——`Tier 0` 翡翠绿 `#10B981`、`Tier 1` 琥珀 `#F59E0B`、`Tier 2/3` 警戒红 `#DC2626`，`VerifiedOfflineBypass` 附加“离线无 AC 就绪”小徽标；受保护联网游戏的 `修改器` 页签仅渲染安全围栏说明卡（物理不渲染下载/启动控件）；混合单机渲染可展开离线校验面板（实时 AC 进程/驱动清零状态 + 显式确认勾选）；守卫非 `IdleSafe` 时顶部常驻等宽倒计时横幅并置灰运行/热键控件；`vgk.sys` 空闲驻留显示可折叠橙色警示条。
 - 热键列表虚拟化；深浅主题与 `1000 DIP` 窄窗口无截断。
 

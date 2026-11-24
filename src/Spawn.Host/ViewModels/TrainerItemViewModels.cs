@@ -1,10 +1,13 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Windows;
 using System.Windows.Media.Imaging;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Spawn.Contracts;
 using Spawn.Host.Helpers;
+using Spawn.Modules.Progress.Catalog;
 
 namespace Spawn.Host.ViewModels;
 
@@ -89,13 +92,14 @@ public sealed partial class TrainerHotkeyRowViewModel : ObservableObject
 }
 
 /// <summary>
-/// Clean-room FLiNG discovery candidate card with selectable version attachments.
+/// Clean-room external website discovery candidate card with explicit source provenance and selectable version attachments.
 /// </summary>
 public sealed partial class TrainerCandidateItemViewModel : ObservableObject
 {
     private readonly Func<TrainerCandidateItemViewModel, Task> _onLoadDetails;
     private readonly Func<TrainerCandidateItemViewModel, Task> _onDownload;
     private readonly Action<string> _onOpenBrowser;
+    private readonly Action<string> _onCopyText;
 
     [ObservableProperty]
     private TrainerCandidate _candidate;
@@ -108,7 +112,15 @@ public sealed partial class TrainerCandidateItemViewModel : ObservableObject
 
     public string Title => Candidate.Title;
     public string PageUrl => Candidate.PageUrl;
-    public string ProviderLabel => UiFormatters.FormatTrainerProviderLabel(Candidate.Provider);
+    public TrainerCandidateProvenanceInfo Provenance => TrainerSourceProvenance.DescribeCandidate(Candidate);
+    public string ProviderLabel => Provenance.BadgeText;
+    public string SourceHostText => Provenance.SourceHost;
+    public string ProvenanceHintText => Provenance.ProvenanceHintText;
+    public bool HasValidHttpsPageUrl => Provenance.HasValidHttpsPageUrl;
+    public string ValidatedHttpsPageUrl => Provenance.ValidatedHttpsPageUrl ?? string.Empty;
+    public string SourceUrlDisplayText => Provenance.HasValidHttpsPageUrl
+        ? $"来源网页：{Provenance.ValidatedHttpsPageUrl}"
+        : $"来源站点：{Provenance.SourceHost}";
     public string VersionSummaryText => string.IsNullOrWhiteSpace(Candidate.VersionLabel)
         ? (Candidate.UpdatedDateText ?? "点击加载附件版本列表")
         : $"{Candidate.VersionLabel}{(string.IsNullOrWhiteSpace(Candidate.UpdatedDateText) ? string.Empty : $" · {Candidate.UpdatedDateText}")}";
@@ -122,22 +134,26 @@ public sealed partial class TrainerCandidateItemViewModel : ObservableObject
     public IAsyncRelayCommand LoadDetailsCommand { get; }
     public IAsyncRelayCommand DownloadCommand { get; }
     public IRelayCommand OpenInBrowserCommand { get; }
+    public IRelayCommand CopyPageUrlCommand { get; }
 
     public TrainerCandidateItemViewModel(
         TrainerCandidate candidate,
         Func<TrainerCandidateItemViewModel, Task> onLoadDetails,
         Func<TrainerCandidateItemViewModel, Task> onDownload,
-        Action<string> onOpenBrowser)
+        Action<string> onOpenBrowser,
+        Action<string>? onCopyText = null)
     {
         _candidate = candidate ?? throw new ArgumentNullException(nameof(candidate));
         _selectedAttachment = candidate.SelectedAttachment ?? (candidate.Attachments.Count > 0 ? candidate.Attachments[0] : null);
         _onLoadDetails = onLoadDetails ?? throw new ArgumentNullException(nameof(onLoadDetails));
         _onDownload = onDownload ?? throw new ArgumentNullException(nameof(onDownload));
         _onOpenBrowser = onOpenBrowser ?? throw new ArgumentNullException(nameof(onOpenBrowser));
+        _onCopyText = onCopyText ?? CopyToSystemClipboardSafe;
 
         LoadDetailsCommand = new AsyncRelayCommand(() => _onLoadDetails(this));
         DownloadCommand = new AsyncRelayCommand(() => _onDownload(this));
-        OpenInBrowserCommand = new RelayCommand(() => _onOpenBrowser(PageUrl));
+        OpenInBrowserCommand = new RelayCommand(OpenValidatedPageInBrowser);
+        CopyPageUrlCommand = new RelayCommand(CopyValidatedPageUrl);
     }
 
     public void UpdateCandidate(TrainerCandidate updated)
@@ -146,7 +162,13 @@ public sealed partial class TrainerCandidateItemViewModel : ObservableObject
         SelectedAttachment = updated.SelectedAttachment ?? (updated.Attachments.Count > 0 ? updated.Attachments[0] : null);
         OnPropertyChanged(nameof(Title));
         OnPropertyChanged(nameof(PageUrl));
+        OnPropertyChanged(nameof(Provenance));
         OnPropertyChanged(nameof(ProviderLabel));
+        OnPropertyChanged(nameof(SourceHostText));
+        OnPropertyChanged(nameof(ProvenanceHintText));
+        OnPropertyChanged(nameof(HasValidHttpsPageUrl));
+        OnPropertyChanged(nameof(ValidatedHttpsPageUrl));
+        OnPropertyChanged(nameof(SourceUrlDisplayText));
         OnPropertyChanged(nameof(VersionSummaryText));
         OnPropertyChanged(nameof(ConfidenceBadgeText));
         OnPropertyChanged(nameof(ConfidenceReasonText));
@@ -160,6 +182,34 @@ public sealed partial class TrainerCandidateItemViewModel : ObservableObject
         SelectedAttachment is not null
             ? Candidate with { SelectedAttachment = SelectedAttachment }
             : Candidate;
+
+    private void OpenValidatedPageInBrowser()
+    {
+        if (TrainerSourceProvenance.TryNormalizeHttpsSourceUrl(Candidate.PageUrl, out string safeHttpsUrl, out _))
+        {
+            _onOpenBrowser(safeHttpsUrl);
+        }
+    }
+
+    private void CopyValidatedPageUrl()
+    {
+        if (TrainerSourceProvenance.TryNormalizeHttpsSourceUrl(Candidate.PageUrl, out string safeHttpsUrl, out _))
+        {
+            _onCopyText(safeHttpsUrl);
+        }
+    }
+
+    private static void CopyToSystemClipboardSafe(string text)
+    {
+        try
+        {
+            Clipboard.SetText(text);
+        }
+        catch
+        {
+            // Ignore clipboard contention.
+        }
+    }
 }
 
 /// <summary>
@@ -428,9 +478,12 @@ public sealed partial class ManagedTrainerItemViewModel : ObservableObject
     private readonly Func<ManagedTrainerItemViewModel, Task> _onVerifyIntegrity;
     private readonly Action<ManagedTrainerItemViewModel> _onOpenVirusTotal;
     private readonly Func<ManagedTrainerItemViewModel, Task> _onRemove;
+    private readonly Action<string> _onOpenExternalUrl;
+    private readonly Action<string> _onCopyText;
 
     public TrainerCatalogRecord Record { get; }
     public GameListItemViewModel? Game { get; }
+    public TrainerSourceProvenanceInfo Provenance { get; }
 
     public string TrainerId => Record.TrainerId;
     public string GameId => Record.GameId;
@@ -443,7 +496,13 @@ public sealed partial class ManagedTrainerItemViewModel : ObservableObject
     public string VersionLabelText => !string.IsNullOrWhiteSpace(Record.VersionLabel)
         ? Record.VersionLabel!
         : (Record.Provider == TrainerProviderKind.LocalImport ? "本地版本" : "标准版本");
-    public string ProviderLabel => UiFormatters.FormatTrainerProviderLabel(Record.Provider);
+    public bool IsExternalWebsiteSource => Provenance.IsExternalWebsite;
+    public string ProviderLabel => Provenance.BadgeText;
+    public string SourceHostText => Provenance.SourceHost;
+    public bool HasValidSourcePageUrl => Provenance.HasValidHttpsSourceUrl;
+    public string ValidatedSourcePageUrl => Provenance.ValidatedHttpsSourceUrl ?? string.Empty;
+    public string SourceOriginSummaryText => Provenance.CompactOriginSummary;
+    public string SourceDetailedDisclosureText => Provenance.DetailedDisclosureText;
     public string FullSha256 => Record.FileSha256;
     public string ShortSha256 => Record.FileSha256.Length > 12
         ? $"{Record.FileSha256[..12]}…"
@@ -500,6 +559,8 @@ public sealed partial class ManagedTrainerItemViewModel : ObservableObject
     public IAsyncRelayCommand OpenSandboxFolderCommand { get; }
     public IAsyncRelayCommand VerifyIntegrityCommand { get; }
     public IRelayCommand OpenVirusTotalCommand { get; }
+    public IRelayCommand OpenSourcePageCommand { get; }
+    public IRelayCommand CopySourcePageUrlCommand { get; }
     public IAsyncRelayCommand RemoveCommand { get; }
 
     public ManagedTrainerItemViewModel(
@@ -513,10 +574,13 @@ public sealed partial class ManagedTrainerItemViewModel : ObservableObject
         Func<ManagedTrainerItemViewModel, Task> onOpenSandboxFolder,
         Func<ManagedTrainerItemViewModel, Task> onVerifyIntegrity,
         Action<ManagedTrainerItemViewModel> onOpenVirusTotal,
-        Func<ManagedTrainerItemViewModel, Task> onRemove)
+        Func<ManagedTrainerItemViewModel, Task> onRemove,
+        Action<string>? onOpenExternalUrl = null,
+        Action<string>? onCopyText = null)
     {
         Record = record ?? throw new ArgumentNullException(nameof(record));
         Game = game;
+        Provenance = TrainerSourceProvenance.DescribeRecord(record);
         _isRunning = isRunning;
         _isGuardLocked = isGuardLocked;
         _isSafetyBlocked = isSafetyBlocked;
@@ -526,13 +590,66 @@ public sealed partial class ManagedTrainerItemViewModel : ObservableObject
         _onVerifyIntegrity = onVerifyIntegrity ?? throw new ArgumentNullException(nameof(onVerifyIntegrity));
         _onOpenVirusTotal = onOpenVirusTotal ?? throw new ArgumentNullException(nameof(onOpenVirusTotal));
         _onRemove = onRemove ?? throw new ArgumentNullException(nameof(onRemove));
+        _onOpenExternalUrl = onOpenExternalUrl ?? OpenHttpsUrlWithShellSafe;
+        _onCopyText = onCopyText ?? CopyTextToClipboardSafe;
 
         PrimaryLaunchOrStopCommand = new AsyncRelayCommand(() => _onPrimaryAction(this));
         OpenWorkbenchCommand = new RelayCommand(() => _onOpenWorkbench(this));
         OpenSandboxFolderCommand = new AsyncRelayCommand(() => _onOpenSandboxFolder(this));
         VerifyIntegrityCommand = new AsyncRelayCommand(() => _onVerifyIntegrity(this));
         OpenVirusTotalCommand = new RelayCommand(() => _onOpenVirusTotal(this));
+        OpenSourcePageCommand = new RelayCommand(OpenValidatedSourcePage);
+        CopySourcePageUrlCommand = new RelayCommand(CopyValidatedSourcePageUrl);
         RemoveCommand = new AsyncRelayCommand(() => _onRemove(this));
+    }
+
+    private void OpenValidatedSourcePage()
+    {
+        if (Provenance.HasValidHttpsSourceUrl && !string.IsNullOrWhiteSpace(Provenance.ValidatedHttpsSourceUrl))
+        {
+            _onOpenExternalUrl(Provenance.ValidatedHttpsSourceUrl);
+        }
+    }
+
+    private void CopyValidatedSourcePageUrl()
+    {
+        if (Provenance.HasValidHttpsSourceUrl && !string.IsNullOrWhiteSpace(Provenance.ValidatedHttpsSourceUrl))
+        {
+            _onCopyText(Provenance.ValidatedHttpsSourceUrl);
+        }
+    }
+
+    private static void OpenHttpsUrlWithShellSafe(string url)
+    {
+        if (!TrainerSourceProvenance.TryNormalizeHttpsSourceUrl(url, out string normalizedHttpsUrl, out _))
+        {
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = normalizedHttpsUrl,
+                UseShellExecute = true,
+            });
+        }
+        catch
+        {
+            // Ignore shell launch error when no default browser is registered.
+        }
+    }
+
+    private static void CopyTextToClipboardSafe(string text)
+    {
+        try
+        {
+            Clipboard.SetText(text);
+        }
+        catch
+        {
+            // Ignore clipboard contention.
+        }
     }
 
     partial void OnIsRunningChanged(bool value)

@@ -33,7 +33,7 @@ SPAWN 是一个横跨进程调度、存储去重、离线协议解析、图形�
 ### 3.2 文档即契约与机械化注册表门禁
 1. 全仓受控文档统一登记在 [document-registry.json](../governance/document-registry.json)，明确主责角色、更新时机与阶段分类。
 2. 需求编号（`REQ-*` / `NFR-*`）、设计正本、模块规格与验收判据（`AC-*`）在 [traceability.json](../delivery/traceability.json) 中建立双向机器可读映射。
-3. 本地与 GitHub Actions（`.github/workflows/docs.yml`）统一运行 `python scripts/check_docs.py`，强制拦截死链、未登记孤儿文档、引用式链接、任何盘符绝对路径（`[A-Za-z]:[\\/]`）以及任何外部无关项目命名残留。
+3. 本地与 GitHub Actions（`.github/workflows/ci.yml` 的 `repository-quality`）统一运行 `python scripts/check_docs.py`，强制拦截死链、未登记孤儿文档、引用式链接、任何盘符绝对路径（`[A-Za-z]:[\\/]`）以及任何外部无关项目命名残留。
 
 ### 3.3 多智能体独占分片与保守远端授权
 1. 并行 Swarm / 双 Agent 协作时严格按目录分片授权写操作，共享契约（如 `Spawn.Contracts`、数据库 DDL、注册表）先对齐接口再落盘，并由无写偏见的独立角色执行全量门禁复核。

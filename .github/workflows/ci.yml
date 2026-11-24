@@ -1,5 +1,9 @@
-name: .NET 10 Build & Architecture Gates
+name: CI
 
+# The only required check of the `main-protection` ruleset. Keep the job name
+# `repository-quality` in exact sync with .github/rulesets/main.json
+# (`required_status_checks`: context = "repository-quality", integration_id = 15368).
+# No path filters: documentation-only PRs must produce this check too.
 on:
   pull_request:
     branches: [main]
@@ -15,20 +19,64 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  dotnet-windows:
-    name: dotnet-windows
+  repository-quality:
+    name: repository-quality
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     env:
       DOTNET_CLI_TELEMETRY_OPTOUT: "1"
       DOTNET_NOLOGO: "1"
       DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
+      PYTHONIOENCODING: utf-8
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Verify DCO Signed-off-by trailers
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import subprocess
+          import sys
+
+          def git(*args):
+              return subprocess.check_output(["git", *args], encoding="utf-8")
+
+          event = os.environ.get("EVENT_NAME", "")
+          base = os.environ.get("BASE_SHA", "")
+          head = os.environ.get("HEAD_SHA", "")
+          dco_re = re.compile(r"^Signed-off-by:\s+.+\s+<[^@\s]+@[^@\s]+>\s*$", re.MULTILINE)
+
+          if event == "pull_request" and base and head:
+              revs = git("rev-list", "--no-merges", f"{base}..{head}").splitlines()
+          else:
+              revs = [git("rev-parse", "HEAD").strip()]
+
+          if not revs:
+              print("No commits found to verify DCO.", file=sys.stderr)
+              sys.exit(1)
+
+          missing = [rev for rev in revs if not dco_re.search(git("log", "-1", "--format=%B", rev))]
+          if missing:
+              print("Missing valid DCO Signed-off-by trailer in commit(s):", ", ".join(missing), file=sys.stderr)
+              sys.exit(1)
+
+          print(f"DCO Signed-off-by verified for {len(revs)} commit(s).")
+          PY
+
+      - name: Verify documentation governance and whitespace hygiene
+        run: |
+          python -B scripts/check_docs.py
+          git diff --check
 
       - name: Set up .NET 10 SDK
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
@@ -43,8 +91,3 @@ jobs:
 
       - name: Run Architecture IAT & Core test suites (headless, temp-isolated)
         run: dotnet test Spawn.sln -c Release --no-build -nologo --verbosity normal
-
-      - name: Verify documentation governance and whitespace hygiene
-        run: |
-          python -B scripts/check_docs.py
-          git diff --check

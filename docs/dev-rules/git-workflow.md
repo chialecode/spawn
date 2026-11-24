@@ -5,7 +5,7 @@
 ## 1. 第一提交与 `main` 保护
 
 - **第一提交**：`ad7454c1ab58bb2019e0f0ba6810c5928f8a335e`（`chore: initialize repository with empty README`，0 字节 `README.md`，带 DCO 签名）永久保留，不改写；已推送到 `main` 的历史一律不 `amend`、`rebase` 或强推。
-- **规则集 `main-protection`**（镜像 [`.github/rulesets/main.json`](../../.github/rulesets/main.json)，无绕过名单）：禁止删除与非快进推送，线性历史，`main` 只经 PR 写入，只允许 squash 合并，所有讨论必须解决；必需检查目前是 `docs`（[`.github/workflows/docs.yml`](../../.github/workflows/docs.yml)），另有 Windows `.NET 10` 构建与测试（[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)）。统一为单个必需检查 `repository-quality` 见 [#12](https://github.com/chialecode/spawn/issues/12)。
+- **规则集 `main-protection`**（镜像 [`.github/rulesets/main.json`](../../.github/rulesets/main.json)，无绕过名单）：禁止删除与非快进推送，线性历史，`main` 只经 PR 写入，只允许 squash 合并，所有讨论必须解决；必需检查只有一个 `repository-quality`（[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)：DCO 签名、文档与公开卫生、Windows `.NET 10` Release 构建与全量测试；不按路径过滤，纯文档 PR 也产出）。
 - **仓库入口**：开启 [Issues](https://github.com/chialecode/spawn/issues)（只允许协作者创建）与 [Discussions](https://github.com/chialecode/spawn/discussions)，关闭 Wiki 与 Projects；PR 仅协作者可创建；允许自动合并与更新分支，合并后删除分支；网页提交要求 DCO 签名；来自 fork 的 PR 运行 workflow 前须维护者批准；安全问题走私密漏洞报告。远端设置的镜像是 [repository-settings.json](../../.github/repository-settings.json)、[rulesets/main.json](../../.github/rulesets/main.json) 与 [actions-policy.json](../../.github/actions-policy.json)，以 GitHub 实际回读为准，改远端设置时同步更新镜像；其中 `issue_creation_policy` 与 `pull_request_creation_policy` 的 REST 接口不返回，用 GraphQL 仓库字段 `issueCreationPolicy` / `pullRequestCreationPolicy` 核对。
 
 <a id="single-stage-commit"></a>
@@ -19,7 +19,8 @@
 git log --format="%H | %s | %(trailers:key=Signed-off-by,valueonly)" origin/main..HEAD
 ```
 
-3. **暂存**：先跑 `python -B scripts/quick_gate.py`；用 `git status --short` 核对，再用 `git add -u` 或显式路径暂存，不用 `git add .`、`git add -A` 或 `git clean -fdx`，防止误吞 `.local/`、`bin/`、`obj/`、数据库或他人临时文件。
+3. **本机 pre-push 门禁**：每个克隆执行一次 `git config --local core.hooksPath .githooks`，之后每次 `git push` 前自动跑快速门禁 `python -B scripts/quick_gate.py`。确需跳过时用 `git push --no-verify`，并在 PR 里写明原因；hook 不代替远端规则集。
+4. **暂存**：先跑 `python -B scripts/quick_gate.py`；用 `git status --short` 核对，再用 `git add -u` 或显式路径暂存，不用 `git add .`、`git add -A` 或 `git clean -fdx`，防止误吞 `.local/`、`bin/`、`obj/`、数据库或他人临时文件。
 
 <a id="remote-auth"></a>
 <a id="github-hygiene"></a>

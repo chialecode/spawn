@@ -13,7 +13,7 @@
 | `docs/governance/`、`docs/product-rules/`、`docs/design-rules/`、`docs/dev-rules/`、`docs/templates/` | `M1` 已建立 | 文档治理政策、`document-registry.json` 注册表、五大产品不变量、WPF/Nodify/Overlay 视觉规范、工程协作规则与写作模板 |
 | `docs/requirements/`、`docs/decisions/`、`docs/design/`、`docs/engineering/`、`docs/delivery/` | `M1` 已建立 | 产品需求正本、ADR-0001~0005 与决策台账、系统架构/数据/IPC 契约、开源选型与环境清单、里程碑路线图与追踪矩阵 |
 | `docs/modules/`、`docs/research/` | `M1` 已建立 | S.P.A.W.N. 五大领域模块正式实现规格书（`active`）及前期源码级深度调研档案（`reference`） |
-| `assets/`、`installer/` | `M2` 已建立 | 双通道应用图标（矢量正本 `icon.svg` / `icon-dev.svg` 与栅格产物 `icon.ico|png`、带琥珀色 `DEV` 角标的 `icon-dev.ico|png`，规格见 [DESIGN.md](../design-rules/DESIGN.md)）及 Inno Setup 7 按用户免提权安装包模板（`installer/spawn.iss`） |
+| `assets/`、`installer/` | `M2` 已建立 | 双通道应用图标（矢量正本 `icon.svg` / `icon-dev.svg` 与栅格产物 `icon.ico|png`、带琥珀色 `DEV` 角标的 `icon-dev.ico|png`，规格见 [DESIGN.md](../design-rules/DESIGN.md)）及 NSIS 3.13 按用户免提权安装脚本（`installer/spawn.nsi`，[D-35](../decisions/confirmed-decisions.md#d-35)） |
 | `scripts/` | `M1`~`M2` 已建立 | 零外部依赖 Python 3.12+ 门禁与打包脚本（`check_docs.py`、`quick_gate.py`、`generate_icons.py`、`package.py --install-dev`） |
 | `src/`、`tests/`、`Directory.Build.props`、`Directory.Packages.props`、`global.json`、`Spawn.sln` | `M2` 已建立并按阶段扩充 | 纯原生 `.NET 10`（LTS）多进程物理隔离源码树、中央包版本管理（CPM）与 `PEReader` 架构门禁测试 |
 | `.local/`、`SPAWN_Vault/`、`bin/`、`obj/`、`dist/` | `.gitignore` 忽略 | 本地隔离开发数据、门禁测试原始日志、构建中间产物与安装包暂存目录（严禁提交入库） |

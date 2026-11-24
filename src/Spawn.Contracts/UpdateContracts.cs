@@ -236,7 +236,7 @@ public interface IUpdateIdleEvaluator
 }
 
 /// <summary>
-/// Launches the verified per-user Inno Setup installer silently via <c>ShellExecute</c> (zero UAC).
+/// Launches the verified per-user NSIS installer silently via <c>ShellExecute</c> (zero UAC).
 /// </summary>
 public interface IUpdateInstallerLauncher
 {

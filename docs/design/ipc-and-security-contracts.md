@@ -187,7 +187,7 @@ Windows 内核 `win32kfull.sys` 规定，仅同时满足以下三项条件的进
 3. 可执行文件物理位于 `%ProgramFiles%\`（或 `%SystemRoot%\`）受保护目录。
 
 **零私钥泄漏风险的本地瞬态签发流程**：
-1. 在安装程序（Inno Setup）或设置页的“一键启用全屏置顶图层”向导中，在进程内存瞬态生成唯一 `RSA-4096`（`SHA-256`）密钥对与 `CN=SPAWN Local UIAccess Authority (<MachineGuid>)` 自签名证书（有效期 10 年，限定增强型密钥用法 `Code Signing 1.3.6.1.5.5.7.3.3`）。
+1. 在安装程序（NSIS）或设置页的“一键启用全屏置顶图层”向导中，在进程内存瞬态生成唯一 `RSA-4096`（`SHA-256`）密钥对与 `CN=SPAWN Local UIAccess Authority (<MachineGuid>)` 自签名证书（有效期 10 年，限定增强型密钥用法 `Code Signing 1.3.6.1.5.5.7.3.3`）。
 2. 将**仅含公钥**的 `.cer` 证书导入本机 `LocalMachine\Root` 受信任根证书存储区。
 3. 调用内存签名管线（或系统 `signtool.exe` 配合瞬态内存 PFX）对 `%ProgramFiles%\spawn\Overlay\Spawn.OverlayHost.exe` 完成 Authenticode 签名。
 4. **立即清零并销毁内存中的 RSA 私钥且永不落盘**：任何外部恶意程序即便入侵用户磁盘也绝无可能盗用该根证书签发其他程序；卸载 SPAWN 时自动按证书指纹从 `LocalMachine\Root` 干净移除该公钥证书。

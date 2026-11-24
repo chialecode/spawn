@@ -157,7 +157,7 @@ SPAWN 核心仓库采用 **`Apache-2.0`** 开源许可证。所有外部开源�
 | **Visual Studio Build Tools / IDE** | VS 2022/2026 或 Build Tools `18` | **已就绪**（Build Tools `18` 已安装） | `winget install --id Microsoft.VisualStudio.2022.BuildTools --exact` | `vswhere -latest` | 提供 MSBuild 桌面构建链与原生依赖打包支持（如需可视化 XAML 热重载可选装桌面开发工作负载） |
 | **Python 3** | `3.12+` | **已就绪**（`Python 3.12.16`） | `winget install --id Python.Python.3.12 --exact` | `python --version` | 运行本地与 CI 一致的文档治理及架构注册表门禁脚本 `python -B scripts/check_docs.py` |
 | **Git & GitHub CLI** | `git 2.40+` / `gh 2.50+` | **已就绪**（`git 2.56.0` / `gh 2.103.3`） | `winget install --id Git.Git --exact` / `winget install --id GitHub.cli --exact` | `git --version` / `gh auth status` | DCO 签名提交、issue 与 PR 流程、远端规则集审计 |
-| **Inno Setup** | `6.3+` / `7.x` | **已就绪**（`Inno Setup 7` `ISCC.exe`） | `winget install --id JRSoftware.InnoSetup --exact` | `iscc /?` | M6 制作标准安装包（部署 `%ProgramFiles%\spawn\Overlay\` 受保护目录与本地自签名向导） |
+| **NSIS** | `3.13`（固定） | **已就绪**（`scripts/package.py` 首次使用时下载官方 `nsis-3.13.zip`，核对 SHA-256 `ba63dffc…b3d8` 后解压到 Git 忽略的 `.tools/nsis-3.13/`；也可用 `SPAWN_MAKENSIS_PATH` 指向同版本） | 无需安装 | `.tools\nsis-3.13\makensis.exe /VERSION` | 按用户安装包 `installer/spawn.nsi`（[D-35](../decisions/confirmed-decisions.md#d-35)）。许可：存根与 zlib 模块为 zlib/libpng，LZMA 模块为 CPL-1.0（附链接例外），所以各通道都用 zlib 压缩；M6 起还负责 `%ProgramFiles%\spawn\Overlay\` 受保护目录与本地自签名向导（[#27](https://github.com/chialecode/spawn/issues/27)） |
 
 > **M2 启动就绪结论**：本机全部 M2 核心编译、签名与验证基础设施均已 100% 就位；`M1` 已经 [PR #1](https://github.com/chialecode/spawn/pull/1) 合入 `main`，`M2` 据此启动。
 

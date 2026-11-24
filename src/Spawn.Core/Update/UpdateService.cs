@@ -1043,7 +1043,7 @@ public sealed class UpdateService : IUpdateService
                 Volatile.Write(ref _activeQuitCallbackLoopId, 0);
             }
 
-            // Step 2 (handle STILL open!): launch per-user silent installer with /SPAWNRELAUNCH (zero UAC).
+            // Step 2 (handle STILL open!): launch per-user silent installer with /RELAUNCH (zero UAC).
             bool launched = _installerLauncher.LaunchSilentInstaller(
                 ready.InstallerPath,
                 _options.SilentInstallerArguments,

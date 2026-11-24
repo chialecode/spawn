@@ -13,11 +13,11 @@ namespace Spawn.Architecture.GateTests;
 /// </summary>
 public sealed class ReleaseWorkflowGateTests
 {
-    private const string ExpectedInnoSetup711Url =
-        "https://github.com/jrsoftware/issrc/releases/download/is-7_1_1/innosetup-7.1.1-x64.exe";
+    private const string ExpectedNsis313ZipUrl =
+        "https://downloads.sourceforge.net/project/nsis/NSIS%203/3.13/nsis-3.13.zip";
 
-    private const string ExpectedInnoSetup711Sha256 =
-        "8a5a6711c3766a6e5fb74f280ba0e3551e719ce94538d901fdbd1f8f9920b3f0";
+    private const string ExpectedNsis313ZipSha256 =
+        "ba63dffc4410ee89193e1cb5a41989991bd77c61068da17e3156d136b7b0b3d8";
 
     private const string ExpectedUploadArtifactRef =
         "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9";
@@ -246,14 +246,15 @@ public sealed class ReleaseWorkflowGateTests
         Assert.Contains("SPAWN_NETWORK_TRIPWIRE", scripts, StringComparison.Ordinal);
         Assert.Contains("NO_PROXY", scripts, StringComparison.Ordinal);
 
-        // Release tooling unit tests, doc governance gate, and whitespace hygiene.
+        // Release and packaging tooling unit tests, doc governance gate, and whitespace hygiene.
         Assert.Contains("python -B scripts/test_release.py", scripts, StringComparison.Ordinal);
+        Assert.Contains("python -B scripts/test_package.py", scripts, StringComparison.Ordinal);
         Assert.Contains("python -B scripts/check_docs.py", scripts, StringComparison.Ordinal);
         Assert.Contains("git diff --check", scripts, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void ReleaseWorkflow_BuildJob_PinsInnoSetup711Sha256IsolatesSigningSecretAndRunsInstallDrill()
+    public void ReleaseWorkflow_BuildJob_UsesPinnedNsis313IsolatesSigningSecretAndRunsInstallDrill()
     {
         ParsedWorkflow workflow = LoadReleaseWorkflow();
         ParsedJob build = workflow.Jobs["build"];
@@ -273,23 +274,19 @@ public sealed class ReleaseWorkflowGateTests
             }
         }
 
-        // 2. Pinned official Inno Setup 7.1.1 download + SHA-256 verification + silent install into RUNNER_TEMP.
-        ParsedStep innoStep = Assert.Single(
-            build.Steps,
-            s => s.Run is not null && s.Run.Contains("innosetup-7.1.1-x64.exe", StringComparison.Ordinal));
-        string innoRun = innoStep.Run!;
-        Assert.Contains(ExpectedInnoSetup711Url, innoRun, StringComparison.Ordinal);
-        Assert.Contains(ExpectedInnoSetup711Sha256, innoRun, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("Get-FileHash", innoRun, StringComparison.Ordinal);
-        Assert.Contains("SHA256", innoRun, StringComparison.Ordinal);
-        Assert.Contains("RUNNER_TEMP", innoRun, StringComparison.Ordinal);
-        Assert.Contains("/VERYSILENT", innoRun, StringComparison.Ordinal);
-        Assert.Contains("/SUPPRESSMSGBOXES", innoRun, StringComparison.Ordinal);
-        Assert.Contains("/NORESTART", innoRun, StringComparison.Ordinal);
-        Assert.Contains("/CURRENTUSER", innoRun, StringComparison.Ordinal);
-        Assert.Contains("/DIR=", innoRun, StringComparison.Ordinal);
-        Assert.Contains("SPAWN_ISCC_PATH=", innoRun, StringComparison.Ordinal);
-        Assert.Contains("GITHUB_ENV", innoRun, StringComparison.Ordinal);
+        // 2. The installer compiler is the pinned official NSIS 3.13 zip that scripts/package.py fetches
+        //    and checks by SHA-256; the workflow never points it at another makensis, and
+        //    installer/spawn.nsi refuses any other NSIS version.
+        string repoRoot = LocateRepositoryRoot();
+        string workflowText = File.ReadAllText(Path.Combine(repoRoot, ".github", "workflows", "release.yml"));
+        Assert.DoesNotContain("SPAWN_MAKENSIS_PATH", workflowText, StringComparison.Ordinal);
+        Assert.DoesNotContain("innosetup", workflowText, StringComparison.OrdinalIgnoreCase);
+        string packagePy = File.ReadAllText(Path.Combine(repoRoot, "scripts", "package.py"));
+        Assert.Contains($"NSIS_ZIP_URL = \"{ExpectedNsis313ZipUrl}\"", packagePy, StringComparison.Ordinal);
+        Assert.Contains($"NSIS_ZIP_SHA256 = \"{ExpectedNsis313ZipSha256}\"", packagePy, StringComparison.Ordinal);
+        Assert.Contains("hashlib.sha256(data).hexdigest()", packagePy, StringComparison.Ordinal);
+        string nsiText = File.ReadAllText(Path.Combine(repoRoot, "installer", "spawn.nsi"));
+        Assert.Contains("!if \"${NSIS_VERSION}\" != \"v3.13\"", nsiText, StringComparison.Ordinal);
 
         // 3. Signing step: writes secret to RUNNER_TEMP random file, runs release.py --build, cleans up in finally, never echoes key.
         ParsedStep signStep = Assert.Single(
@@ -306,6 +303,14 @@ public sealed class ReleaseWorkflowGateTests
         Assert.DoesNotMatch(
             new Regex(@"(?:Write-Host|Write-Output|\becho\b)[^\r\n]*(?:SIGNING_KEY|keyFile|\.pem)", RegexOptions.IgnoreCase),
             signRun);
+
+        // The NSIS download happens in its own step, before the signing key is written.
+        var buildSteps = build.Steps.ToList();
+        int fetchIndex = buildSteps.FindIndex(
+            s => (s.Run ?? string.Empty).Contains("python -B scripts/package.py --fetch-nsis", StringComparison.Ordinal));
+        Assert.True(fetchIndex >= 0, "release build job must fetch the pinned NSIS in its own step");
+        Assert.True(fetchIndex < buildSteps.IndexOf(signStep), "NSIS must be fetched before the signing step");
+        Assert.DoesNotContain("SPAWN_UPDATE_SIGNING_KEY", buildSteps[fetchIndex].RawBlock, StringComparison.Ordinal);
 
         // 4. Isolated spawn-test install drill.
         Assert.Contains("python -B scripts/release.py --drill-install --version", build.AllRunScripts, StringComparison.Ordinal);

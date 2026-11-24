@@ -6,7 +6,7 @@
 
 | 文档 | 定位与职责 |
 | :--- | :--- |
-| [confirmed-decisions.md](confirmed-decisions.md) | 汇总 `D-01` ~ `D-34` 全部已拍板锁定的产品、技术栈、里程碑范围、安全隔离与协作治理决策，以及 `A-01` ~ `A-06` 可逆工程默认项。任何偏离已确认决策的改动必须先提交新 ADR 审阅。 |
+| [confirmed-decisions.md](confirmed-decisions.md) | 汇总 `D-01` ~ `D-35` 全部已拍板锁定的产品、技术栈、里程碑范围、安全隔离与协作治理决策，以及 `A-01` ~ `A-06` 可逆工程默认项。任何偏离已确认决策的改动必须先提交新 ADR 审阅。 |
 | [open-questions.md](open-questions.md) | 上游事项台账：`OSS-*` 外部组件适配与合规核验；原 `LOOP-*` 与用户事项已转为 GitHub issue，台账列出去向。 |
 
 > **协作分工约束**：本目录仅记录**系统架构与工程技术决策**；凡需仓库所有者手工执行的本机工具确认、证书信任或远端发布审批动作，统一建为带 `needs-user` 标签的 [GitHub issue](https://github.com/chialecode/spawn/issues?q=is%3Aissue+is%3Aopen+label%3Aneeds-user)，不在本目录重复建账。

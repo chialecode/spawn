@@ -10,7 +10,7 @@
 
 全仓路径、通道标识、目录名与凭据命名空间统一采用小写 **`spawn`**（产品展示名称仍为大写 **SPAWN**）。正式版、开发版与自动化门禁测试必须保持 100% 物理隔离，支持同机并存且互不干扰：
 
-| 运行通道 / 身份 | 程序安装目录（Inno Setup `PrivilegesRequired=lowest`） | 应用数据根目录（数据库/凭据/配置/回收站） | 默认本地内容寻址库（分卷库为 `<目标盘根>\SPAWN_Vault\`） | 独立实例锁与控制/IPC 管道前缀 |
+| 运行通道 / 身份 | 程序安装目录（NSIS 按用户安装 `RequestExecutionLevel user`，卸载项 `io.github.chialecode.<身份>`） | 应用数据根目录（数据库/凭据/配置/回收站） | 默认本地内容寻址库（分卷库为 `<目标盘根>\SPAWN_Vault\`） | 独立实例锁与控制/IPC 管道前缀 |
 | :--- | :--- | :--- | :--- | :--- |
 | **`release`（`spawn` 正式版）** | `%LOCALAPPDATA%\Programs\spawn\spawn.exe`（可选受保护 UIAccess 目录 `%ProgramFiles%\spawn\Overlay\`） | `%LOCALAPPDATA%\spawn` | `%LOCALAPPDATA%\spawn\vault` | `spawn-instance` / `spawn-control` / `spawn-ipc-*` |
 | **`dev`（`spawn-dev` 开发版与源码运行）** | `%LOCALAPPDATA%\Programs\spawn-dev\spawn-dev.exe`（琥珀色 `DEV` 角标图标） | `%LOCALAPPDATA%\spawn-dev`（含 `dev-workspace.json` 桥接） | `%LOCALAPPDATA%\spawn-dev\vault` | `spawn-dev-instance` / `spawn-dev-control` / `spawn-dev-ipc-*` |

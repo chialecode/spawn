@@ -1,6 +1,7 @@
-"""Per-user Inno Setup 7 packager and automatic SPAWN Dev installer.
+"""Per-user NSIS 3.13 packager and automatic SPAWN Dev installer.
 
-Requires Python 3.12+ standard library only (zero pip dependencies) + .NET 10 SDK + Inno Setup 7.
+Requires Python 3.12+ standard library only (zero pip dependencies) + .NET 10 SDK. The pinned
+NSIS 3.13 build is fetched on first use (SHA-256 checked) into the Git-ignored .tools/nsis-3.13/.
 
 Usage examples:
   python -B scripts/package.py --channel dev
@@ -17,14 +18,18 @@ from ctypes import wintypes
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import hashlib
+import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
 import subprocess
 import sys
 import time
+from typing import Callable
+import urllib.request
+import uuid
 import zipfile
 
 if os.name == "nt":
@@ -33,6 +38,29 @@ if os.name == "nt":
 NEXT_BASE_VERSION = "0.1.1"
 QUIT_TIMEOUT_SECONDS = 30.0
 QUIT_POLL_SECONDS = 0.25
+# While SPAWN Dev shows a window the user is working in it: check every 2 s, give up after 10 min.
+WINDOW_DEFER_TIMEOUT_SECONDS = 600.0
+WINDOW_DEFER_POLL_SECONDS = 2.0
+UNINSTALL_REMOVAL_TIMEOUT_SECONDS = 60.0
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+APP_ID_PREFIX = "io.github.chialecode."
+UNINSTALL_KEY_PREFIX = "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\"
+NSIS_VERSION = "3.13"
+NSIS_ZIP_URL = "https://downloads.sourceforge.net/project/nsis/NSIS%203/3.13/nsis-3.13.zip"
+NSIS_ZIP_SHA256 = "ba63dffc4410ee89193e1cb5a41989991bd77c61068da17e3156d136b7b0b3d8"
+NSIS_CACHE_DIR = REPO_ROOT / ".tools" / f"nsis-{NSIS_VERSION}"
+NSIS_DOWNLOAD_TIMEOUT_SECONDS = 120.0
+# Installer exit codes besides NSIS's own 0 (done), 1 (cancelled) and 2 (aborted); see installer/spawn.nsi.
+INSTALLER_EXIT_REASONS = {
+    1: "installer cancelled",
+    2: "installer aborted",
+    4: "SPAWN is still running or busy after 30 s (installer did not force-kill it)",
+    5: "SPAWN is running but its executable to ask to quit was not found",
+    6: "another installer of this identity is running",
+    7: "the target folder holds another program's Uninstall.exe",
+    8: "a file could not be written (held open by another program); nothing was registered",
+}
 
 BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
 CREATE_NO_WINDOW = 0x08000000
@@ -64,10 +92,13 @@ class IdentityProfile:
     identity: str
     channel: str
     display_name: str
-    app_guid: str
-    aumid: str
     dev_like: bool
     default_shortcuts: bool
+
+    @property
+    def app_id(self) -> str:
+        """Uninstall key name and application identity: io.github.chialecode.<identity>."""
+        return APP_ID_PREFIX + self.identity
 
 
 IDENTITY_PROFILES: dict[str, IdentityProfile] = {
@@ -75,8 +106,6 @@ IDENTITY_PROFILES: dict[str, IdentityProfile] = {
         identity="spawn",
         channel="release",
         display_name="SPAWN",
-        app_guid="B7E91A42-6D30-4C95-9E18-2F4A8C705101",
-        aumid="ChialeCode.Spawn",
         dev_like=False,
         default_shortcuts=True,
     ),
@@ -84,8 +113,6 @@ IDENTITY_PROFILES: dict[str, IdentityProfile] = {
         identity="spawn-dev",
         channel="dev",
         display_name="SPAWN Dev",
-        app_guid="B7E91A42-6D30-4C95-9E18-2F4A8C705102",
-        aumid="ChialeCode.Spawn.Dev",
         dev_like=True,
         default_shortcuts=True,
     ),
@@ -93,8 +120,6 @@ IDENTITY_PROFILES: dict[str, IdentityProfile] = {
         identity="spawn-test",
         channel="release",
         display_name="SPAWN Test",
-        app_guid="B7E91A42-6D30-4C95-9E18-2F4A8C705103",
-        aumid="ChialeCode.Spawn.Test",
         dev_like=False,
         default_shortcuts=False,
     ),
@@ -102,8 +127,6 @@ IDENTITY_PROFILES: dict[str, IdentityProfile] = {
         identity="spawn-dev-test",
         channel="dev",
         display_name="SPAWN Dev Test",
-        app_guid="B7E91A42-6D30-4C95-9E18-2F4A8C705104",
-        aumid="ChialeCode.Spawn.DevTest",
         dev_like=True,
         default_shortcuts=False,
     ),
@@ -123,7 +146,7 @@ def _configure_windows_quiet_mode() -> None:
 
 
 def _run_quiet(
-    cmd: list[str],
+    cmd: list[str] | str,
     *,
     cwd: Path,
     env: dict[str, str] | None = None,
@@ -172,32 +195,186 @@ def build_clean_app_env(
     return env
 
 
-def find_iscc() -> Path:
-    override = os.environ.get("SPAWN_ISCC_PATH", "").strip()
-    if override and Path(override).is_file():
-        return Path(override)
+def find_makensis(
+    env: dict[str, str] | None = None,
+    *,
+    cache_dir: Path | None = None,
+    fetch: bool = True,
+    download: Callable[[str], bytes] | None = None,
+) -> Path:
+    """Return makensis.exe of the pinned NSIS build, fetching the verified archive once if missing.
 
-    found = shutil.which("ISCC") or shutil.which("iscc")
-    if found:
-        return Path(found)
+    SPAWN_MAKENSIS_PATH overrides the location; installer/spawn.nsi itself rejects any version
+    but NSIS_VERSION.
+    """
+    effective_env = env if env is not None else os.environ
+    override = effective_env.get("SPAWN_MAKENSIS_PATH", "").strip()
+    if override:
+        candidate = Path(override)
+        if not candidate.is_file():
+            raise FileNotFoundError(f"SPAWN_MAKENSIS_PATH does not name a file: {override}")
+        return candidate
 
-    candidates: list[Path] = []
-    local_app_data = os.environ.get("LOCALAPPDATA", "")
-    if local_app_data:
-        candidates.append(Path(local_app_data) / "Programs" / "Inno Setup 7" / "ISCC.exe")
-    for env_key in ("ProgramFiles(x86)", "ProgramFiles"):
-        pf = os.environ.get(env_key, "")
-        if pf:
-            candidates.append(Path(pf) / "Inno Setup 7" / "ISCC.exe")
+    target = cache_dir if cache_dir is not None else NSIS_CACHE_DIR
+    makensis = target / "makensis.exe"
+    if makensis.is_file():
+        return makensis
+    if not fetch:
+        raise FileNotFoundError(
+            f"NSIS {NSIS_VERSION} not found at .tools/{target.name}/makensis.exe; "
+            "run scripts/package.py once to fetch it, or set SPAWN_MAKENSIS_PATH"
+        )
+    fetch_pinned_nsis(target, download=download)
+    if not makensis.is_file():
+        raise RuntimeError(f"NSIS {NSIS_VERSION} archive did not contain makensis.exe")
+    return makensis
 
-    for cand in candidates:
-        if cand.is_file():
-            return cand
 
-    raise FileNotFoundError(
-        "Inno Setup 7 compiler (ISCC.exe) not found in PATH, %LOCALAPPDATA%\\Programs\\Inno Setup 7, "
-        "or %ProgramFiles(x86)%\\Inno Setup 7."
-    )
+def _download_bytes(url: str) -> bytes:
+    request = urllib.request.Request(url, headers={"User-Agent": "spawn-package-script"})
+    with urllib.request.urlopen(request, timeout=NSIS_DOWNLOAD_TIMEOUT_SECONDS) as response:
+        return response.read()
+
+
+def fetch_pinned_nsis(target: Path, *, download: Callable[[str], bytes] | None = None) -> None:
+    """Download the pinned NSIS zip, check its SHA-256 and unpack it into `target` atomically."""
+    print(f"[package] fetching NSIS {NSIS_VERSION} (pinned SHA-256) into .tools/{target.name}...")
+    try:
+        data = (download or _download_bytes)(NSIS_ZIP_URL)
+    except OSError as exc:
+        raise RuntimeError(
+            f"Could not download NSIS {NSIS_VERSION} from {NSIS_ZIP_URL}: {exc}. "
+            "Download it by hand and set SPAWN_MAKENSIS_PATH, or retry when online."
+        ) from exc
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != NSIS_ZIP_SHA256:
+        raise RuntimeError(
+            f"NSIS {NSIS_VERSION} archive SHA-256 mismatch: expected {NSIS_ZIP_SHA256}, got {digest}; not using it"
+        )
+
+    root = f"nsis-{NSIS_VERSION}/"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = target.parent / f".{target.name}.staging-{uuid.uuid4().hex}"
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            for info in archive.infolist():
+                name = info.filename.replace("\\", "/")
+                if not name.startswith(root):
+                    raise RuntimeError(f"Unexpected entry in NSIS archive: {info.filename!r}")
+                rel = PurePosixPath(name[len(root):])
+                if not rel.parts:
+                    continue
+                if rel.is_absolute() or any(part == ".." or ":" in part for part in rel.parts):
+                    raise RuntimeError(f"Unsafe path in NSIS archive: {info.filename!r}")
+                dest = staging.joinpath(*rel.parts)
+                if info.is_dir():
+                    dest.mkdir(parents=True, exist_ok=True)
+                    continue
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(info) as src, open(dest, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+        if target.exists():
+            shutil.rmtree(target)
+        os.replace(staging, target)
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+
+
+def nsis_escape(text: str) -> str:
+    """Escape text for an NSIS double-quoted string ($ starts a variable)."""
+    return text.replace("$", "$$")
+
+
+def render_remove_files_nsh(app_dir: Path) -> str:
+    """Return the SPAWN_REMOVE_INSTALLED_FILES macro: every staged file, then its folders deepest first.
+
+    Each file goes through SPAWN_REMOVE_FILE (installer/spawn.nsi), which moves a file Windows
+    still holds into .retired instead of leaving it behind.
+    """
+    files: list[PurePosixPath] = []
+    folders: set[PurePosixPath] = set()
+    for path in app_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        rel = PurePosixPath(path.relative_to(app_dir).as_posix())
+        files.append(rel)
+        for parent in rel.parents:
+            if parent != PurePosixPath("."):
+                folders.add(parent)
+    if not files:
+        raise RuntimeError(f"No files to install in {app_dir}")
+
+    def win(rel: PurePosixPath) -> str:
+        return nsis_escape(str(rel).replace("/", "\\"))
+
+    def flat(rel: PurePosixPath) -> str:
+        return nsis_escape("_".join(rel.parts))
+
+    lines = [
+        "; Generated by scripts/package.py: the files this version installs. Do not edit.",
+        "!macro SPAWN_REMOVE_INSTALLED_FILES",
+    ]
+    lines += [
+        f'  !insertmacro SPAWN_REMOVE_FILE "{win(rel)}" "{flat(rel)}"'
+        for rel in sorted(files, key=str)
+    ]
+    lines += [
+        f'  RMDir "$INSTDIR\\{win(rel)}"'
+        for rel in sorted(folders, key=lambda d: (-len(d.parts), str(d)))
+    ]
+    lines.append("!macroend")
+    return "\n".join(lines) + "\n"
+
+
+def compile_nsis_installer(
+    makensis_exe: Path,
+    nsi_path: Path,
+    *,
+    profile: IdentityProfile,
+    version: str,
+    numeric_version: str,
+    icon_file: Path,
+    app_dir: Path,
+    out_file: Path,
+    work_dir: Path,
+    create_shortcuts: bool,
+    fast_compression: bool,
+    cwd: Path,
+) -> None:
+    """Write the uninstall file list into work_dir and compile installer/spawn.nsi into out_file."""
+    work_dir.mkdir(parents=True, exist_ok=True)
+    files_nsh = work_dir / "installed-files.nsh"
+    files_nsh.write_text(render_remove_files_nsh(app_dir), encoding="utf-8", newline="\n")
+    cmd = [
+        str(makensis_exe),
+        "-V2",
+        # Warnings fail the build: the script must stay warning-free.
+        "-WX",
+        "-INPUTCHARSET",
+        "UTF8",
+        "-OUTPUTCHARSET",
+        "UTF8",
+        f"-DSPAWN_IDENTITY={profile.identity}",
+        f"-DSPAWN_APP_ID={profile.app_id}",
+        f"-DSPAWN_DISPLAY_NAME={profile.display_name}",
+        f"-DSPAWN_VERSION={version}",
+        f"-DSPAWN_FILE_VERSION={numeric_version}",
+        f"-DSPAWN_ICON={icon_file}",
+        f"-DSPAWN_SOURCE_DIR={app_dir}",
+        f"-DSPAWN_OUT_FILE={out_file}",
+        f"-DSPAWN_FILES_NSH={files_nsh}",
+        f"-DSPAWN_CREATE_SHORTCUTS={'1' if create_shortcuts else '0'}",
+        f"-DSPAWN_DESKTOP_ON_UPDATE={'1' if profile.dev_like else '0'}",
+    ]
+    if fast_compression:
+        cmd.append("-DSPAWN_FAST_COMPRESSION")
+    cmd.append(str(nsi_path))
+    proc = _run_quiet(cmd, cwd=cwd, timeout=600.0)
+    if proc.returncode != 0:
+        raise RuntimeError(f"makensis failed (exit {proc.returncode}):\n{proc.stdout}\n{proc.stderr}")
+    if not out_file.is_file() or out_file.stat().st_size == 0:
+        raise RuntimeError(f"makensis succeeded but installer not found at {out_file}")
 
 
 def resolve_git_short_sha(repo_root: Path) -> str:
@@ -358,10 +535,10 @@ def build_package(
     self_contained: bool | None = None,
     output_dir: Path | None = None,
 ) -> tuple[Path, Path]:
-    """Build executables and Inno Setup installer into dist/<identity>/ via atomic staging."""
+    """Build executables and the NSIS installer into dist/<identity>/ via atomic staging."""
     rel_ico, dev_ico = ensure_icons(repo_root)
     icon_file = dev_ico if profile.dev_like else rel_ico
-    iscc_path = find_iscc()
+    makensis_path = find_makensis()
     commit_sha = resolve_git_short_sha(repo_root)
     now_utc = datetime.now(UTC)
     build_time_utc = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -560,38 +737,26 @@ def build_package(
             if leaked_release_pdbs:
                 raise RuntimeError(f"Release stage_app must contain zero *.pdb files: {leaked_release_pdbs}")
 
-        compression_mode = "lzma2/fast" if profile.dev_like else "lzma2/max"
-        iss_path = repo_root / "installer" / "spawn.iss"
-        print(f"[package] compiling Inno Setup 7 installer {installer_base}.exe...")
-        iscc_cmd = [
-            str(iscc_path),
-            "--quiet",
-            f"/DIdentity={profile.identity}",
-            f"/DAppGuid={profile.app_guid}",
-            f"/DDisplayName={profile.display_name}",
-            f"/DVersion={version}",
-            f"/DNumericVersion={numeric_version}",
-            f"/DDesktopExe={desktop_exe}",
-            f"/DIconFile={icon_file}",
-            f"/DSourceDir={stage_app}",
-            f"/DOutputDir={stage_dir}",
-            f"/DOutputBase={installer_base}",
-            f"/DAumid={profile.aumid}",
-            f"/DCompressionMode={compression_mode}",
-            f"/DCreateShortcuts={'1' if create_shortcuts else '0'}",
-            f"/DDesktopOnUpdate={'1' if profile.dev_like else '0'}",
-            f"/DStripAllPdbs={'0' if profile.dev_like else '1'}",
-            str(iss_path),
-        ]
-        iscc_proc = _run_quiet(iscc_cmd, cwd=repo_root, timeout=600.0)
-        if iscc_proc.returncode != 0:
-            raise RuntimeError(
-                f"ISCC.exe failed (exit {iscc_proc.returncode}):\n{iscc_proc.stdout}\n{iscc_proc.stderr}"
-            )
-
+        nsi_path = repo_root / "installer" / "spawn.nsi"
         setup_exe_staged = stage_dir / f"{installer_base}.exe"
-        if not setup_exe_staged.is_file():
-            raise RuntimeError(f"ISCC succeeded but installer not found at {setup_exe_staged}")
+        nsis_work_dir = stage_dir / ".nsis"
+        print(f"[package] compiling NSIS {NSIS_VERSION} installer {installer_base}.exe...")
+        compile_nsis_installer(
+            makensis_path,
+            nsi_path,
+            profile=profile,
+            version=version,
+            numeric_version=numeric_version,
+            icon_file=icon_file,
+            app_dir=stage_app,
+            out_file=setup_exe_staged,
+            work_dir=nsis_work_dir,
+            create_shortcuts=create_shortcuts,
+            # Dev builds skip solid compression to build faster; both use zlib (see spawn.nsi).
+            fast_compression=profile.dev_like,
+            cwd=repo_root,
+        )
+        shutil.rmtree(nsis_work_dir, ignore_errors=True)
 
         checksum_targets = [
             (f"{installer_base}.exe", setup_exe_staged),
@@ -951,10 +1116,11 @@ def _build_unicode_env_block(env: dict[str, str] | None):
     return ctypes.create_unicode_buffer(joined)
 
 
-def lookup_uninstall_entry(app_guid: str) -> dict[str, str] | None:
+def lookup_uninstall_entry(app_id: str) -> dict[str, str] | None:
+    """Read HKCU\\...\\Uninstall\\<app_id> (io.github.chialecode.<identity>), or None when absent."""
     if os.name != "nt":
         return None
-    subkey = f"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{{{app_guid}}}_is1"
+    subkey = UNINSTALL_KEY_PREFIX + app_id
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, subkey, 0, winreg.KEY_READ) as key:
             result: dict[str, str] = {}
@@ -1164,12 +1330,16 @@ def request_graceful_quit_and_wait(
 
     t0 = time.monotonic()
     if host_pids and exe_path.is_file():
-        _run_quiet(
-            [str(exe_path), "--quit-for-update"],
-            cwd=exe_path.parent,
-            base_env=clean_env,
-            timeout=15.0,
-        )
+        # The helper itself waits up to 25 s for the running copy to exit; allow it the full wait.
+        try:
+            _run_quiet(
+                [str(exe_path), "--quit-for-update"],
+                cwd=exe_path.parent,
+                base_env=clean_env,
+                timeout=timeout_sec,
+            )
+        except subprocess.TimeoutExpired:
+            pass
 
     deadline = t0 + timeout_sec
     while time.monotonic() < deadline:
@@ -1188,7 +1358,7 @@ def request_graceful_quit_and_wait(
 
 
 def retire_locked_binaries(install_dir: Path, identity: str) -> int:
-    """Move any kernel SEC_IMAGE-cached DLL/EXE out of install_dir before Inno overwrite.
+    """Move any kernel SEC_IMAGE-cached DLL/EXE out of install_dir before the installer runs.
 
     After a .NET/native process exits on Windows 11, kernel image sections or Defender
     scans can keep DeleteFileW blocked (ERROR_SHARING_VIOLATION=32) for several seconds
@@ -1212,7 +1382,7 @@ def retire_locked_binaries(install_dir: Path, identity: str) -> int:
     for fpath in list(install_dir.rglob("*")):
         if not fpath.is_file():
             continue
-        if fpath.name.lower() in {"unins000.exe", "unins000.dat"}:
+        if fpath.name.lower() == "uninstall.exe":
             continue
         if ".retired" in fpath.parts:
             continue
@@ -1237,6 +1407,136 @@ def retire_locked_binaries(install_dir: Path, identity: str) -> int:
     return retired_count
 
 
+def is_app_window_open(exe_path: Path) -> bool:
+    """True when a process running exe_path shows a visible, unowned, non-tool top-level window.
+
+    A window hidden to the tray is not visible; a minimized one still counts as open.
+    """
+    if os.name != "nt":
+        return False
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    gw_owner = 4
+    gwl_exstyle = -20
+    ws_ex_toolwindow = 0x00000080
+
+    enum_proc_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    user32.EnumWindows.argtypes = [enum_proc_type, wintypes.LPARAM]
+    user32.EnumWindows.restype = wintypes.BOOL
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.IsWindowVisible.restype = wintypes.BOOL
+    user32.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
+    user32.GetWindow.restype = wintypes.HWND
+    user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.GetWindowLongW.restype = wintypes.LONG
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    wanted = os.path.normcase(os.path.abspath(str(exe_path)))
+    image_by_pid: dict[int, str] = {}
+    found = False
+
+    def image_of(pid: int) -> str:
+        if pid not in image_by_pid:
+            image = ""
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if handle:
+                try:
+                    size = wintypes.DWORD(32768)
+                    buf = ctypes.create_unicode_buffer(size.value)
+                    if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+                        image = os.path.normcase(buf.value)
+                finally:
+                    kernel32.CloseHandle(handle)
+            image_by_pid[pid] = image
+        return image_by_pid[pid]
+
+    def on_window(hwnd: int, _lparam: int) -> bool:
+        nonlocal found
+        if not user32.IsWindowVisible(hwnd) or user32.GetWindow(hwnd, gw_owner):
+            return True
+        if user32.GetWindowLongW(hwnd, gwl_exstyle) & ws_ex_toolwindow:
+            return True
+        pid = wintypes.DWORD(0)
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value and image_of(pid.value) == wanted:
+            found = True
+            return False
+        return True
+
+    user32.EnumWindows(enum_proc_type(on_window), 0)
+    return found
+
+
+def wait_while_window_open(
+    exe_path: Path,
+    *,
+    timeout_s: float = WINDOW_DEFER_TIMEOUT_SECONDS,
+    poll_s: float = WINDOW_DEFER_POLL_SECONDS,
+    is_window_open: Callable[[Path], bool] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> tuple[bool, bool, int | None]:
+    """Wait while exe_path shows a window: returns (was_open, still_open, waited_ms)."""
+    check = is_window_open or is_app_window_open
+    if not check(exe_path):
+        return False, False, None
+    start = monotonic()
+    while check(exe_path):
+        waited = monotonic() - start
+        if waited >= timeout_s:
+            return True, True, int(waited * 1000)
+        sleep(min(poll_s, timeout_s - waited))
+    return True, False, int((monotonic() - start) * 1000)
+
+
+def new_install_receipt(profile: IdentityProfile, new_version: str) -> dict[str, object]:
+    """Install receipt with the unified camelCase fields, each present from the start."""
+    return {
+        "identity": profile.identity,
+        "displayName": profile.display_name,
+        "installed": False,
+        "skipped": False,
+        "reason": None,
+        "error": None,
+        "firstInstall": False,
+        "oldVersion": None,
+        "newVersion": new_version,
+        "installLocation": None,
+        "wasRunning": False,
+        "windowOpen": False,
+        "deferred": False,
+        "deferMs": None,
+        "quitMs": None,
+        "relaunched": False,
+        "background": False,
+        "inJob": False,
+        "guidance": None,
+        "elapsedMs": 0,
+        "at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+
+def build_silent_install_command(setup_exe: Path, install_dir: Path | None) -> str:
+    """Command line for a silent NSIS install; /D= must come last and unquoted (NSIS reads it raw)."""
+    cmd = subprocess.list2cmdline([str(setup_exe), "/S"])
+    if install_dir is not None:
+        cmd += f" /D={install_dir}"
+    return cmd
+
+
 def install_package(
     repo_root: Path,
     profile: IdentityProfile,
@@ -1248,19 +1548,14 @@ def install_package(
     receipt_path: Path,
     is_dev_auto_install: bool | None = None,
 ) -> dict[str, object]:
+    """Silently install setup_exe for profile and write the receipt.
+
+    Installs on first use too. For the automatic SPAWN Dev install, waits while its window is
+    open (up to 10 minutes, then skips with reason window_open); a copy running in the tray is
+    asked to --quit-for-update (never force-killed).
+    """
     t0 = time.monotonic()
-    started_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    receipt: dict[str, object] = {
-        "identity": profile.identity,
-        "displayName": profile.display_name,
-        "installed": False,
-        "skipped": False,
-        "newVersion": expected_version,
-        "wasRunning": False,
-        "relaunched": False,
-        "background": False,
-        "at": started_at,
-    }
+    receipt = new_install_receipt(profile, expected_version)
 
     def save_and_return() -> dict[str, object]:
         receipt["elapsedMs"] = int((time.monotonic() - t0) * 1000)
@@ -1287,19 +1582,40 @@ def install_package(
         raise RuntimeError(str(receipt["error"]))
 
     try:
-        prior = lookup_uninstall_entry(profile.app_guid)
-        if prior:
-            receipt["oldVersion"] = prior.get("DisplayVersion", "")
+        prior = lookup_uninstall_entry(profile.app_id)
+        prior_loc = ""
+        if prior is not None:
+            receipt["oldVersion"] = prior.get("DisplayVersion") or None
             prior_loc = prior.get("InstallLocation", "").strip()
-        else:
-            prior_loc = ""
+        receipt["firstInstall"] = prior is None
 
         default_loc = (
             install_dir_override
             if install_dir_override is not None
             else Path(os.environ["LOCALAPPDATA"]) / "Programs" / profile.identity
         )
-        probe_exe = (Path(prior_loc) if prior_loc else default_loc) / f"{profile.identity}.exe"
+        current_loc = Path(prior_loc) if prior_loc else default_loc
+        receipt["installLocation"] = str(current_loc)
+        probe_exe = current_loc / f"{profile.identity}.exe"
+
+        if effective_dev_auto:
+            # An open window means the user is working in SPAWN Dev: wait for it to close or hide
+            # to the tray, bounded, before asking it to quit.
+            was_open, still_open, waited_ms = wait_while_window_open(probe_exe)
+            if was_open:
+                receipt["windowOpen"] = True
+                receipt["deferred"] = True
+                receipt["deferMs"] = waited_ms
+            if still_open:
+                receipt["skipped"] = True
+                receipt["reason"] = "window_open"
+                receipt["guidance"] = (
+                    f"The {profile.display_name} window stayed open for {int(WINDOW_DEFER_TIMEOUT_SECONDS)}s, "
+                    "so this build was not installed. Close the window (or hide it to the tray) and run "
+                    "`python -B scripts/package.py --install-dev --install-only` again."
+                )
+                print(f"[install-dev] skipped: {receipt['guidance']}")
+                return save_and_return()
 
         clean_app_env = build_clean_app_env(profile)
         was_running, quit_ms = request_graceful_quit_and_wait(probe_exe, clean_env=clean_app_env)
@@ -1311,32 +1627,21 @@ def install_package(
         if retired_files:
             receipt["retiredLockedFiles"] = retired_files
 
-        log_path = receipt_path.parent / f"inno-{profile.identity}-install.log"
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        setup_cmd = [
-            str(setup_exe),
-            "/VERYSILENT",
-            "/SUPPRESSMSGBOXES",
-            "/NORESTART",
-            f"/LOG={log_path}",
-        ]
-        if install_dir_override is not None:
-            setup_cmd.append(f"/DIR={install_dir_override}")
-
+        setup_cmd = build_silent_install_command(setup_exe, install_dir_override)
         print(f"[install-dev] silently installing {profile.display_name} {expected_version}...")
         proc = _run_quiet(setup_cmd, cwd=repo_root, base_env=clean_app_env, timeout=180.0)
         if proc.returncode != 0:
-            raise RuntimeError(
-                f"Installer exited with code {proc.returncode}:\n{proc.stdout}\n{proc.stderr}"
-            )
+            receipt["reason"] = f"installer_failed_exit_{proc.returncode}"
+            why = INSTALLER_EXIT_REASONS.get(proc.returncode, "installer failed")
+            raise RuntimeError(f"Installer exited with code {proc.returncode} ({why}).")
 
-        after = lookup_uninstall_entry(profile.app_guid)
+        after = lookup_uninstall_entry(profile.app_id)
         if not after:
-            raise RuntimeError(
-                f"HKCU Uninstall entry for {{{profile.app_guid}}}_is1 missing after silent install."
-            )
+            receipt["reason"] = "uninstall_entry_missing"
+            raise RuntimeError(f"HKCU Uninstall entry {profile.app_id} missing after silent install.")
         actual_ver = after.get("DisplayVersion", "")
         if actual_ver != expected_version:
+            receipt["reason"] = "version_mismatch"
             raise RuntimeError(
                 f"Installed DisplayVersion mismatch: expected {expected_version!r}, got {actual_ver!r}"
             )
@@ -1399,6 +1704,8 @@ def install_package(
         return save_and_return()
     except Exception as exc:
         receipt["error"] = str(exc)
+        if receipt["reason"] is None:
+            receipt["reason"] = "install_failed"
         save_and_return()
         raise
 
@@ -1407,35 +1714,32 @@ def uninstall_identity(repo_root: Path, profile: IdentityProfile, *, allow_relea
     if profile.identity == "spawn" and not allow_release:
         raise RuntimeError("Refusing silent uninstall of production 'spawn' without --confirm-release-uninstall.")
 
-    entry = lookup_uninstall_entry(profile.app_guid)
+    entry = lookup_uninstall_entry(profile.app_id)
     if not entry:
         print(f"[uninstall] {profile.identity} is not currently installed.")
         return 0
 
     loc = entry.get("InstallLocation", "").strip()
-    if loc:
-        exe_path = Path(loc) / f"{profile.identity}.exe"
-        request_graceful_quit_and_wait(exe_path, clean_env=build_clean_app_env(profile))
-        unins_exe = Path(loc) / "unins000.exe"
-    else:
-        unins_exe = Path(os.environ["LOCALAPPDATA"]) / "Programs" / profile.identity / "unins000.exe"
-
+    install_dir = Path(loc) if loc else Path(os.environ["LOCALAPPDATA"]) / "Programs" / profile.identity
+    request_graceful_quit_and_wait(install_dir / f"{profile.identity}.exe", clean_env=build_clean_app_env(profile))
+    unins_exe = install_dir / "Uninstall.exe"
     if not unins_exe.is_file():
         raise FileNotFoundError(f"Uninstaller not found at {unins_exe}")
 
-    proc = _run_quiet(
-        [str(unins_exe), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
-        cwd=repo_root,
-        timeout=120.0,
-    )
+    proc = _run_quiet([str(unins_exe), "/S"], cwd=repo_root, timeout=120.0)
     if proc.returncode != 0:
-        raise RuntimeError(f"Uninstaller failed with code {proc.returncode}: {proc.stderr}")
+        why = INSTALLER_EXIT_REASONS.get(proc.returncode, "uninstaller failed")
+        raise RuntimeError(f"Uninstaller exited with code {proc.returncode} ({why}).")
 
-    # Wait briefly for Inno Setup uninstaller background self-cleanup to remove the registry key
-    deadline = time.monotonic() + 10.0
-    while time.monotonic() < deadline:
-        if lookup_uninstall_entry(profile.app_guid) is None:
-            break
+    # The NSIS uninstaller copies itself to %TEMP% and returns at once: wait until it removed the
+    # uninstall entry and itself.
+    deadline = time.monotonic() + UNINSTALL_REMOVAL_TIMEOUT_SECONDS
+    while lookup_uninstall_entry(profile.app_id) is not None or unins_exe.exists():
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"{profile.identity} uninstall did not finish within {int(UNINSTALL_REMOVAL_TIMEOUT_SECONDS)}s "
+                f"(uninstall entry or {unins_exe.name} still present)."
+            )
         time.sleep(0.2)
 
     print(f"[uninstall] {profile.display_name} ({profile.identity}) removed cleanly (user data preserved).")
@@ -1470,7 +1774,7 @@ def main() -> int:
     parser.add_argument("--install-only", action="store_true", help="Install existing dist/<identity> package without rebuilding.")
     parser.add_argument("--uninstall", action="store_true", help="Silently uninstall the selected --identity.")
     parser.add_argument("--confirm-release-uninstall", action="store_true")
-    parser.add_argument("--install-dir", type=Path, default=None, help="Optional custom /DIR target (for isolated tests).")
+    parser.add_argument("--install-dir", type=Path, default=None, help="Optional custom /D= target (for isolated tests).")
     parser.add_argument("--no-shortcuts", action="store_true", help="Disable Start Menu and Desktop shortcut creation.")
     parser.add_argument("--no-relaunch", action="store_true", help="Do not launch --background after install.")
     parser.add_argument(
@@ -1480,9 +1784,18 @@ def main() -> int:
         help="Publish self-contained win-x64 runtime (default: true for release, false for dev).",
     )
     parser.add_argument("--receipt-path", type=Path, default=None)
+    parser.add_argument(
+        "--fetch-nsis",
+        action="store_true",
+        help="Only fetch the pinned NSIS build into .tools/ (SHA-256 checked) and print makensis.exe.",
+    )
     args = parser.parse_args()
 
-    repo_root = Path(__file__).resolve().parents[1]
+    if args.fetch_nsis:
+        print(find_makensis())
+        return 0
+
+    repo_root = REPO_ROOT
 
     if args.install_dev and args.identity is None:
         identity_key = "spawn-dev"
@@ -1510,19 +1823,9 @@ def main() -> int:
     if args.install_dev:
         skip_reason = should_skip_dev_auto_install()
         if skip_reason is not None:
-            skipped_receipt = {
-                "identity": profile.identity,
-                "displayName": profile.display_name,
-                "installed": False,
-                "skipped": True,
-                "reason": skip_reason,
-                "newVersion": version,
-                "wasRunning": False,
-                "relaunched": False,
-                "background": False,
-                "at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "elapsedMs": 0,
-            }
+            skipped_receipt = new_install_receipt(profile, version)
+            skipped_receipt["skipped"] = True
+            skipped_receipt["reason"] = skip_reason
             receipt_path.parent.mkdir(parents=True, exist_ok=True)
             receipt_path.write_text(
                 json.dumps(skipped_receipt, ensure_ascii=False, indent=2) + "\n",
@@ -1552,7 +1855,8 @@ def main() -> int:
             profile,
             setup_exe,
             version,
-            install_dir_override=args.install_dir,
+            # /D= needs an absolute folder.
+            install_dir_override=args.install_dir.resolve() if args.install_dir else None,
             relaunch_background=(not args.no_relaunch),
             receipt_path=receipt_path,
             is_dev_auto_install=(args.install_dev or profile.identity == "spawn-dev"),

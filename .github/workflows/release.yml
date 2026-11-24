@@ -119,11 +119,13 @@ jobs:
             Remove-Item -LiteralPath $gateRoot -Recurse -Force -ErrorAction SilentlyContinue
           }
 
-      - name: Run release tooling unit tests
+      - name: Run release and packaging tooling unit tests
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           python -B scripts/test_release.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -B scripts/test_package.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Verify documentation governance and whitespace hygiene
@@ -166,33 +168,13 @@ jobs:
         with:
           global-json-file: global.json
 
-      - name: Install pinned official Inno Setup 7.1.1
+      # The pinned NSIS 3.13 zip (SHA-256 checked) is fetched into .tools/ before the signing key exists.
+      - name: Fetch pinned NSIS 3.13
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $innoUrl = "https://github.com/jrsoftware/issrc/releases/download/is-7_1_1/innosetup-7.1.1-x64.exe"
-          $expectedSha256 = "8a5a6711c3766a6e5fb74f280ba0e3551e719ce94538d901fdbd1f8f9920b3f0"
-          $installerPath = Join-Path $env:RUNNER_TEMP "innosetup-7.1.1-x64.exe"
-          $installDir = Join-Path $env:RUNNER_TEMP "inno7"
-          try {
-            Invoke-WebRequest -Uri $innoUrl -OutFile $installerPath
-            $actualSha256 = (Get-FileHash -Path $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
-            if ($actualSha256 -ne $expectedSha256) {
-              throw "Inno Setup 7.1.1 SHA-256 mismatch: expected $expectedSha256, got $actualSha256"
-            }
-            $argString = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /CURRENTUSER `"/DIR=$installDir`""
-            $proc = Start-Process -FilePath $installerPath -ArgumentList $argString -Wait -PassThru -NoNewWindow
-            if ($proc.ExitCode -ne 0) {
-              throw "Inno Setup 7.1.1 silent install failed with exit code $($proc.ExitCode)"
-            }
-            $isccPath = Join-Path $installDir "ISCC.exe"
-            if (-not (Test-Path -LiteralPath $isccPath)) {
-              throw "Pinned Inno Setup 7.1.1 compiler not found at $isccPath"
-            }
-            "SPAWN_ISCC_PATH=$isccPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          } finally {
-            Remove-Item -LiteralPath $installerPath -Force -ErrorAction SilentlyContinue
-          }
+          python -B scripts/package.py --fetch-nsis
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build release installer and sign update manifest
         shell: pwsh

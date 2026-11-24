@@ -83,7 +83,7 @@ flowchart LR
   - 主界面 `Nodify` 千节点 60FPS 可视化蓝图工坊 + 独立进程 `Spawn.BlueprintWorker`（Kismet 异步状态机、实时节点发光脉冲、红点断点挂起、`Step Over`、`Pin Watch`、全局刹停热键、`MMF` 三缓冲 60FPS 零拷贝预览、`WGC`/`OpenCvSharp4`/`Sdcb.PaddleOCR` 与 `L1~L4` 输入执行器）；
   - Nexus 六大极客扩展工具箱：便携沙箱化、WOF 熵值感知透明压缩（$H>7.85$ 跳过 + `dstorage.dll` 熔断）、DLSS 4 / FSR 3.1 / XeSS 官方签名校验热替换、Sunshine/Moonlight 动态虚拟屏、进程独立音频端点路由与单机战术应急工具箱；
   - 二期收窄原生修改后端（声明式原生修改包 + 静态指针链 / 基础纯汇编 `.CT` 子集：CE `<Offsets>` 逆序解引用、`.NET 10` `Vector256`/`Avx2` 自研 AOB 扫描与 `Iced` 安全跳板；复杂 Lua/C/Mono 表经模式 C 外部唤起 Cheat Engine）落地于 `TrainerWorker`（`D-29`）；
-  - Inno Setup 7 正式发行打包脚本、`THIRD-PARTY-NOTICES` 动态链接合规包与全链路回归验收。
+  - NSIS 正式发行打包脚本（[D-35](../decisions/confirmed-decisions.md#d-35)）、`THIRD-PARTY-NOTICES` 动态链接合规包与全链路回归验收。
 - **准出标准**：满足 `AC-21` ~ `AC-24`。
 
 ---
@@ -116,5 +116,5 @@ flowchart LR
 | `AC-21` | `M6` | `REQ-WFL-07`, `NFR-01` | `Nodify` 画布 1000 节点平移缩放 `>=60FPS`；`BlueprintWorker` 异步 Kismet 状态机实时驱动节点发光脉冲、断点挂起、`Step Over`、`Pin Watch`、全局刹停与按 `D-11` 分级提权拉起（免 UAC 计划任务仅限 `LOOP-07` 受保护提权包）。 |
 | `AC-22` | `M6` | `REQ-WFL-07` | 蓝图视觉与输入执行管线（`WGC` + `MMF` 60FPS 零拷贝预览、`OpenCvSharp4`、`Sdcb.PaddleOCR` 及 `L1~L4` 输入执行器）端到端测试通过且仅在白名单安全等级放行。 |
 | `AC-23` | `M6` | `REQ-NEX-04`, `REQ-NEX-05`, `REQ-NEX-06` | 六大极客扩展工具达标：便携沙箱化收拢存档、WOF 压缩跳过 $H>7.85$ 高熵文件并熔断 `dstorage.dll`、超分替换强制校验官方数字签名、Sunshine 串流动态虚拟屏、单进程音频路由与 `Tier 0` 应急工具箱可靠运行。 |
-| `AC-24` | `M6` | `REQ-PRG-07`, `NFR-07` | 二期收窄原生修改后端在 `TrainerWorker` 内安全支持声明式原生修改包与静态指针 / 基础纯汇编 `.CT` 子集（逆序指针链、`.NET 10` `Vector256` 自研 AOB 扫描、`Iced` 安全跳板，退出原子还原），不支持的复杂表给出外部 Cheat Engine 指引；传递依赖树零 `GPL`/`AGPL` 包（无 `Reloaded.Memory` 家族）；Inno Setup 7 安装包构建成功并附完整 `Apache-2.0` / `LGPL-3.0` / MIT 第三方合规声明。 |
+| `AC-24` | `M6` | `REQ-PRG-07`, `NFR-07` | 二期收窄原生修改后端在 `TrainerWorker` 内安全支持声明式原生修改包与静态指针 / 基础纯汇编 `.CT` 子集（逆序指针链、`.NET 10` `Vector256` 自研 AOB 扫描、`Iced` 安全跳板，退出原子还原），不支持的复杂表给出外部 Cheat Engine 指引；传递依赖树零 `GPL`/`AGPL` 包（无 `Reloaded.Memory` 家族）；NSIS 安装包构建成功并附完整 `Apache-2.0` / `LGPL-3.0` / MIT 第三方合规声明。 |
 | `AC-25` | `M3` | `NFR-09`, `NFR-05`, `NFR-06`, `REQ-SEC-01` | 正式版自包含安装包不含 `*.pdb` 且隔离安装演练通过；每周发布工作流仅定时/手动触发、无新合入即跳过、只有受仓库变量控制的 `publish` 任务可写仓库、全部 Action 以 SHA 钉扎；更新器在零真实网络夹具下验证验签、拒绝降级、主机/URL 白名单、大小与 SHA-256 校验、开发版永不检查、空闲安装判定与重启标记写入，Clean Host 门禁保持全绿 |

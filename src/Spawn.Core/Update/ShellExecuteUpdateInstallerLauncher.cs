@@ -4,7 +4,7 @@ using Spawn.Contracts;
 namespace Spawn.Core.Update;
 
 /// <summary>
-/// Launches the verified per-user Inno Setup installer silently via <c>ShellExecute</c> (<c>UseShellExecute = true</c>),
+/// Launches the verified per-user NSIS installer silently via <c>ShellExecute</c> (<c>UseShellExecute = true</c>),
 /// with zero UAC elevation verb and zero sensitive Win32 imports.
 /// </summary>
 public sealed class ShellExecuteUpdateInstallerLauncher : IUpdateInstallerLauncher

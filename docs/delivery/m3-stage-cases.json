@@ -390,7 +390,7 @@
         "AC-25"
       ],
       "verification": "dotnet test tests/Spawn.Architecture.GateTests（解析 .github/workflows/release.yml）",
-      "expected": "只有 schedule 与 workflow_dispatch 触发；plan 任务与 publish 任务均以 github.ref == 'refs/heads/main' 守卫仅限 main 运行（publish 守卫后无顶层 ||）；顶层 permissions 为空；仅 publish 任务 contents: write 且受 vars.SPAWN_RELEASE_PUBLISH 控制；签名 Secret 仅在 build 任务的 release 环境中使用；全部 uses 为 40 位 SHA；Inno Setup 7.1.1 下载钉扎 SHA-256",
+      "expected": "只有 schedule 与 workflow_dispatch 触发；plan 任务与 publish 任务均以 github.ref == 'refs/heads/main' 守卫仅限 main 运行（publish 守卫后无顶层 ||）；顶层 permissions 为空；仅 publish 任务 contents: write 且受 vars.SPAWN_RELEASE_PUBLISH 控制；签名 Secret 仅在 build 任务的 release 环境中使用；全部 uses 为 40 位 SHA；NSIS 3.13 下载钉扎 SHA-256，并在写入签名密钥之前单独取得",
       "status": "verified"
     },
     {

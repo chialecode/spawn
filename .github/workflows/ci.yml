@@ -16,7 +16,8 @@ permissions:
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
-  # Cancel superseded PR runs only; every push to main finishes (and seeds caches).
+  # Cancel superseded PR runs only; a running main run is never cancelled (GitHub may still
+  # replace a queued main run with a newer one, so not every push to main gets its own run).
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -82,13 +83,14 @@ jobs:
           python -B scripts/check_docs.py
           git diff --check
 
-      - name: Release tooling unit tests (offline)
-        run: python -B scripts/test_release.py
-
       - name: Set up .NET 10 SDK
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           global-json-file: global.json
+
+      # After setup-dotnet: the signing round-trip test runs scripts/sign_update.cs on the pinned SDK.
+      - name: Release tooling unit tests (offline)
+        run: python -B scripts/test_release.py
 
       - name: Restore NuGet dependencies
         run: dotnet restore Spawn.sln

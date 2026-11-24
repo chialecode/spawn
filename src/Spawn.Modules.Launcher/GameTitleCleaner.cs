@@ -5,6 +5,17 @@ using System.Text.RegularExpressions;
 namespace Spawn.Modules.Launcher;
 
 /// <summary>
+/// Classification of an executable's PE version-resource role during heuristic discovery.
+/// </summary>
+public enum PeExecutableRole
+{
+    Unknown = 0,
+    GameBinary = 1,
+    LauncherOrMenuWrapper = 2,
+    RedirectorOrPrerequisiteStub = 3,
+}
+
+/// <summary>
 /// Multi-stage game title denoiser, PE <see cref="FileVersionInfo"/> product name extractor,
 /// DLsite code detector, and Jaro-Winkler similarity scorer for offline game directories.
 /// </summary>
@@ -14,6 +25,12 @@ public static partial class GameTitleCleaner
     {
         "Application",
         "BootstrapPackagedGame",
+        "CompactAutoRunner",
+        "RockstarRedirector",
+        "Rockstar Games Launcher",
+        "Rockstar Games Launcher Redirector",
+        "UEPrereqSetup",
+        "UE4PrereqSetup",
         "UnityPlayer",
         "Unity Player",
         "UnrealGame",
@@ -35,6 +52,25 @@ public static partial class GameTitleCleaner
         "TODO: <Product name>",
     };
 
+    private static readonly Dictionary<string, string> RomanToArabicInstallments = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["II"] = "2",
+        ["III"] = "3",
+        ["IV"] = "4",
+        ["V"] = "5",
+        ["VI"] = "6",
+        ["VII"] = "7",
+        ["VIII"] = "8",
+        ["IX"] = "9",
+        ["X"] = "10",
+        ["XI"] = "11",
+        ["XII"] = "12",
+        ["XIII"] = "13",
+        ["XIV"] = "14",
+        ["XV"] = "15",
+        ["XVI"] = "16",
+    };
+
     [GeneratedRegex(@"\b([RVB]J\d{6,8})\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex DlsiteCodeRegex();
 
@@ -50,9 +86,36 @@ public static partial class GameTitleCleaner
     private static partial Regex VersionTailRegex();
 
     [GeneratedRegex(
-        @"(?i)(?:[\s\._\-]+)(?:steamrip(?:\.com)?|fitgirl(?:[\s\._\-]*repacks?)?|dodi(?:[\s\._\-]*repacks?)?|elamigos|tenoke|rune|codex|plaza|flt|fairlight|empress|goldberg|skidrow|razor1911|hoodlum|ali213|3dm(?:game)?|gog(?:\.com)?|repack|portable|pre[\s\._\-]*installed|goty|game[\s\._\-]+of[\s\._\-]+the[\s\._\-]+year(?:[\s\._\-]+edition)?|deluxe[\s\._\-]+edition|ultimate[\s\._\-]+edition|complete[\s\._\-]+edition|definitive[\s\._\-]+edition|anniversary[\s\._\-]+edition|免安装.*|绿色版.*|官中.*|简体中文.*|繁体中文.*|汉化.*|硬盘版.*|整合版.*|学习版.*|全DLC.*)$",
+        @"(?i)(?:[\s\._\-–—:]+)(?:steamrip(?:\.com)?|fitgirl(?:[\s\._\-]*repacks?)?|dodi(?:[\s\._\-]*repacks?)?|elamigos|tenoke|rune|codex|plaza|flt|fairlight|empress|goldberg|skidrow|razor1911|hoodlum|ali213|3dm(?:game)?|gog(?:\.com)?|repack|portable|pre[\s\._\-]*installed|(?:the[\s\._\-]+)?goty|(?:the[\s\._\-]+)?game[\s\._\-]+of[\s\._\-]+the[\s\._\-]+year(?:[\s\._\-]+edition)?|(?:the[\s\._\-]+)?deluxe[\s\._\-]+edition|(?:the[\s\._\-]+)?ultimate[\s\._\-]+edition|(?:the[\s\._\-]+)?complete[\s\._\-]+edition|免安装.*|绿色版.*|官中.*|简体中文.*|繁体中文.*|汉化.*|硬盘版.*|整合版.*|学习版.*|全DLC.*)$",
         RegexOptions.CultureInvariant)]
-    private static partial Regex ReleaseGroupAndEditionTailRegex();
+    private static partial Regex ReleaseGroupAndBundleTailRegex();
+
+    [GeneratedRegex(
+        @"(?i)(?:[\s\._\-–—:]+)(?:the[\s\._\-]+)?(?:definitive[\s\._\-]+edition|anniversary[\s\._\-]+edition)$",
+        RegexOptions.CultureInvariant)]
+    private static partial Regex RemasterEditionTailRegex();
+
+    [GeneratedRegex(
+        @"(?:[\s\._]*[-–—][\s\._]*)(?:(?:[Tt]he)[\s\._\-]+)?DE$",
+        RegexOptions.CultureInvariant)]
+    private static partial Regex ShorthandDeTailRegex();
+
+    [GeneratedRegex(
+        @"^GTA(?=\s*(?:[-:–—]|\b(?:III|II|IV|V|VI|1|2|3|4|5|6|Vice\s+City|San\s+Andreas|Liberty\s+City|The\s+Trilogy|Trilogy|Episodes|Chinatown|Online)\b|$))",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex LeadingGtaAbbreviationRegex();
+
+    [GeneratedRegex(@"\b([A-Za-z0-9]+)\b", RegexOptions.CultureInvariant)]
+    private static partial Regex AlphanumericWordTokenRegex();
+
+    [GeneratedRegex(@"\b(?:trilogy|anthology)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex AnthologyKeywordRegex();
+
+    [GeneratedRegex(@"\b(?:trilogy|anthology|collection|bundle)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex CollectionKeywordRegex();
+
+    [GeneratedRegex(@"\b(?:definitive(?:\s+edition)?|remaster(?:ed)?)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex RemasterMarkerRegex();
 
     [GeneratedRegex(@"\((?:[^)]*(?:SteamRIP|Repack|Portable|GOG|x64|x86|Win64|Win32|免安装|官中|汉化|硬盘版|整合版|Build\s*\d+)[^)]*)\)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex ParenthesizedNoiseRegex();
@@ -164,7 +227,7 @@ public static partial class GameTitleCleaner
         {
             foreach (string part in bilingualParts)
             {
-                string cleanedPart = CleanTitle(part);
+                string cleanedPart = CleanTitle(part, preserveRemasterEdition: true);
                 if (IsLikelyEnglishTitle(cleanedPart) && !string.Equals(cleanedPart, "Unknown Game", StringComparison.OrdinalIgnoreCase))
                 {
                     return cleanedPart;
@@ -172,7 +235,7 @@ public static partial class GameTitleCleaner
             }
         }
 
-        string cleaned = CleanTitle(working);
+        string cleaned = CleanTitle(working, preserveRemasterEdition: true);
         if (string.Equals(cleaned, "Unknown Game", StringComparison.OrdinalIgnoreCase))
         {
             return null;
@@ -233,7 +296,15 @@ public static partial class GameTitleCleaner
     /// Cleans a dirty game directory or executable base name by stripping scene release tags,
     /// version numbers, bracketed localization/repack suffixes, and dot/underscore separators.
     /// </summary>
-    public static string CleanTitle(string? rawName)
+    public static string CleanTitle(string? rawName) =>
+        CleanTitle(rawName, preserveRemasterEdition: false);
+
+    /// <summary>
+    /// Cleans a dirty game directory or executable base name, optionally preserving distinct remaster
+    /// subtitles (<c>Definitive Edition</c>, <c>Anniversary Edition</c>) and expanding shorthand <c>- DE</c>
+    /// so remasters are not conflated with original releases.
+    /// </summary>
+    public static string CleanTitle(string? rawName, bool preserveRemasterEdition)
     {
         if (string.IsNullOrWhiteSpace(rawName))
         {
@@ -283,7 +354,13 @@ public static partial class GameTitleCleaner
         for (int pass = 0; pass < 3; pass++)
         {
             string before = working;
-            working = ReleaseGroupAndEditionTailRegex().Replace(working, string.Empty).Trim();
+            working = ReleaseGroupAndBundleTailRegex().Replace(working, string.Empty).Trim();
+            if (!preserveRemasterEdition)
+            {
+                working = RemasterEditionTailRegex().Replace(working, string.Empty).Trim();
+                working = ShorthandDeTailRegex().Replace(working, string.Empty).Trim();
+            }
+
             working = VersionTailRegex().Replace(working, string.Empty).Trim();
             working = TrailingBracketNoiseRegex().Replace(working, string.Empty).Trim();
             if (string.Equals(before, working, StringComparison.Ordinal))
@@ -304,7 +381,20 @@ public static partial class GameTitleCleaner
         }
 
         // Run tail cleanup once more after separator normalization.
-        working = ReleaseGroupAndEditionTailRegex().Replace(working, string.Empty);
+        working = ReleaseGroupAndBundleTailRegex().Replace(working, string.Empty);
+        if (preserveRemasterEdition)
+        {
+            if (ShorthandDeTailRegex().IsMatch(working))
+            {
+                working = ShorthandDeTailRegex().Replace(working, " - Definitive Edition");
+            }
+        }
+        else
+        {
+            working = RemasterEditionTailRegex().Replace(working, string.Empty);
+            working = ShorthandDeTailRegex().Replace(working, string.Empty);
+        }
+
         working = VersionTailRegex().Replace(working, string.Empty);
         working = MultiSpaceRegex().Replace(working, " ").Trim(' ', '-', '_', '.', '–', '—');
 
@@ -318,8 +408,118 @@ public static partial class GameTitleCleaner
     }
 
     /// <summary>
+    /// Expands well-known series acronyms (such as leading <c>GTA</c> -&gt; <c>Grand Theft Auto</c>)
+    /// for store and metadata search candidates without altering non-matching titles.
+    /// </summary>
+    public static string ExpandSeriesAbbreviations(string? title)
+    {
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            return string.Empty;
+        }
+
+        string trimmed = title.Trim();
+        if (LeadingGtaAbbreviationRegex().IsMatch(trimmed))
+        {
+            return LeadingGtaAbbreviationRegex().Replace(trimmed, "Grand Theft Auto");
+        }
+
+        return trimmed;
+    }
+
+    /// <summary>
+    /// Classifies PE version metadata strings into redirector/prerequisite stubs, menu/launcher wrappers, or valid game binaries.
+    /// </summary>
+    public static PeExecutableRole ClassifyPeVersionMetadata(
+        string? originalFilename,
+        string? internalName,
+        string? productName,
+        string? fileDescription)
+    {
+        foreach (string? raw in new[] { originalFilename, internalName, productName, fileDescription })
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                continue;
+            }
+
+            string text = raw.Trim();
+            if (text.Contains("Redirector", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("BootstrapPackagedGame", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("Bootstrapper", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("Prerequisite", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("PrereqSetup", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("Social-Club-Setup", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("SocialClubSetup", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("Redistributable", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("Uninstaller", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("CrashReportClient", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("UnrealCEFSubProcess", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("UnityCrashHandler", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("Installer", StringComparison.OrdinalIgnoreCase))
+            {
+                return PeExecutableRole.RedirectorOrPrerequisiteStub;
+            }
+        }
+
+        foreach (string? raw in new[] { originalFilename, internalName, productName, fileDescription })
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                continue;
+            }
+
+            string text = raw.Trim();
+            if (text.Contains("CompactAutoRunner", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("Customizable CD Menu", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("AutoRunner", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("Launcher", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("Setup", StringComparison.OrdinalIgnoreCase))
+            {
+                return PeExecutableRole.LauncherOrMenuWrapper;
+            }
+        }
+
+        foreach (string? candidate in new[] { productName, fileDescription })
+        {
+            if (TryNormalizeValidPeTitleCandidate(candidate) is not null)
+            {
+                return PeExecutableRole.GameBinary;
+            }
+        }
+
+        return PeExecutableRole.Unknown;
+    }
+
+    /// <summary>
+    /// Inspects PE version resources of <paramref name="exeFullPath"/> to determine whether it is a redirector/prerequisite stub,
+    /// a menu/launcher wrapper, or a game binary.
+    /// </summary>
+    public static PeExecutableRole InspectPeExecutableRole(string? exeFullPath)
+    {
+        if (string.IsNullOrWhiteSpace(exeFullPath) || !File.Exists(exeFullPath))
+        {
+            return PeExecutableRole.Unknown;
+        }
+
+        try
+        {
+            var info = FileVersionInfo.GetVersionInfo(exeFullPath);
+            return ClassifyPeVersionMetadata(
+                info.OriginalFilename,
+                info.InternalName,
+                info.ProductName,
+                info.FileDescription);
+        }
+        catch
+        {
+            return PeExecutableRole.Unknown;
+        }
+    }
+
+    /// <summary>
     /// Reads PE <see cref="FileVersionInfo.ProductName"/> / <see cref="FileVersionInfo.FileDescription"/>
-    /// while filtering generic Unity/Unreal/compiler placeholder strings.
+    /// while filtering generic Unity/Unreal/compiler placeholder strings, redirector stubs, and menu launchers.
     /// </summary>
     public static string? TryGetCleanPeProductName(string? exeFullPath)
     {
@@ -331,32 +531,21 @@ public static partial class GameTitleCleaner
         try
         {
             var info = FileVersionInfo.GetVersionInfo(exeFullPath);
+            var role = ClassifyPeVersionMetadata(
+                info.OriginalFilename,
+                info.InternalName,
+                info.ProductName,
+                info.FileDescription);
+
+            if (role is PeExecutableRole.RedirectorOrPrerequisiteStub or PeExecutableRole.LauncherOrMenuWrapper)
+            {
+                return null;
+            }
+
             foreach (string? candidate in new[] { info.ProductName, info.FileDescription })
             {
-                if (string.IsNullOrWhiteSpace(candidate))
-                {
-                    continue;
-                }
-
-                string trimmed = candidate.Trim();
-                if (trimmed.Length < 2 || GenericEnginePlaceholders.Contains(trimmed))
-                {
-                    continue;
-                }
-
-                if (trimmed.StartsWith("Unity", StringComparison.OrdinalIgnoreCase)
-                    || trimmed.StartsWith("UnrealEngine", StringComparison.OrdinalIgnoreCase)
-                    || trimmed.Contains("Setup", StringComparison.OrdinalIgnoreCase)
-                    || trimmed.Contains("Installer", StringComparison.OrdinalIgnoreCase)
-                    || trimmed.Contains("Crash", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                string cleaned = CleanTitle(trimmed);
-                if (!string.IsNullOrWhiteSpace(cleaned)
-                    && !string.Equals(cleaned, "Unknown Game", StringComparison.OrdinalIgnoreCase)
-                    && !GenericEnginePlaceholders.Contains(cleaned))
+                string? cleaned = TryNormalizeValidPeTitleCandidate(candidate);
+                if (cleaned is not null)
                 {
                     return cleaned;
                 }
@@ -370,48 +559,181 @@ public static partial class GameTitleCleaner
         return null;
     }
 
+    private static string? TryNormalizeValidPeTitleCandidate(string? candidate)
+    {
+        if (string.IsNullOrWhiteSpace(candidate))
+        {
+            return null;
+        }
+
+        string trimmed = candidate.Trim();
+        if (trimmed.Length < 2 || GenericEnginePlaceholders.Contains(trimmed))
+        {
+            return null;
+        }
+
+        if (trimmed.StartsWith("Unity", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("UnrealEngine", StringComparison.OrdinalIgnoreCase)
+            || trimmed.Contains("Redirector", StringComparison.OrdinalIgnoreCase)
+            || trimmed.Contains("Bootstrapper", StringComparison.OrdinalIgnoreCase)
+            || trimmed.Contains("Prerequisite", StringComparison.OrdinalIgnoreCase)
+            || trimmed.Contains("CompactAutoRunner", StringComparison.OrdinalIgnoreCase)
+            || trimmed.Contains("Customizable CD Menu", StringComparison.OrdinalIgnoreCase)
+            || trimmed.Contains("AutoRunner", StringComparison.OrdinalIgnoreCase)
+            || trimmed.Contains("Launcher", StringComparison.OrdinalIgnoreCase)
+            || trimmed.Contains("Setup", StringComparison.OrdinalIgnoreCase)
+            || trimmed.Contains("Installer", StringComparison.OrdinalIgnoreCase)
+            || trimmed.Contains("Uninstall", StringComparison.OrdinalIgnoreCase)
+            || trimmed.Contains("Redistributable", StringComparison.OrdinalIgnoreCase)
+            || trimmed.Contains("Crash", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        string cleaned = CleanTitle(trimmed, preserveRemasterEdition: true);
+        if (!string.IsNullOrWhiteSpace(cleaned)
+            && !string.Equals(cleaned, "Unknown Game", StringComparison.OrdinalIgnoreCase)
+            && !GenericEnginePlaceholders.Contains(cleaned))
+        {
+            return cleaned;
+        }
+
+        return null;
+    }
+
     /// <summary>
-    /// Builds an ordered, deduplicated list of search title candidates from PE metadata and folder name.
+    /// Builds an ordered, deduplicated list of search title candidates from PE metadata, folder name,
+    /// remaster edition disambiguation, and series abbreviation expansion.
     /// </summary>
     public static IReadOnlyList<string> BuildSearchCandidates(string installDir, string? mainExeFullPath)
     {
-        var candidates = new List<string>(4);
+        var candidates = new List<string>(6);
 
-        string folderName = Path.GetFileName(Path.TrimEndingDirectorySeparator(installDir));
-        string cleanedFolder = CleanTitle(folderName);
-        if (!string.IsNullOrWhiteSpace(cleanedFolder) && !string.Equals(cleanedFolder, "Unknown Game", StringComparison.OrdinalIgnoreCase))
+        static void AddUnique(List<string> list, string? value)
         {
-            candidates.Add(cleanedFolder);
+            if (!string.IsNullOrWhiteSpace(value)
+                && !string.Equals(value, "Unknown Game", StringComparison.OrdinalIgnoreCase)
+                && !GenericEnginePlaceholders.Contains(value)
+                && !list.Contains(value, StringComparer.OrdinalIgnoreCase))
+            {
+                list.Add(value);
+            }
         }
 
+        string folderName = Path.GetFileName(Path.TrimEndingDirectorySeparator(installDir));
+        string folderPreserved = CleanTitle(folderName, preserveRemasterEdition: true);
+        string folderExpandedPreserved = ExpandSeriesAbbreviations(folderPreserved);
+        bool folderWasAbbreviated = !string.Equals(folderPreserved, folderExpandedPreserved, StringComparison.OrdinalIgnoreCase);
+
         string? peProduct = TryGetCleanPeProductName(mainExeFullPath);
-        if (!string.IsNullOrWhiteSpace(peProduct)
-            && !candidates.Contains(peProduct, StringComparer.OrdinalIgnoreCase))
+        string peExpanded = ExpandSeriesAbbreviations(peProduct);
+
+        if (!string.IsNullOrWhiteSpace(peProduct) && (folderWasAbbreviated || folderPreserved.Length <= 2))
         {
-            // Prefer PE ProductName first when folder name was heavily abbreviated or purely numeric.
-            if (candidates.Count == 0 || cleanedFolder.Length <= 2)
+            AddUnique(candidates, peExpanded);
+            AddUnique(candidates, peProduct);
+        }
+
+        if (folderWasAbbreviated)
+        {
+            AddUnique(candidates, folderExpandedPreserved);
+        }
+
+        AddUnique(candidates, folderPreserved);
+        AddUnique(candidates, peExpanded);
+        AddUnique(candidates, peProduct);
+
+        string folderBase = CleanTitle(folderName, preserveRemasterEdition: false);
+        string folderExpandedBase = ExpandSeriesAbbreviations(folderBase);
+        if (!string.Equals(folderBase, folderPreserved, StringComparison.OrdinalIgnoreCase))
+        {
+            if (!string.Equals(folderBase, folderExpandedBase, StringComparison.OrdinalIgnoreCase))
             {
-                candidates.Insert(0, peProduct);
+                AddUnique(candidates, folderExpandedBase);
             }
-            else
-            {
-                candidates.Add(peProduct);
-            }
+
+            AddUnique(candidates, folderBase);
         }
 
         if (!string.IsNullOrWhiteSpace(mainExeFullPath))
         {
-            string exeStem = CleanTitle(Path.GetFileNameWithoutExtension(mainExeFullPath));
-            if (!string.IsNullOrWhiteSpace(exeStem)
-                && exeStem.Length >= 3
-                && !GenericEnginePlaceholders.Contains(exeStem)
-                && !candidates.Contains(exeStem, StringComparer.OrdinalIgnoreCase))
+            string exeStem = CleanTitle(Path.GetFileNameWithoutExtension(mainExeFullPath), preserveRemasterEdition: true);
+            if (exeStem.Length >= 3)
             {
-                candidates.Add(exeStem);
+                AddUnique(candidates, ExpandSeriesAbbreviations(exeStem));
+                AddUnique(candidates, exeStem);
             }
         }
 
         return candidates;
+    }
+
+    /// <summary>
+    /// Returns <see langword="true"/> when <paramref name="query"/> and <paramref name="candidate"/>
+    /// disagree on sequel/installment numbering (e.g. <c>III</c> vs <c>V</c>, or no number vs <c>V</c>)
+    /// or conflate a multi-game trilogy/anthology with a single title.
+    /// </summary>
+    public static bool HasConflictingSequelOrAnthologyTokens(string? query, string? candidate)
+    {
+        if (string.IsNullOrWhiteSpace(query) || string.IsNullOrWhiteSpace(candidate))
+        {
+            return false;
+        }
+
+        bool queryIsAnthology = AnthologyKeywordRegex().IsMatch(query);
+        bool candidateIsCollection = CollectionKeywordRegex().IsMatch(candidate);
+        if (queryIsAnthology && !candidateIsCollection)
+        {
+            return true;
+        }
+
+        bool candidateIsAnthology = AnthologyKeywordRegex().IsMatch(candidate);
+        bool queryIsCollection = CollectionKeywordRegex().IsMatch(query);
+        if (candidateIsAnthology && !queryIsCollection)
+        {
+            return true;
+        }
+
+        var leftInstallments = ExtractNormalizedInstallmentTokens(query);
+        var rightInstallments = ExtractNormalizedInstallmentTokens(candidate);
+        return !leftInstallments.SetEquals(rightInstallments);
+    }
+
+    /// <summary>
+    /// Returns <see langword="true"/> when one title explicitly designates a remaster/definitive edition
+    /// and the other does not.
+    /// </summary>
+    public static bool HasRemasterEditionMismatch(string? query, string? candidate)
+    {
+        if (string.IsNullOrWhiteSpace(query) || string.IsNullOrWhiteSpace(candidate))
+        {
+            return false;
+        }
+
+        string normalizedQuery = CleanTitle(query, preserveRemasterEdition: true);
+        string normalizedCandidate = CleanTitle(candidate, preserveRemasterEdition: true);
+        return RemasterMarkerRegex().IsMatch(normalizedQuery) != RemasterMarkerRegex().IsMatch(normalizedCandidate);
+    }
+
+    private static HashSet<string> ExtractNormalizedInstallmentTokens(string text)
+    {
+        string cleaned = CleanTitle(text, preserveRemasterEdition: true);
+        var set = new HashSet<string>(StringComparer.Ordinal);
+        foreach (Match m in AlphanumericWordTokenRegex().Matches(cleaned))
+        {
+            string token = m.Groups[1].Value;
+            if (RomanToArabicInstallments.TryGetValue(token, out string? mapped))
+            {
+                set.Add(mapped);
+            }
+            else if (token.All(char.IsAsciiDigit))
+            {
+                string trimmedDigits = token.TrimStart('0');
+                set.Add(trimmedDigits.Length == 0 ? "0" : trimmedDigits);
+            }
+        }
+
+        return set;
     }
 
     /// <summary>

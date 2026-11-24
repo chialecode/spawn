@@ -110,6 +110,7 @@ public sealed partial class GameDirectoryScanner
         "_CommonRedist",
         "CommonRedist",
         "Redist",
+        "Redistributables",
         "DirectX",
         "__Installer",
         "Support",
@@ -122,20 +123,75 @@ public sealed partial class GameDirectoryScanner
         "usd",
         "locales",
         "ShaderCache",
+        "Shaders",
+        "DerivedDataCache",
+        "Paks",
+        "CrashReportClient",
         "Movies",
         "Videos",
     };
+
+    private static readonly HashSet<string> StructuralSingleGameSubdirectoryNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Engine",
+        "Binaries",
+        "bin",
+        "Win64",
+        "Win32",
+        "WinGDK",
+        "x64",
+        "x86",
+        "Content",
+        "Data",
+        "GameData",
+        "SteamData",
+        "steam_settings",
+        "Plugins",
+        "Mods",
+        "DLC",
+        "Bonus",
+        "Extras",
+        "Tools",
+        "ModTools",
+        "SDK",
+        "Server",
+        "DedicatedServer",
+        "Editor",
+        "Launcher",
+        "Saves",
+        "SaveGames",
+        "Profiles",
+        "Config",
+        "Logs",
+    };
+
+    private static readonly string[] TopLevelSingleGameEmulatorInis =
+    [
+        "OnlineFix.ini",
+        "steam_emu.ini",
+        "tenoke.ini",
+        "codex.ini",
+        "rune.ini",
+        "flt.ini",
+        "ColdClientLoader.ini",
+        "ALI213.ini",
+        "Valve.ini",
+        "3dmgame.ini",
+        "hlm.ini",
+        "skidrow.ini",
+        "SmartSteamEmu.ini",
+    ];
 
     [GeneratedRegex(@"^goggame-(\d+)\.info$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex GogInfoFileNameRegex();
 
     [GeneratedRegex(
-        @"^(?:UnityCrashHandler(?:32|64)?|UnrealCEFSubProcess|CrashReportClient(?:Editor)?|CrashSender\d*|crs-handler|ZFGameBrowser|cef_?process|steamerrorreporter(?:64)?|unins\d+|uninstall.*|vc_?redist.*|dxsetup|dxwebsetup|UE4?PrereqSetup.*|ndp4.*|dotnet.*|oalinst|PhysX.*|language_setup|gogdosbox|EasyAntiCheat(?:_EOS|_Setup)?|BEService(?:_x64)?|BEClient.*|SGuard(?:Svc)?64|createdump)\.exe$",
+        @"^(?:UnityCrashHandler(?:32|64)?|UnrealCEFSubProcess|CrashReportClient(?:Editor)?|CrashSender\d*|crs-handler|ZFGameBrowser|cef_?process|steamerrorreporter(?:64)?|unins\d+|uninstall.*|vc_?redist.*|dxsetup|dxwebsetup|UE4?PrereqSetup.*|UnrealPrereq.*|BootstrapPackagedGame.*|Rockstar-Games-Launcher.*|Rockstar-Games-Epic.*|RockstarRedirector.*|Social-Club-Setup.*|SocialClubSetup.*|Redist(?:Setup|ributable)?.*|ndp4.*|dotnet.*|oalinst|PhysX.*|language_setup|gogdosbox|EasyAntiCheat(?:_EOS|_Setup)?|BEService(?:_x64)?|BEClient.*|SGuard(?:Svc)?64|createdump)\.exe$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex ExcludedExecutableRegex();
 
     [GeneratedRegex(
-        @"(?:^|[\s\._\-])(?:launcher|setup|install|installer|updater|patcher|config|configuration|settings|benchmark|dedicatedserver|server|crash|reporter|modmanager|editor)(?:$|[\s\._\-]|\d)",
+        @"(?:^|[\s\._\-])(?:launcher|autorun|autorunner|menu|redirector|bootstrapper|prereq|prerequisite|setup|install|installer|updater|patcher|config|configuration|settings|benchmark|dedicatedserver|server|crash|reporter|modmanager|editor)(?:$|[\s\._\-]|\d)",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex PenalizedExecutableStemRegex();
 
@@ -221,8 +277,9 @@ public sealed partial class GameDirectoryScanner
     }
 
     /// <summary>
-    /// Discovers candidate game installation folders inside <paramref name="rootDirectory"/>
-    /// (for example <c>.local\games\LIMBO</c> and any sibling GOG / Steamrip folders).
+    /// Discovers candidate game installation folders inside <paramref name="rootDirectory"/>.
+    /// Multi-game anthology/trilogy containers (holding <c>&gt;= 2</c> independent standalone child games without
+    /// a single-game engine root at the parent) are automatically expanded into their standalone child game roots.
     /// If <paramref name="rootDirectory"/> itself is a single game folder, returns <c>[rootDirectory]</c>.
     /// </summary>
     public IReadOnlyList<string> DiscoverCandidateGameDirectories(string rootDirectory)
@@ -234,7 +291,14 @@ public sealed partial class GameDirectoryScanner
 
         string normalizedRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(rootDirectory));
 
-        // Check if rootDirectory itself is directly a game folder (e.g. contains goggame-*.info, steam_appid.txt, or top-level game exe).
+        // Expand multi-game anthology/trilogy containers before checking top-level menu Launcher.exe.
+        var expandedRootChildren = TryExpandMultiGameContainer(normalizedRoot);
+        if (expandedRootChildren.Count >= 2)
+        {
+            return expandedRootChildren;
+        }
+
+        // Check if rootDirectory itself is directly a single game folder (e.g. contains goggame-*.info, steam_appid.txt, or top-level game exe).
         if (LooksLikeDirectGameDirectory(normalizedRoot))
         {
             return [normalizedRoot];
@@ -259,6 +323,13 @@ public sealed partial class GameDirectoryScanner
                 }
 
                 string candidate = UnwrapSingleNestedFolderIfNeeded(subDir);
+                var expandedChildren = TryExpandMultiGameContainer(candidate);
+                if (expandedChildren.Count >= 2)
+                {
+                    discovered.AddRange(expandedChildren);
+                    continue;
+                }
+
                 if (HasAnyValidGameSignal(candidate))
                 {
                     discovered.Add(Path.TrimEndingDirectorySeparator(Path.GetFullPath(candidate)));
@@ -274,6 +345,97 @@ public sealed partial class GameDirectoryScanner
         }
 
         return discovered
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(p => Path.GetFileName(p), StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    /// <summary>
+    /// Inspects <paramref name="directoryPath"/> to determine whether it is a multi-game anthology/pack container
+    /// (lacking its own game engine/store identity at depth 0 while containing <c>&gt;= 2</c> independent standalone
+    /// child game directories). Returns the expanded standalone child directories, or an empty list if <paramref name="directoryPath"/>
+    /// is a single game or non-collection folder.
+    /// </summary>
+    public static IReadOnlyList<string> TryExpandMultiGameContainer(string directoryPath)
+    {
+        if (string.IsNullOrWhiteSpace(directoryPath) || !Directory.Exists(directoryPath))
+        {
+            return [];
+        }
+
+        string normalized;
+        try
+        {
+            normalized = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directoryPath));
+        }
+        catch
+        {
+            return [];
+        }
+
+        if (HasSingleGameEngineOrStoreRootIdentity(normalized))
+        {
+            return [];
+        }
+
+        var enumOpts = new EnumerationOptions
+        {
+            IgnoreInaccessible = true,
+            RecurseSubdirectories = false,
+            AttributesToSkip = FileAttributes.Hidden | FileAttributes.System | FileAttributes.ReparsePoint,
+        };
+
+        var childCandidates = new List<(string Path, int? SteamAppId, string? GogGameId)>();
+        try
+        {
+            foreach (string subDir in Directory.EnumerateDirectories(normalized, "*", enumOpts))
+            {
+                string folderName = Path.GetFileName(subDir);
+                if (SkippedSubdirectoryNames.Contains(folderName)
+                    || StructuralSingleGameSubdirectoryNames.Contains(folderName)
+                    || folderName.EndsWith("_Data", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                string unwrapped = Path.TrimEndingDirectorySeparator(Path.GetFullPath(UnwrapSingleNestedFolderIfNeeded(subDir)));
+                if (IsIndependentStandaloneChildGame(unwrapped, out int? childAppId, out string? childGogId))
+                {
+                    childCandidates.Add((unwrapped, childAppId, childGogId));
+                }
+            }
+        }
+        catch
+        {
+            return [];
+        }
+
+        if (childCandidates.Count < 2)
+        {
+            return [];
+        }
+
+        // Guard against splitting a single game's Client/ + Server/ folders that share an identical non-Spacewar AppId/GogGameId.
+        var nonSpacewarSteamIds = childCandidates
+            .Where(c => c.SteamAppId is > 0 and not 480)
+            .Select(c => c.SteamAppId!.Value)
+            .ToList();
+        if (nonSpacewarSteamIds.Count >= 2 && nonSpacewarSteamIds.Distinct().Count() == 1)
+        {
+            return [];
+        }
+
+        var gogIds = childCandidates
+            .Where(c => !string.IsNullOrWhiteSpace(c.GogGameId))
+            .Select(c => c.GogGameId!)
+            .ToList();
+        if (gogIds.Count >= 2 && gogIds.Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1)
+        {
+            return [];
+        }
+
+        return childCandidates
+            .Select(c => c.Path)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(p => Path.GetFileName(p), StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -939,8 +1101,10 @@ public sealed partial class GameDirectoryScanner
 
     /// <summary>
     /// Heuristically selects the primary game executable relative to <paramref name="installDir"/>,
-    /// scoring Unity <c>*_Data</c> pairs, Unreal shipping binaries, file size, folder name affinity,
-    /// and PE <c>ProductName</c> while excluding crash handlers, redistributables, and uninstallers.
+    /// scoring Unity <c>*_Data</c> pairs, Unreal <c>&lt;Project&gt;\Binaries\Win64|WinGDK</c> binaries
+    /// (both <c>*-Shipping.exe</c> and custom-named UE binaries), file size, folder name affinity,
+    /// and PE metadata while penalizing/excluding redirector stubs, prerequisite bootstrappers,
+    /// crash handlers, redistributables, and uninstallers.
     /// </summary>
     public static string? SelectBestMainExecutable(string installDir)
     {
@@ -949,8 +1113,9 @@ public sealed partial class GameDirectoryScanner
             return null;
         }
 
-        var exeFiles = EnumerateFilesDepthBounded(installDir, maxDepth: 3)
-            .Where(f => f.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+        string normalizedInstallDir = Path.TrimEndingDirectorySeparator(Path.GetFullPath(installDir));
+        var exeFiles = EnumerateExecutablesDepthBounded(normalizedInstallDir, maxDepth: 5)
+            .Where(f => !ExcludedExecutableRegex().IsMatch(Path.GetFileName(f)))
             .ToList();
 
         if (exeFiles.Count == 0)
@@ -958,8 +1123,20 @@ public sealed partial class GameDirectoryScanner
             return null;
         }
 
-        string folderName = Path.GetFileName(Path.TrimEndingDirectorySeparator(installDir));
-        string cleanedFolder = GameTitleCleaner.CleanTitle(folderName);
+        // Pre-index Unreal Engine roots that possess at least one real <Project>\Binaries\Win64|WinGDK\*.exe binary
+        // so root-level redirector/bootstrapper stubs (<UeRoot>\Play*.exe / <UeRoot>\<Stub>.exe) never beat the real UE binary.
+        var ueRootsWithProjectBinaries = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string exeFullPath in exeFiles)
+        {
+            if (TryGetUnrealProjectRootForBinary(exeFullPath, normalizedInstallDir, out string? ueRoot)
+                && !string.IsNullOrWhiteSpace(ueRoot))
+            {
+                ueRootsWithProjectBinaries.Add(ueRoot);
+            }
+        }
+
+        string folderName = Path.GetFileName(normalizedInstallDir);
+        string cleanedFolder = GameTitleCleaner.CleanTitle(folderName, preserveRemasterEdition: true);
 
         string? bestRelPath = null;
         double bestScore = double.NegativeInfinity;
@@ -967,15 +1144,10 @@ public sealed partial class GameDirectoryScanner
         foreach (string exeFullPath in exeFiles)
         {
             string exeName = Path.GetFileName(exeFullPath);
-            if (ExcludedExecutableRegex().IsMatch(exeName))
-            {
-                continue;
-            }
-
-            string relPath = Path.GetRelativePath(installDir, exeFullPath);
+            string relPath = Path.GetRelativePath(normalizedInstallDir, exeFullPath);
             int depth = CountDirectorySeparators(relPath);
             string stem = Path.GetFileNameWithoutExtension(exeName);
-            string exeDir = Path.GetDirectoryName(exeFullPath) ?? installDir;
+            string exeDir = Path.TrimEndingDirectorySeparator(Path.GetDirectoryName(exeFullPath) ?? normalizedInstallDir);
 
             long lengthBytes = 0;
             try
@@ -995,46 +1167,99 @@ public sealed partial class GameDirectoryScanner
                 score += 80.0;
             }
 
-            // 2. Unreal Engine shipping binary match (*-Win64-Shipping.exe / *-WinGDK-Shipping.exe).
+            // 2. Unreal Engine binary match: *-Win64-Shipping.exe / *-WinGDK-Shipping.exe OR <Project>\Binaries\Win64|WinGDK\*.exe alongside Engine\.
             bool isUeShipping = stem.EndsWith("-Win64-Shipping", StringComparison.OrdinalIgnoreCase)
                                 || stem.EndsWith("-WinGDK-Shipping", StringComparison.OrdinalIgnoreCase);
-            if (isUeShipping)
+            bool isUeProjectBinary = TryGetUnrealProjectRootForBinary(exeFullPath, normalizedInstallDir, out _);
+
+            if (isUeShipping && isUeProjectBinary)
+            {
+                score += 46.0;
+            }
+            else if (isUeShipping)
             {
                 score += 42.0;
             }
+            else if (isUeProjectBinary)
+            {
+                score += 40.0;
+            }
 
-            // 3. Penalize launcher/config/updater/server helper stems.
-            if (PenalizedExecutableStemRegex().IsMatch(stem))
+            // Engine\Binaries\ or Engine\Extras\ helpers are engine runtime tools, never the game binary.
+            if (IsUnderUnrealEngineSubtree(exeFullPath, normalizedInstallDir))
+            {
+                score -= 90.0;
+            }
+
+            // 3. Penalize launcher/config/updater/server/autorun/redirector helper stems.
+            bool hasPenalizedStem = PenalizedExecutableStemRegex().IsMatch(stem);
+            if (hasPenalizedStem)
             {
                 score -= 55.0;
             }
 
-            // 4. Folder name similarity bonus.
-            double nameSim = GameTitleCleaner.ComputeJaroWinklerSimilarity(GameTitleCleaner.CleanTitle(stem), cleanedFolder);
+            // 4. PE role & Unreal root redirector/prerequisite stub trap detection.
+            var peRole = GameTitleCleaner.InspectPeExecutableRole(exeFullPath);
+            if (peRole == PeExecutableRole.RedirectorOrPrerequisiteStub)
+            {
+                score -= 130.0;
+            }
+            else if (peRole == PeExecutableRole.LauncherOrMenuWrapper && !hasPenalizedStem)
+            {
+                score -= 55.0;
+            }
+            else if (peRole == PeExecutableRole.LauncherOrMenuWrapper)
+            {
+                score -= 20.0;
+            }
+
+            if (!isUeProjectBinary && ueRootsWithProjectBinaries.Contains(exeDir))
+            {
+                if (HasPrerequisiteRedirectorMarkers(exeDir)
+                    || stem.StartsWith("Play", StringComparison.OrdinalIgnoreCase))
+                {
+                    score -= 125.0;
+                }
+                else if (lengthBytes <= 8L * 1024 * 1024)
+                {
+                    score -= 65.0;
+                }
+            }
+
+            // 5. Folder name similarity bonus.
+            string cleanedStem = GameTitleCleaner.CleanTitle(stem, preserveRemasterEdition: true);
+            double nameSim = Math.Max(
+                GameTitleCleaner.ComputeJaroWinklerSimilarity(cleanedStem, cleanedFolder),
+                GameTitleCleaner.ComputeJaroWinklerSimilarity(
+                    GameTitleCleaner.ExpandSeriesAbbreviations(cleanedStem),
+                    GameTitleCleaner.ExpandSeriesAbbreviations(cleanedFolder)));
             score += nameSim * 35.0;
 
-            // 5. File size score (log scale up to ~25 pts; tiny <100KB stubs get less weight unless top-level).
+            // 6. File size score (log scale up to ~26 pts; tiny <100KB stubs get less weight unless top-level).
             if (lengthBytes > 0)
             {
                 double mb = lengthBytes / (1024.0 * 1024.0);
                 score += Math.Clamp(Math.Log10(Math.Max(0.05, mb) * 20.0) * 10.0, -5.0, 26.0);
             }
 
-            // 6. PE ProductName validity bonus.
-            string? peName = GameTitleCleaner.TryGetCleanPeProductName(exeFullPath);
-            if (!string.IsNullOrWhiteSpace(peName))
+            // 7. PE ProductName validity bonus (only awarded to genuine game binaries).
+            if (peRole == PeExecutableRole.GameBinary)
             {
-                score += 10.0;
+                string? peName = GameTitleCleaner.TryGetCleanPeProductName(exeFullPath);
+                if (!string.IsNullOrWhiteSpace(peName))
+                {
+                    score += 10.0;
+                }
             }
 
-            // 7. Shallow depth preference (root executable favored unless it is a penalized Launcher stub).
-            if (!isUeShipping)
+            // 8. Shallow depth preference (waived up to depth 4 for Unreal <Project>\Binaries\Win64|WinGDK binaries).
+            if (isUeShipping || isUeProjectBinary)
             {
-                score -= depth * 12.0;
+                score -= Math.Max(0, depth - 4) * 8.0;
             }
             else
             {
-                score -= Math.Max(0, depth - 2) * 8.0;
+                score -= depth * 12.0;
             }
 
             if (score > bestScore)
@@ -1102,7 +1327,22 @@ public sealed partial class GameDirectoryScanner
                             continue;
                         }
 
-                        double sim = GameTitleCleaner.ComputeJaroWinklerSimilarity(query, itemName);
+                        if (GameTitleCleaner.HasConflictingSequelOrAnthologyTokens(query, itemName))
+                        {
+                            continue;
+                        }
+
+                        double sim = Math.Max(
+                            GameTitleCleaner.ComputeJaroWinklerSimilarity(query, itemName),
+                            GameTitleCleaner.ComputeJaroWinklerSimilarity(
+                                GameTitleCleaner.ExpandSeriesAbbreviations(query),
+                                GameTitleCleaner.ExpandSeriesAbbreviations(itemName)));
+
+                        if (GameTitleCleaner.HasRemasterEditionMismatch(query, itemName))
+                        {
+                            sim -= 0.12;
+                        }
+
                         if (bestOverall is null || sim > bestOverall.Value.Score)
                         {
                             bestOverall = (appId, itemName.Trim(), sim);
@@ -1386,6 +1626,7 @@ public sealed partial class GameDirectoryScanner
             string dirName = current.Name;
             bool looksLikeBinSubfolder =
                 dirName.Equals("Win64", StringComparison.OrdinalIgnoreCase)
+                || dirName.Equals("WinGDK", StringComparison.OrdinalIgnoreCase)
                 || dirName.Equals("Win32", StringComparison.OrdinalIgnoreCase)
                 || dirName.Equals("x64", StringComparison.OrdinalIgnoreCase)
                 || dirName.Equals("x86", StringComparison.OrdinalIgnoreCase)
@@ -1407,11 +1648,246 @@ public sealed partial class GameDirectoryScanner
             current = parent;
             if (parentHasRootMarkers)
             {
+                // In Unreal Engine (<GameRoot>\Engine + <GameRoot>\<Project>\Content + <GameRoot>\<Project>\Binaries\Win64\*.exe),
+                // <Project> has Content\, while its parent <GameRoot> holds Engine\. Step up to <GameRoot> when present.
+                if (current.Parent is not null
+                    && !current.Name.Equals("Engine", StringComparison.OrdinalIgnoreCase)
+                    && Directory.Exists(Path.Combine(current.Parent.FullName, "Engine")))
+                {
+                    return current.Parent.FullName;
+                }
+
                 return current.FullName;
             }
         }
 
         return current.FullName;
+    }
+
+    private static bool HasSingleGameEngineOrStoreRootIdentity(string dirPath)
+    {
+        try
+        {
+            if (TryParseGogInfo(dirPath) is not null
+                || File.Exists(Path.Combine(dirPath, "steam_appid.txt"))
+                || Directory.Exists(Path.Combine(dirPath, "steam_settings"))
+                || File.Exists(Path.Combine(dirPath, "steam_api.dll"))
+                || File.Exists(Path.Combine(dirPath, "steam_api64.dll"))
+                || Directory.Exists(Path.Combine(dirPath, "Engine")))
+            {
+                return true;
+            }
+
+            foreach (string iniName in TopLevelSingleGameEmulatorInis)
+            {
+                if (File.Exists(Path.Combine(dirPath, iniName)))
+                {
+                    return true;
+                }
+            }
+
+            if (Directory.EnumerateDirectories(dirPath, "*_Data", SearchOption.TopDirectoryOnly).Any())
+            {
+                return true;
+            }
+
+            foreach (string exe in Directory.EnumerateFiles(dirPath, "*.exe", SearchOption.TopDirectoryOnly))
+            {
+                string exeName = Path.GetFileName(exe);
+                if (ExcludedExecutableRegex().IsMatch(exeName))
+                {
+                    continue;
+                }
+
+                string stem = Path.GetFileNameWithoutExtension(exeName);
+                if (PenalizedExecutableStemRegex().IsMatch(stem))
+                {
+                    continue;
+                }
+
+                var peRole = GameTitleCleaner.InspectPeExecutableRole(exe);
+                if (peRole is PeExecutableRole.LauncherOrMenuWrapper or PeExecutableRole.RedirectorOrPrerequisiteStub)
+                {
+                    continue;
+                }
+
+                // Non-penalized, non-wrapper top-level game executable indicates a single game root.
+                return true;
+            }
+        }
+        catch
+        {
+            // Ignore IO errors.
+        }
+
+        return false;
+    }
+
+    private static bool IsIndependentStandaloneChildGame(
+        string childDir,
+        out int? steamAppId,
+        out string? gogGameId)
+    {
+        steamAppId = null;
+        gogGameId = null;
+
+        if (string.IsNullOrWhiteSpace(childDir) || !Directory.Exists(childDir))
+        {
+            return false;
+        }
+
+        try
+        {
+            var gogInfo = TryParseGogInfo(childDir);
+            if (gogInfo is not null)
+            {
+                gogGameId = gogInfo.GameId;
+                return SelectBestMainExecutable(childDir) is not null;
+            }
+
+            var steamProbe = GameEngineInspector.InspectSteamFiles(childDir);
+            steamAppId = steamProbe.DeterministicTxtAppId;
+
+            string? mainExe = SelectBestMainExecutable(childDir);
+            if (string.IsNullOrWhiteSpace(mainExe))
+            {
+                return false;
+            }
+
+            if (Directory.Exists(Path.Combine(childDir, "Engine"))
+                || Directory.EnumerateDirectories(childDir, "*_Data", SearchOption.TopDirectoryOnly).Any()
+                || steamProbe.HasSteamApiDll
+                || steamProbe.Emulator is not null
+                || steamProbe.DeterministicTxtAppId.HasValue)
+            {
+                return true;
+            }
+
+            // Pure standalone child game inside an anthology container: require a non-penalized, non-wrapper executable at depth 0 or 1.
+            int exeDepth = CountDirectorySeparators(mainExe);
+            if (exeDepth <= 1)
+            {
+                string mainExeFullPath = Path.Combine(childDir, mainExe);
+                string stem = Path.GetFileNameWithoutExtension(mainExe);
+                if (!PenalizedExecutableStemRegex().IsMatch(stem)
+                    && GameTitleCleaner.InspectPeExecutableRole(mainExeFullPath) is not (PeExecutableRole.LauncherOrMenuWrapper or PeExecutableRole.RedirectorOrPrerequisiteStub))
+                {
+                    return true;
+                }
+            }
+        }
+        catch
+        {
+            // Ignore inaccessible child folders.
+        }
+
+        return false;
+    }
+
+    private static bool TryGetUnrealProjectRootForBinary(
+        string exeFullPath,
+        string installDir,
+        out string? ueRootDir)
+    {
+        ueRootDir = null;
+        try
+        {
+            var winDir = Directory.GetParent(exeFullPath);
+            if (winDir is null
+                || (!winDir.Name.Equals("Win64", StringComparison.OrdinalIgnoreCase)
+                    && !winDir.Name.Equals("WinGDK", StringComparison.OrdinalIgnoreCase)
+                    && !winDir.Name.Equals("Win32", StringComparison.OrdinalIgnoreCase)))
+            {
+                return false;
+            }
+
+            var binariesDir = winDir.Parent;
+            if (binariesDir is null || !binariesDir.Name.Equals("Binaries", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var projectDir = binariesDir.Parent;
+            if (projectDir is null || projectDir.Name.Equals("Engine", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var candidateUeRoot = projectDir.Parent;
+            if (candidateUeRoot is null)
+            {
+                return false;
+            }
+
+            string normalizedUeRoot = Path.TrimEndingDirectorySeparator(candidateUeRoot.FullName);
+            string normalizedInstall = Path.TrimEndingDirectorySeparator(installDir);
+            bool withinInstallDir = string.Equals(normalizedUeRoot, normalizedInstall, StringComparison.OrdinalIgnoreCase)
+                || normalizedUeRoot.StartsWith(normalizedInstall + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+
+            if (!withinInstallDir || !Directory.Exists(Path.Combine(normalizedUeRoot, "Engine")))
+            {
+                return false;
+            }
+
+            ueRootDir = normalizedUeRoot;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool IsUnderUnrealEngineSubtree(string exeFullPath, string installDir)
+    {
+        try
+        {
+            string rel = Path.GetRelativePath(installDir, exeFullPath);
+            string[] segments = rel.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries);
+            for (int i = 0; i + 1 < segments.Length; i++)
+            {
+                if (segments[i].Equals("Engine", StringComparison.OrdinalIgnoreCase)
+                    && (segments[i + 1].Equals("Binaries", StringComparison.OrdinalIgnoreCase)
+                        || segments[i + 1].Equals("Extras", StringComparison.OrdinalIgnoreCase)))
+                {
+                    return true;
+                }
+            }
+        }
+        catch
+        {
+            // Ignore path errors.
+        }
+
+        return false;
+    }
+
+    private static bool HasPrerequisiteRedirectorMarkers(string dirPath)
+    {
+        try
+        {
+            if (File.Exists(Path.Combine(dirPath, "title.rgl")))
+            {
+                return true;
+            }
+
+            foreach (string vdfFile in Directory.EnumerateFiles(dirPath, "installscript*.vdf", SearchOption.TopDirectoryOnly))
+            {
+                string text = File.ReadAllText(vdfFile);
+                if (text.Contains("Redistributables", StringComparison.OrdinalIgnoreCase)
+                    || text.Contains("Rockstar-Games-Launcher", StringComparison.OrdinalIgnoreCase)
+                    || text.Contains("Social-Club-Setup", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+        }
+        catch
+        {
+            // Ignore unreadable VDF files.
+        }
+
+        return false;
     }
 
     private static string UnwrapSingleNestedFolderIfNeeded(string directoryPath)
@@ -1501,6 +1977,56 @@ public sealed partial class GameDirectoryScanner
         }
 
         return false;
+    }
+
+    private static List<string> EnumerateExecutablesDepthBounded(string rootDir, int maxDepth)
+    {
+        var results = new List<string>(32);
+        var opts = new EnumerationOptions
+        {
+            IgnoreInaccessible = true,
+            RecurseSubdirectories = false,
+            AttributesToSkip = FileAttributes.ReparsePoint | FileAttributes.System,
+        };
+
+        void Walk(string dir, int depth)
+        {
+            try
+            {
+                results.AddRange(Directory.EnumerateFiles(dir, "*.exe", opts));
+                if (depth >= maxDepth)
+                {
+                    return;
+                }
+
+                bool hasSiblingBinaries = Directory.Exists(Path.Combine(dir, "Binaries"))
+                                          || Directory.Exists(Path.Combine(dir, "Engine"));
+
+                foreach (string sub in Directory.EnumerateDirectories(dir, "*", opts))
+                {
+                    string subName = Path.GetFileName(sub);
+                    if (SkippedSubdirectoryNames.Contains(subName))
+                    {
+                        continue;
+                    }
+
+                    // Skip Unreal asset Content\ trees when Binaries\ or Engine\ is present.
+                    if (hasSiblingBinaries && subName.Equals("Content", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    Walk(sub, depth + 1);
+                }
+            }
+            catch
+            {
+                // Ignore inaccessible subfolders.
+            }
+        }
+
+        Walk(rootDir, 0);
+        return results;
     }
 
     private static List<string> EnumerateFilesDepthBounded(string rootDir, int maxDepth)

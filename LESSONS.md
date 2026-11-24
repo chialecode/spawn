@@ -12,6 +12,7 @@
 
 - **测试里不要写死会过期的日期。** 固定的过期时间、证书有效期或“未来”日期到期后测试会突然失败；用相对当前时间计算。证据：2026-11-24 另一个项目的 CI。出现 1 次。
 - **性能与超时类测试在机器忙时会偶发失败。** 冷启动、全量并行测试与打包同时进行时，固定时限的断言会抖动；用显式就绪信号代替固定等待，性能断言单独运行或放宽到能区分回归的阈值。证据：2026-11-24 另一个项目；[#31](https://github.com/chialecode/spawn/issues/31)（反作弊冷却测试在 CI 上停在 `ResidualGuardWatch`）。出现 2 次。
+- **在临时目录跑 `git` 的测试要先清掉继承的 `GIT_*` 环境变量。** 在 `git worktree` 或 Git 钩子（如 `pre-push`）里运行测试时，Git 会导出 `GIT_DIR`、`GIT_WORK_TREE`、`GIT_COMMON_DIR` 等变量，临时仓库里的 `git init`、`git config`、`git commit` 与 `git tag` 会落到外层仓库与共享 `.git/config` 上；测试进程与派生的 `git` 子进程要统一剔除 `GIT_DIR`、`GIT_WORK_TREE`、`GIT_INDEX_FILE`、`GIT_COMMON_DIR`、`GIT_OBJECT_DIRECTORY`、`GIT_ALTERNATE_OBJECT_DIRECTORIES`。证据：[#44](https://github.com/chialecode/spawn/pull/44)、[#45](https://github.com/chialecode/spawn/pull/45)、[#46](https://github.com/chialecode/spawn/pull/46)。出现 1 次。
 
 ## 打包与安装
 

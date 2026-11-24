@@ -31,6 +31,30 @@ BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
 CREATE_NO_WINDOW = 0x08000000
 CREATION_FLAGS = (BELOW_NORMAL_PRIORITY_CLASS | CREATE_NO_WINDOW) if os.name == "nt" else 0
 
+INHERITED_GIT_ENV_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+)
+
+
+def _strip_inherited_git_env(env: dict[str, str]) -> dict[str, str]:
+    cleaned = dict(env)
+    for key in INHERITED_GIT_ENV_VARS:
+        cleaned.pop(key, None)
+    return cleaned
+
+
+def _scrub_process_git_env() -> dict[str, str]:
+    saved: dict[str, str] = {}
+    for key in INHERITED_GIT_ENV_VARS:
+        if key in os.environ:
+            saved[key] = os.environ.pop(key)
+    return saved
+
 
 def _configure_quiet_test_host() -> None:
     if os.name != "nt":
@@ -50,7 +74,7 @@ def _run_silent(
     env: dict[str, str] | None = None,
     timeout: float = 120.0,
 ) -> subprocess.CompletedProcess[str]:
-    merged_env = os.environ.copy() if env is None else dict(env)
+    merged_env = _strip_inherited_git_env(os.environ.copy() if env is None else dict(env))
     merged_env["PYTHONDONTWRITEBYTECODE"] = "1"
     merged_env["PYTHONUTF8"] = "1"
     merged_env["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1"
@@ -127,6 +151,55 @@ def _git_tag(repo_dir: Path, tag_name: str) -> None:
 
 
 class ReleasePlanAndVersionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        saved = _scrub_process_git_env()
+        if saved:
+            self.addCleanup(os.environ.update, saved)
+
+    def test_runner_isolates_inherited_git_worktree_env_vars(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="spawn-git-env-canary-") as td:
+            canary = Path(td)
+            _init_temp_git_repo(canary, base_version="0.1.1")
+            canary_head = _git_commit(canary, "canary.txt", "canary\n", "feat: canary")
+            canary_git_dir = canary / ".git"
+            config_before = (canary_git_dir / "config").read_bytes()
+
+            poisoned_env = os.environ.copy()
+            poisoned_env["GIT_DIR"] = str(canary_git_dir)
+            poisoned_env["GIT_WORK_TREE"] = str(canary)
+            poisoned_env["GIT_INDEX_FILE"] = str(canary_git_dir / "index")
+            poisoned_env["GIT_COMMON_DIR"] = str(canary_git_dir)
+            poisoned_env["GIT_OBJECT_DIRECTORY"] = str(canary_git_dir / "objects")
+            poisoned_env["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = str(canary_git_dir / "objects")
+            poisoned_env["PYTHONDONTWRITEBYTECODE"] = "1"
+            poisoned_env["PYTHONUTF8"] = "1"
+
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    "-B",
+                    str(Path(__file__).resolve()),
+                    "ReleasePlanAndVersionTests.test_plan_out_of_order_integer_patches_v0_1_9_and_v0_1_10",
+                ],
+                cwd=str(REPO_ROOT),
+                env=poisoned_env,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=CREATION_FLAGS,
+                timeout=60.0,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, f"{proc.stdout}\n{proc.stderr}")
+
+            head_after = _run_silent(["git", "rev-parse", "--short=12", "HEAD"], cwd=canary, timeout=20.0)
+            tags_after = _run_silent(["git", "tag", "-l"], cwd=canary, timeout=20.0)
+            self.assertEqual(head_after.stdout.strip(), canary_head)
+            self.assertEqual(tags_after.stdout.strip(), "")
+            self.assertEqual((canary_git_dir / "config").read_bytes(), config_before)
+
     def test_plan_first_release_without_tags_uses_next_base_version(self) -> None:
         with tempfile.TemporaryDirectory(prefix="spawn-plan-first-") as td:
             repo = Path(td)
@@ -573,4 +646,5 @@ class ManifestSigningAndChecksumsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     _configure_quiet_test_host()
+    _scrub_process_git_env()
     unittest.main(verbosity=2)

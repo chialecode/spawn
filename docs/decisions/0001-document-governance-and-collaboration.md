@@ -28,12 +28,12 @@ SPAWN 是一个横跨进程调度、存储去重、离线协议解析、图形�
 ### 3.1 不可变第一提交与单阶段单提交 DCO 规则
 1. **不可变初始锚点**：仓库 `main` 分支永久保留第一提交 `ad7454c1ab58bb2019e0f0ba6810c5928f8a335e`（仅含 0 字节空 `README.md` 与标准 DCO `Signed-off-by`，提交信息 `chore: initialize repository with empty README`），任何阶段严禁重写或强推覆盖该初始提交。
 2. **阶段分支单提交收敛**：每个里程碑在独立分支（如 `feat/m1-foundation`、`feat/m2-clean-host-and-launcher`）推进；同一阶段内的增量修正与审查闭环统一使用 `git commit --amend -s` 合并至当前阶段的唯一提交，保持“一阶段一分支、一阶段一原子提交”。
-3. **受保护主干合并**：远端 `main` 启用 `main-protection` 规则集（禁止删除、禁止强推、强制线性历史、仅允许 Squash Merge、强制解决全部评审会话并通过必选状态检查 `docs`）。
+3. **受保护主干合并**：远端 `main` 启用 `main-protection` 规则集（禁止删除、禁止强推、强制线性历史、仅允许 Squash Merge、强制解决全部评审会话并通过必选状态检查；2026-11-24 起唯一的必选检查是 `repository-quality`，见 [#12](https://github.com/chialecode/spawn/issues/12)）。
 
 ### 3.2 文档即契约与机械化注册表门禁
 1. 全仓受控文档统一登记在 [document-registry.json](../governance/document-registry.json)，明确主责角色、更新时机与阶段分类。
 2. 需求编号（`REQ-*` / `NFR-*`）、设计正本、模块规格与验收判据（`AC-*`）在 [traceability.json](../delivery/traceability.json) 中建立双向机器可读映射。
-3. 本地与 GitHub Actions（`.github/workflows/docs.yml`）统一运行 `python scripts/check_docs.py`，强制拦截死链、未登记孤儿文档、引用式链接、任何盘符绝对路径（`[A-Za-z]:[\\/]`）以及任何外部无关项目命名残留。
+3. 本地与 GitHub Actions（`.github/workflows/ci.yml` 的 `repository-quality`）统一运行 `python scripts/check_docs.py`，强制拦截死链、未登记孤儿文档、引用式链接、任何盘符绝对路径（`[A-Za-z]:[\\/]`）以及任何外部无关项目命名残留。
 
 ### 3.3 多智能体独占分片与保守远端授权
 1. 并行 Swarm / 双 Agent 协作时严格按目录分片授权写操作，共享契约（如 `Spawn.Contracts`、数据库 DDL、注册表）先对齐接口再落盘，并由无写偏见的独立角色执行全量门禁复核。

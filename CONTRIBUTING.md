@@ -46,7 +46,7 @@ SPAWN 面向 **Windows 10 (21H1, Build 19043+) / Windows 11 x64** 开发与运�
 | 适用时机 | 执行命令 | 门禁职责说明 |
 | :--- | :--- | :--- |
 | **文档与卫生门禁（每次必跑）** | `python scripts/check_docs.py`<br/>`git diff --check` | 校验必需治理文件、`document-registry.json` 全覆盖、相对链接与锚点有效性、拦截本机绝对路径与外部兄弟项目名泄露、校验空白与行尾规范 |
-| **日常快速门禁（每个 PR）** | `python -B scripts/quick_gate.py` | 5 分钟内静默低优先级串联文档治理检查、Release 全量编译、`Spawn.sln` 全量测试（含 `PEReader` IAT 审计、离线网络绊线与 `spawn-dev-test` 打包隔离演练）与 `git diff --check` |
+| **日常快速门禁（每个 PR）** | `python -B scripts/quick_gate.py`（执行一次 `git config --local core.hooksPath .githooks` 后，`git push` 前自动运行） | 5 分钟内静默低优先级串联文档治理检查、Release 全量编译、`Spawn.sln` 全量测试（含 `PEReader` IAT 审计、离线网络绊线与 `spawn-dev-test` 打包隔离演练）与 `git diff --check` |
 | **整套交付门禁（发布前，或改到打包、安装、更新、签名与发布链路时）** | `dotnet build Spawn.sln -c Release`<br/>`dotnet test Spawn.sln -c Release --no-build`<br/>`dotnet list Spawn.sln package --vulnerable --include-transitive` | 全量构建零警告、`Spawn.Architecture.GateTests` Clean Host / Worker `PEReader` 静态审计、全量单元与集成测试及零已知漏洞 / 零 Copyleft 传递依赖核查 |
 
 ---

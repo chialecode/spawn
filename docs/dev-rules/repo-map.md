@@ -9,7 +9,7 @@
 | 仓库相对路径 | 状态 | 职责与所有权边界 |
 | :--- | :--- | :--- |
 | 根文档（`README.md`、`AGENTS.md`、`CLAUDE.md`、`CONTRIBUTING.md`、`DESIGN.md`、`REVIEW.md`、`SECURITY.md`、`LESSONS.md`） | `M1` 已建立 | 项目门面、AI/开发者工作指令唯一正本、审查口径、安全声明与开发教训 |
-| `.github/`（`workflows/docs.yml`、`dependabot.yml`、`rulesets/main.json`、`repository-settings.json`、`actions-policy.json`、`PULL_REQUEST_TEMPLATE.md`、`ISSUE_TEMPLATE/`） | `M1` 已建立 | 远端仓库设置镜像、`main-protection` 规则集、Actions 白名单、NuGet/Actions 7 天冷却 Dependabot 与 CI 文档/DCO 门禁 |
+| `.github/`（`workflows/ci.yml`、`workflows/release.yml`、`dependabot.yml`、`rulesets/main.json`、`repository-settings.json`、`actions-policy.json`、`PULL_REQUEST_TEMPLATE.md`、`ISSUE_TEMPLATE/`） | `M1` 已建立 | 远端仓库设置镜像、`main-protection` 规则集、Actions 白名单、NuGet/Actions 7 天冷却 Dependabot 与 CI 必需检查 `repository-quality`（DCO、文档、构建与测试）；本机 pre-push 门禁在 `.githooks/pre-push` |
 | `docs/governance/`、`docs/product-rules/`、`docs/design-rules/`、`docs/dev-rules/`、`docs/templates/` | `M1` 已建立 | 文档治理政策、`document-registry.json` 注册表、五大产品不变量、WPF/Nodify/Overlay 视觉规范、工程协作规则与写作模板 |
 | `docs/requirements/`、`docs/decisions/`、`docs/design/`、`docs/engineering/`、`docs/delivery/` | `M1` 已建立 | 产品需求正本、ADR-0001~0005 与决策台账、系统架构/数据/IPC 契约、开源选型与环境清单、里程碑路线图与追踪矩阵 |
 | `docs/modules/`、`docs/research/` | `M1` 已建立 | S.P.A.W.N. 五大领域模块正式实现规格书（`active`）及前期源码级深度调研档案（`reference`） |

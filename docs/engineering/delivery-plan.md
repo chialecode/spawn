@@ -2,7 +2,7 @@
 
 > **文档状态**：Active（M1 基线锁定；M3 v1.0 规划定稿修订 `M3` 范围、`AC-09` ~ `AC-12b` 与 `AC-24`）
 > **适用范围**：M1 ~ M6 六阶段递增交付边界、阶段准入/准出条件与 `AC-01` ~ `AC-25`（含 `AC-12b`）结构化验收判据
-> **关联文档**：[产品需求正本](../requirements/product-requirements.md) · [已确认架构决策](../decisions/confirmed-decisions.md) · [系统顶层架构](../design/system-architecture.md) · [技术选型与环境清单](technology-selection.md) · [当前交付状态](../delivery/status.md) · [需求追踪矩阵](../delivery/traceability.json)
+> **关联文档**：[产品需求正本](../requirements/product-requirements.md) · [已确认架构决策](../decisions/confirmed-decisions.md) · [系统顶层架构](../design/system-architecture.md) · [技术选型与环境清单](technology-selection.md) · [需求追踪矩阵](../delivery/traceability.json)
 
 ---
 
@@ -44,7 +44,7 @@ flowchart LR
 
 ### 2.3 `M3`：单机外部修改器安全管家与启动前轻量存档快照
 - **准入前置条件**：M2 合并入 `main`（已满足：`5bcd04c26372602d89d5d4e9eb541cec8b526193`）。
-- **范围依据**：用户 2026-11-21 确认 `M3-Q1` ~ `M3-Q5` 推荐默认方案（`D-25` ~ `D-29`、[ADR-0006](../decisions/0006-m3-external-trainer-manager-elevation-and-ipc.md)）；阶段执行细节见 [M3 阶段计划](../delivery/stage-plan.md)。
+- **范围依据**：用户 2026-11-21 确认 `M3-Q1` ~ `M3-Q5` 推荐默认方案（`D-25` ~ `D-29`、[ADR-0006](../decisions/0006-m3-external-trainer-manager-elevation-and-ipc.md)）；阶段执行记录见 [M3 阶段报告](../evidence/2026-11-22-m3-stage-report.md)。
 - **核心交付物**：
   - 新子工程 `Spawn.Modules.Progress`（Clean Host 侧：修改器目录、洁净室 FLiNG 发现/解析/下载、本地导入、`A0+A` 静音、启动前存档快照）与独立隔离进程 `Spawn.TrainerWorker`（发布于 `Workers\Trainer\`，`M3` 零跨进程内存读写 API 导入）；冻结 `ITrainerBackend` 及修改器全套契约与 SQLite Schema `v4`；
   - 分级按需提权（无管理员清单直启 Medium IL / 每会话 1 次 `runas` UAC）+ 倒置跨 IL `NamedPipeJsonRpc`（Host 单实例服务端、Worker 客户端、双向 PID/路径/`LaunchNonce` 互验）+ `PROC_THREAD_ATTRIBUTE_JOB_LIST` 原子入组 `KILL_ON_JOB_CLOSE` 作业对象；

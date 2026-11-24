@@ -13,8 +13,8 @@
 | 门禁层级 | 当前状态 | 触发运行场景 | 核心执行命令与检查内容 |
 | :--- | :--- | :--- | :--- |
 | **Level 0：文档与公开卫生门禁** | **`M1` 起已启用并强制执行**（本地必跑 + GitHub Actions `docs` 必过检查） | 任何 `.md` / `.json` / `.github` 修改、每次 `git commit` 前及所有 PR | `python -B scripts/check_docs.py`<br/>`git diff --check`<br/>（Python 3.12+ 标准库零依赖，`< 3s` 完成全仓校验） |
-| **Level 1：日常快速门禁（Quick Gate）** | **`M2` 起已启用并强制执行**（`scripts/quick_gate.py` + GitHub Actions `ci.yml`） | 阶段内工作包增量实现、审查局部修复、返工微调及提交前自检（低优先级静默运行，耗时 `5 分钟内`） | `python -B scripts/quick_gate.py` 依次静默串联：`check_docs.py` → `dotnet build Spawn.sln -c Release` → `dotnet test Spawn.sln -c Release --no-build`（覆盖全部 4 个测试工程：`Spawn.Architecture.GateTests`、`Spawn.Core.UnitTests`、`Spawn.Modules.Progress.UnitTests`、`Spawn.TrainerWorker.UnitTests`，含 `PEReader` IAT 审计与 `spawn-dev-test` 打包隔离演练；测试步骤将 `HTTP(S)_PROXY` 指向本地死端口作为离线网络绊线，**测试一律禁止访问真实网络**，外部 HTTP 一律用进程内假 `HttpMessageHandler`）→ `git diff --check`；子进程输出按 UTF-8 优先、本机代码页回退解码，兼容 GBK 控制台 |
-| **Level 2：整阶段完整交付门禁（Stage Gate）** | **`M2` 起已启用并随 `M3`~`M6` 扩充** | 阶段全部工作包实现完毕移交集中审查（B→A / `@verifier`）时在同一源码指纹下完整执行 | Release 全量干净构建 + `Spawn.Architecture.GateTests` 真实二进制 `PEReader` IAT 全表扫描 + `Spawn.Core.UnitTests` 全流派离线模拟器/GOG Comet/原生存档/进程追踪/IPC 确定性测试（`M3`~`M6` 递增扩充 `FastCDC`、WAL 断电恢复、Junction 防误删、DAG 与蓝图 VM 测试）+ NuGet 7 天冷却与已知漏洞审计（`dotnet list package --vulnerable`） |
+| **Level 1：日常快速门禁（Quick Gate）** | **`M2` 起已启用并强制执行**（`scripts/quick_gate.py` + GitHub Actions `ci.yml`） | 每次改动的实现、审查修复与提交前自检（低优先级静默运行，耗时 `5 分钟内`） | `python -B scripts/quick_gate.py` 依次静默串联：`check_docs.py` → `dotnet build Spawn.sln -c Release` → `dotnet test Spawn.sln -c Release --no-build`（覆盖全部 4 个测试工程：`Spawn.Architecture.GateTests`、`Spawn.Core.UnitTests`、`Spawn.Modules.Progress.UnitTests`、`Spawn.TrainerWorker.UnitTests`，含 `PEReader` IAT 审计与 `spawn-dev-test` 打包隔离演练；测试步骤将 `HTTP(S)_PROXY` 指向本地死端口作为离线网络绊线，**测试一律禁止访问真实网络**，外部 HTTP 一律用进程内假 `HttpMessageHandler`）→ `git diff --check`；子进程输出按 UTF-8 优先、本机代码页回退解码，兼容 GBK 控制台 |
+| **Level 2：整阶段完整交付门禁（Stage Gate）** | **`M2` 起已启用并随 `M3`~`M6` 扩充** | 发布前，以及改到打包、安装、更新、签名或发布链路时，在同一源码指纹下完整执行 | Release 全量干净构建 + `Spawn.Architecture.GateTests` 真实二进制 `PEReader` IAT 全表扫描 + `Spawn.Core.UnitTests` 全流派离线模拟器/GOG Comet/原生存档/进程追踪/IPC 确定性测试（`M3`~`M6` 递增扩充 `FastCDC`、WAL 断电恢复、Junction 防误删、DAG 与蓝图 VM 测试）+ NuGet 7 天冷却与已知漏洞审计（`dotnet list package --vulnerable`） |
 
 ---
 
@@ -22,7 +22,7 @@
 
 `scripts/check_docs.py` 仅使用 Python 3.12 标准库编写，无需安装任何第三方 pip 包（同时兼容本机 Windows PowerShell `python` 与 GitHub Actions Ubuntu/Windows runner），自动执行以下硬性检查：
 
-1. **必需根入口与治理文件齐全性**：断言 `README.md`、`AGENTS.md`、`CLAUDE.md`（且内容严格等于 `@AGENTS.md`）、`CONTRIBUTING.md`、`DESIGN.md`、`REVIEW.md`、`SECURITY.md`、`USER-ACTIONS.md`、`LICENSE`、`docs/README.md`、`docs/project-baseline.md`、`docs/governance/documentation-policy.md`、`docs/governance/document-registry.json` 全部存在。
+1. **必需根入口与治理文件齐全性**：断言 `README.md`、`AGENTS.md`、`CLAUDE.md`（且内容严格等于 `@AGENTS.md`）、`CONTRIBUTING.md`、`DESIGN.md`、`REVIEW.md`、`SECURITY.md`、`LESSONS.md`、`LICENSE`、`docs/README.md`、`docs/project-baseline.md`、`docs/governance/documentation-policy.md`、`docs/governance/document-registry.json` 全部存在。
 2. **文档注册表双向无遗漏对齐**：
    - 校验 `docs/governance/document-registry.json` 结构合法（`schemaVersion == 1`、`currentStage` 属于 `M1`~`M6`、无过期 `retireAfter` 滞留文档）；
    - 校验每条记录包含合法的 `path`、`kind`、`status`、`owner`、`scope`、`reviewed`（`YYYY-MM-DD`）、`basis`，且磁盘文件真实存在；
@@ -83,4 +83,4 @@
    - `build` 任务必须从官方 `jrsoftware/issrc` 下载 Inno Setup `7.1.1`（`innosetup-7.1.1-x64.exe`）并校验精确 64 位 SHA-256 后静默安装至 `RUNNER_TEMP`、导出 `SPAWN_ISCC_PATH`；
    - `SPAWN_UPDATE_SIGNING_KEY_PEM` 严禁出现在 `build` 之外，必须在 `try { ... } finally { ... Remove-Item ... -Force }` 中落盘至 `RUNNER_TEMP` 随机路径、严禁回显并执行 `scripts/release.py --build --version`，随后运行隔离 `spawn-test` 安装演练（`scripts/release.py --drill-install --version`）并上传带 `retention-days: 7` 与 `if-no-files-found: error` 的完整 8 件产物。
 5. **发布前离线复验与草稿转正顺序**：断言 `publish` 严格按顺序执行 `sha256sum -c SHA256SUMS` → `VERSION.txt`（`channel=release` 与匹配 `version=`）核验 → `openssl dgst -sha256 -verify installer/update-signing-public.pem` 清单验签 → `gh release create ... --draft --notes-file` 上传全部 7 个可下载资产 → `gh release view ... --json assets` 逐项复核非空存在 → `gh release edit ... --draft=false --latest` 正式发布。
-6. **诚实 `not-run` 边界**：本地与 PR 门禁验证工作流结构与安全边界；真实 GitHub Actions `workflow_dispatch`（`publish=false`）dry-run 与首次正式版发布依赖合入 `main` 及完成 [USER-ACTIONS.md](../../USER-ACTIONS.md) 中的 `ACT-009` / `ACT-010` 与 Actions 白名单更新（`M3-M-03`），合入前一律如实记录为 `not-run`。
+6. **诚实 `not-run` 边界**：本地与 PR 门禁验证工作流结构与安全边界；真实 GitHub Actions `workflow_dispatch`（`publish=false`）dry-run 与首次正式版发布依赖 [#9](https://github.com/chialecode/spawn/issues/9)（`release` 环境、签名 Secret 与发布开关；Artifact Actions 白名单已于 2026-11-24 放行）完成（`M3-M-03`），完成前一律如实记录为 `not-run`。

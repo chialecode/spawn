@@ -1,13 +1,13 @@
 # SPAWN 集中技术审查口径
 
-本文件定义 Agent A 与 Swarm `@verifier` 对阶段交付物的集中技术审查标准。审查者必须直接核查实际 `git diff`、源码树、门禁退出码与产物证据，绝不能仅复述实现者的口头总结。前置协作与门禁背景见 [开发协作流程](docs/dev-rules/development-workflow.md) 与 [质量门禁](docs/dev-rules/quality-gates.md)。
+人工与 AI 审查者共用。审查者必须不是作者：用干净上下文的子代理，或交给另一个 Agent / 人。先按 [AGENTS](AGENTS.md) 找到本次改动适用的规则，再直接核查实际 `git diff`、源码树、门禁退出码与产物证据，不能只复述作者的总结。流程见[开发流程](docs/dev-rules/development-workflow.md#change-loop)，门禁见[质量门禁](docs/dev-rules/quality-gates.md)。
 
 ---
 
 ## 1. 核心审查顺序（SPAWN 专项五大门禁）
 
 1. **范围、需求与决策一致性**：
-   - 实际改动是否严格对应当前 `docs/delivery/stage-plan.md`、关联 `REQ-*` 需求、[已确认决策](docs/decisions/confirmed-decisions.md) 与五大模块规格书（`docs/modules/*`），有无擅自缩减核心能力或越界改动无关模块。
+   - 实际改动是否严格对应关联 issue、`REQ-*` 需求、[已确认决策](docs/decisions/confirmed-decisions.md) 与五大模块规格书（`docs/modules/*`），有无擅自缩减核心能力或越界改动无关模块。
 2. **进程物理隔离与 `PEReader` IAT 零污染门禁（一票否决项）**：
    - `Spawn.Host` 与 `Spawn.OverlayHost` 的 `.csproj` 引用链是否严禁依赖 `OpenCvSharp4`、`Sdcb.PaddleOCR`、`Iced`、`Maa.Framework`、`Nefarius.ViGEm.Client` 等高敏或重型 Worker 专属包；全仓传递依赖树是否零 `GPL`/`AGPL` 包（`Reloaded.Memory` 家族、`SevenZipExtractor` 等已判红，见 [ADR-0006](docs/decisions/0006-m3-external-trainer-manager-elevation-and-ipc.md)）；
    - `Spawn.Architecture.GateTests`（M2 起启用）是否对编译产出的 `Spawn.Host.exe` 与 `Spawn.OverlayHost.exe` 执行真实 `System.Reflection.Metadata.PEReader` 导入表扫描，确保零 `WriteProcessMemory`、`ReadProcessMemory`、`VirtualAllocEx`、`CreateRemoteThread`、`SetWindowsHookEx`、`NtSuspendProcess` 导入；
@@ -33,28 +33,17 @@
 
 | 严重度 | 判定标准 | 处置要求 |
 | :--- | :--- | :--- |
-| **`P0`（致命红线）** | Clean Host 混入敏感 Win32 API、反作弊联锁/15s 冷却失效、递归误删存档槽、云同步静默覆盖丢档、凭据或本机隐私路径入库泄露 | **立即阻断交付**；必须修复并复跑门禁清零后方可继续 |
-| **`P1`（阶段阻断）** | 当前阶段承诺的工作包功能缺失、契约前后矛盾、核心状态机异常未处理、文档注册表或追踪矩阵失步、将 `not-run` 虚报为 `passed` | **阻断当前阶段收敛**；阶段内修复并复验通过 |
-| **`P2`（局部瑕疵）** | 不影响反作弊安全、数据完整性与阶段核心验收的边缘体验或可优化点，已有明确降级保护 | 能在当前阶段顺手修则修；否则登记入 [集中工程事项台账](docs/decisions/open-questions.md) `LOOP-*` 并明确承接阶段 |
+| **`P0`（致命红线）** | Clean Host 混入敏感 Win32 API、反作弊联锁/15s 冷却失效、递归误删存档槽、云同步静默覆盖丢档、凭据或本机隐私路径入库泄露 | **阻止合并**；必须修复并复跑门禁清零后再审 |
+| **`P1`（合并阻断）** | 关联 issue 承诺的功能缺失、契约前后矛盾、核心状态机异常未处理、文档注册表或追踪矩阵失步、将 `not-run` 虚报为 `passed`、碰了[高风险清单](docs/dev-rules/development-workflow.md#high-risk)却没加 `risk:high` | **阻止合并**；本 PR 内修复并复审 |
+| **`P2`（局部瑕疵）** | 不影响反作弊安全、数据完整性与核心验收的边缘体验或可优化点，已有明确降级保护 | 能修则修；否则建 issue 写明触发条件 |
 | **`P3`（表达建议）** | 纯措辞润色、注释排版或非契约性风格偏好 | 不构成返工理由，不制造额外审查轮次 |
 
 > [!IMPORTANT]
-> - 每条审查发现统一使用稳定编号 `F-01`、`F-02`……记录：**严重度、触发条件、实际表现 vs 契约预期、精确文件路径/行号、验证方法**。
-> - **单会话 A/B 模式**：局部确定性小问题由 Agent A 直接修复并复跑门禁后 amend 进阶段提交；跨模块较大缺口汇总为单次完整 `F-*` 清单退回 Agent B。
-> - **Swarm 多智能体模式**：`@verifier` 严格保持只读独立验收身份，**绝不直接代改其他 Worker 负责的文件**；发现任何问题在消息板精准 `@<责任 Worker>` 附 `F-*` 清单要求修复，修复后由 `@verifier` 复跑门禁关闭。
+> - 每条阻塞发现写清：严重度、文件路径/行号、触发条件、实际表现 vs 契约预期、验证方法。
+> - 审查者只审不改：问题写进 PR 评论，由作者修复；修复后由同一审查者或新的审查者复核阻塞项，不要求全量重审。
 
 ---
 
-## 3. 三维结论分离与收敛后移交
+## 3. 审查结论
 
-每次集中审查结束必须分别明确给出三项正交结论，严禁混为一谈：
-
-1. **实现与自检状态**（工作包与自动化门禁完成度）；
-2. **集中技术审查结论**（`reviewed` 通过 / `changes-requested` 需返工）；
-3. **产品阶段实机验收状态**（含用户人工检查 `H-*` 与外部真实服务 `ACT-*`，未测前保持 `pending` / `not-run`）。
-
-当技术审查达到 `reviewed`、当前阶段可运行的自动化门禁全部通过且 `P0`/`P1` 阻断项归零时：
-
-- 在本地阶段分支收束唯一带 DCO `Signed-off-by` 签名的阶段提交（核验父提交不变）；
-- 拟定清晰的 PR 标题与正文草稿（含实际变更、已跑门禁、`not-run` 边界及 DCO 尾注）；
-- 在 [USER-ACTIONS.md](USER-ACTIONS.md) 登记具体远端授权项（`ACT-*`），向用户请求授权推送阶段分支与创建 PR。顺延的人工检查（`H-*`）与非阻塞可选配置不是申请远端授权的前置阻塞条件。
+结论写在 PR 评论里：**可合并** 或 **先修复**，再列阻塞问题与至多三条非阻塞建议。没发现问题时写明已审查的范围与没覆盖的部分（`not-run`）。实现与自检、技术审查、产品实机验收（真实游戏、真实修改器、外部服务）是三件事，分开下结论：技术审查可以通过而实机检查仍为 `not-run`，但不得声称产品验收通过；需要用户实机判断的，按[什么时候找用户](docs/dev-rules/development-workflow.md#user-actions)建 `needs-user` issue。

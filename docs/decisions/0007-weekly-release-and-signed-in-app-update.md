@@ -2,9 +2,9 @@
 
 - **状态**：Accepted
 - **日期**：2026-11-22
-- **维护角色**：Agent A / 系统架构师
+- **维护角色**：维护者
 - **关联决策与需求**：`D-15`、`D-23`、`D-30` ~ `D-33`；`NFR-05`、`NFR-06`、`NFR-07`、`NFR-09`、`REQ-SEC-01`；验收 `AC-25`
-- **部分替代**：[集中工程事项台账](open-questions.md) `LOOP-05` 中“`M6` 收官阶段补齐 Ed25519 离线公钥验签在线更新引擎”的承接阶段与签名算法；`%ProgramFiles%\spawn\Overlay\` 自签名证书部署仍留在 `LOOP-05`
+- **部分替代**：[上游事项台账](open-questions.md) `LOOP-05` 中“`M6` 收官阶段补齐 Ed25519 离线公钥验签在线更新引擎”的承接阶段与签名算法；`%ProgramFiles%\spawn\Overlay\` 自签名证书部署见 [#27](https://github.com/chialecode/spawn/issues/27)
 
 ---
 
@@ -38,17 +38,17 @@
 | 通道 | 构建方式 | 如何更新 |
 | :--- | :--- | :--- |
 | 正式版 `spawn` | GitHub Actions 每周构建，**自包含** `win-x64`，剥离全部 `*.pdb`（另出符号包） | 应用内每 24 小时检查一次，ECDSA 验签 + SHA-256 校验后静默安装并恢复窗口/托盘状态 |
-| 开发版 `spawn-dev` | 本机 `package.py --install-dev`，依赖框架发布，保留托管 `*.pdb`，剥离原生 `*.pdb` | **永不自查更新**；Agent 每次本地提交或 `amend` 后自动重装（`D-32`） |
+| 开发版 `spawn-dev` | 本机 `package.py --install-dev`，依赖框架发布，保留托管 `*.pdb`，剥离原生 `*.pdb` | **永不自查更新**；Agent 每次合并进 `main` 后自动重装（`D-34`，原为每次本地提交后，`D-32`） |
 | 测试身份 `spawn-test` / `spawn-dev-test` | 仅自动化演练 | 不更新 |
 
 ### 3.2 每周发布流水线（`D-30`）
 
 - **触发**：`schedule: "0 0 * * 1"`（北京时间每周一 08:00）+ 手动 `workflow_dispatch`（输入 `publish` 默认 `false`）；**绝不**由 `push` / `pull_request` 触发。
-- **仅限 `main`**：`plan` 任务带 `if: github.ref == 'refs/heads/main'`（`check` / `build` / `publish` 随之跳过），`publish` 的 `if` 再显式前置 `github.ref == 'refs/heads/main' &&`；GitHub `release` 环境的 Deployment branches and tags 设为 Selected branches 且只允许 `main`（`USER-ACTIONS` `ACT-009`），从其它分支手动触发既不会构建也无法取用签名私钥。由 `ReleaseWorkflowGateTests` 断言。
+- **仅限 `main`**：`plan` 任务带 `if: github.ref == 'refs/heads/main'`（`check` / `build` / `publish` 随之跳过），`publish` 的 `if` 再显式前置 `github.ref == 'refs/heads/main' &&`；GitHub `release` 环境的 Deployment branches and tags 设为 Selected branches 且只允许 `main`（[#9](https://github.com/chialecode/spawn/issues/9)），从其它分支手动触发既不会构建也无法取用签名私钥。由 `ReleaseWorkflowGateTests` 断言。
 - **是否构建**：`plan` 任务计算自上一个 `v<主>.<次>.*` 标签以来 `main` 的 first-parent 提交数（每个 Squash 合入的 PR 对应一个），为 `0` 则本周跳过；首次发布没有标签，直接构建。
 - **版本号**：版本线取 `NEXT_BASE_VERSION` 的 `主.次`，新版本为已有最高补丁号 `+1`，首个版本为 `NEXT_BASE_VERSION` 本身；开发版为 `<下一正式版本>-dev.<UTC 时间戳>`。
 - **任务链**：`plan`（ubuntu，只读）→ `check`（windows-2025，等价 `quick_gate`：构建、全量测试、`check_docs`、`git diff --check`）→ `build`（windows-2025，`environment: release`，自包含打包、签名更新清单、隔离安装演练、上传 7 天构建产物）→ `publish`（ubuntu，**唯一**拥有 `contents: write` 的任务）。
-- **发布开关**：`publish` 仅在 `main` 分支、`vars.SPAWN_RELEASE_PUBLISH == '1'` 且（定时触发或手动输入 `publish=true`）时运行。该仓库变量即用户一次性给出的长期发布授权（`USER-ACTIONS` `ACT-010`），关闭变量即可随时停发。
+- **发布开关**：`publish` 仅在 `main` 分支、`vars.SPAWN_RELEASE_PUBLISH == '1'` 且（定时触发或手动输入 `publish=true`）时运行。该仓库变量即用户一次性给出的长期发布授权（[#9](https://github.com/chialecode/spawn/issues/9)），关闭变量即可随时停发。
 - **发布步骤**：`sha256sum -c SHA256SUMS` → 核对 `VERSION.txt` 通道与版本 → `openssl` 以仓库内公钥复核清单签名 → `gh release create v<版本> --draft` 上传全部文件 → 逐项核对资产齐全 → 转为正式版并标记 `--latest`。
 - **供应链**：所有 `uses:` 以 40 位提交 SHA 钉扎并遵守 7 天冷却；顶层 `permissions: {}`；签名私钥仅存在于 `release` 环境 Secret `SPAWN_UPDATE_SIGNING_KEY_PEM`，在 `build` 任务内写入 `RUNNER_TEMP` 临时文件并在 `finally` 中删除，严禁回显。
 
@@ -58,7 +58,7 @@
 - **频率**：启动后 60 秒检查一次，之后每 24 小时一次；设置页可手动检查，也可关闭自动检查。离线时静默顺延，不弹窗。
 - **来源与网络边界**：`https://github.com/chialecode/spawn/releases/latest/download/update-windows-x64.json` 及 `.sig`；仅 HTTPS，主机白名单 `github.com`、`objects.githubusercontent.com`、`release-assets.githubusercontent.com`，手动重定向最多 5 跳，清单上限 `64KB`、安装包上限 `300MB`；User-Agent 如实标为 `SPAWN-Updater/<版本>`，**不携带任何设备或用户标识**（与 `NFR-06` 零遥测兼容）。
 - **校验链**：清单先用编译进 `Spawn.Core` 的 ECDSA P-256 公钥验签（与 `installer/update-signing-public.pem` 逐字节一致，由门禁测试断言）→ 通道必须为 `release` → 版本必须**严格高于**当前版本（拒绝降级与同版本）→ 安装包 URL 必须位于 `https://github.com/chialecode/spawn/releases/download/v<版本>/` 之下 → 下载到 `<DataRoot>\cache\updates\<版本>\*.partial`，核对大小与 SHA-256 后原子重命名，只保留最新一份。
-- **安装时机（默认值见 `Q-002`）**：自动下载；SPAWN **空闲**时（无受追踪游戏运行、无修改器会话、无存档快照/回滚/数据清理进行中）且仅驻留托盘才自动安装；主窗口打开时只显示“新版本已就绪，重启更新”提示条与托盘提示，由用户点击。设置可改为“仅提醒”。
+- **安装时机（默认值见 [#16](https://github.com/chialecode/spawn/issues/16)）**：自动下载；SPAWN **空闲**时（无受追踪游戏运行、无修改器会话、无存档快照/回滚/数据清理进行中）且仅驻留托盘才自动安装；主窗口打开时只显示“新版本已就绪，重启更新”提示条与托盘提示，由用户点击。设置可改为“仅提醒”。
 - **安装动作**：启动前以禁止写入的句柄重新核对 SHA-256，并持有到安装器进程创建完成（同 `F-02` 的 TOCTOU 防护）→ `RequestQuitForUpdateAsync(UpdateRestartReason.Update)`（先停修改器会话、写重启标记）→ `ShellExecute` 启动按用户安装包 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /SPAWNRELAUNCH`（零 UAC）→ 安装器检测到 `/SPAWNRELAUNCH` 后拉起新版本，并按重启标记恢复窗口或托盘状态。
 - **记录**：`app_settings` 中保存最近一次/下一次检查时间与结果，以及最近 20 条更新记录（时间、旧版本 → 新版本、自动/手动、结果）；本阶段不升级 Schema。
 - **Clean Host**：更新器只用 `HttpClient`、BCL `ECDsa`、`SHA256` 与 `ShellExecute`，`Spawn.Architecture.GateTests` 必须保持全绿。
@@ -73,8 +73,10 @@
 
 Agent 每次本地 `git commit` 或 `git commit --amend` 成功后，立即执行 `python -B scripts/package.py --install-dev`，使本机 `SPAWN Dev` 与 `HEAD` 保持一致；`SPAWN_DEV_AUTO_INSTALL=0` 或 `CI=true` 时跳过；`quick_gate.py`、单元测试与 CI 严禁调用。这只改协作规则，不改产品代码。
 
+> 2026-11-24 起重装时机由 [D-34](confirmed-decisions.md#d-34) 改为每次合并进 `main` 后，见[开发流程](../dev-rules/development-workflow.md#dev-install-at-handoff)。
+
 ## 4. 后果
 
 - **正向**：新电脑装完即用；安装包不再携带 `82MB` 调试符号；正式版每周有改动才发、无改动不发，发布可随时由仓库变量停止；更新链条全程验签且零新增依赖。
-- **代价**：正式版安装包因自带运行时变大（Worker 再带一份运行时，依赖 LZMA2 固实压缩去重，实际体积由 `M3-W10` 实测记录）；签名私钥丢失将导致已安装正式版无法再自动更新，需用户按 `ACT-009` 离线备份。
+- **代价**：正式版安装包因自带运行时变大（Worker 再带一份运行时，依赖 LZMA2 固实压缩去重，实际体积由 `M3-W10` 实测记录）；签名私钥丢失将导致已安装正式版无法再自动更新，需用户离线备份（[#10](https://github.com/chialecode/spawn/issues/10)）。
 - **未覆盖**：差分更新包、正式版 Authenticode 签名（`Q-001` 默认不采购）、`%ProgramFiles%` Overlay 自签名证书部署（仍属 `LOOP-05`）。

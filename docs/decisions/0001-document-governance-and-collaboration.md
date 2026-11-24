@@ -1,9 +1,9 @@
 # ADR-0001：文档即契约治理、多智能体并行协作与单阶段单提交规则
 
-- **状态**：Accepted
+- **状态**：Accepted（2026-11-24 部分被 [D-34](confirmed-decisions.md#d-34) 替代：§3.3 的协作分工、保守远端授权与单阶段单提交改为 issue 驱动的小 PR 流程，见[开发流程](../dev-rules/development-workflow.md)；文档即契约、注册表与仓库洁净规则仍有效）
 - **日期**：2026-11-15
 - **决策编号**：`D-13`、`D-14`、`D-15`、`D-16`、`D-17`、`D-18`
-- **关联文档**：[文档治理策略](../governance/documentation-policy.md) · [Git 工作流规范](../dev-rules/git-workflow.md) · [质量门禁规范](../dev-rules/quality-gates.md) · [USER-ACTIONS.md](../../USER-ACTIONS.md)
+- **关联文档**：[文档治理策略](../governance/documentation-policy.md) · [Git 工作流规范](../dev-rules/git-workflow.md) · [质量门禁规范](../dev-rules/quality-gates.md) · [USER-ACTIONS.md](https://github.com/chialecode/spawn/blob/83d749dbb07e3a112c03857f2bbe48eac4fffadd/USER-ACTIONS.md)
 
 ---
 
@@ -37,7 +37,7 @@ SPAWN 是一个横跨进程调度、存储去重、离线协议解析、图形�
 
 ### 3.3 多智能体独占分片与保守远端授权
 1. 并行 Swarm / 双 Agent 协作时严格按目录分片授权写操作，共享契约（如 `Spawn.Contracts`、数据库 DDL、注册表）先对齐接口再落盘，并由无写偏见的独立角色执行全量门禁复核。
-2. 严守保守远端边界：除初始化锚点外，任何推送远端分支、开启/合并 PR 与创建 Release 动作均须等待仓库所有者审阅阶段报告并明确授权；所有需人工配合事项统一汇总至 [USER-ACTIONS.md](../../USER-ACTIONS.md)。
+2. 严守保守远端边界：除初始化锚点外，任何推送远端分支、开启/合并 PR 与创建 Release 动作均须等待仓库所有者审阅阶段报告并明确授权；所有需人工配合事项统一汇总至 [USER-ACTIONS.md](https://github.com/chialecode/spawn/blob/83d749dbb07e3a112c03857f2bbe48eac4fffadd/USER-ACTIONS.md)。
 3. 严守开发隔离与静默测试纪律：源码开发固定指向 `%LOCALAPPDATA%\spawn-dev`（与正式版 `%LOCALAPPDATA%\spawn` 彻底物理隔离），一切自动化测试必须在后台无界面静默完成。
 
 ## 4. 影响与后果

@@ -58,7 +58,7 @@ REQUIRED_FILES = (
     "DESIGN.md",
     "REVIEW.md",
     "SECURITY.md",
-    "USER-ACTIONS.md",
+    "LESSONS.md",
     "LICENSE",
     "docs/README.md",
     "docs/project-baseline.md",

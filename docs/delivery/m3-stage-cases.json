@@ -326,7 +326,7 @@
         "AC-12",
         "AC-12b"
       ],
-      "verification": "python -B scripts/package.py --install-dev 后由用户按 USER-ACTIONS.md H-002 指引在本机 SPAWN Dev 体验",
+      "verification": "python -B scripts/package.py --install-dev 后由用户按 issue #18（原 H-002）指引在本机 SPAWN Dev 体验",
       "expected": "本机 SPAWN Dev 已更新驻留托盘；用户记录 OSS-07 ①④⑤ 实测结果（INI 冷启动生效、热键触发率、Authenticode 状态）",
       "status": "pending"
     },
@@ -422,7 +422,7 @@
       "acceptance": [
         "AC-25"
       ],
-      "verification": "workflow_dispatch（publish=false）；ACT-009/ACT-010 完成后观察下一次定时发布与 H-005",
+      "verification": "workflow_dispatch（publish=false）；issue #9 完成后观察下一次定时发布与 issue #19（原 H-005）",
       "expected": "dry-run 构建与演练全绿；首个 Release 资产齐全；已安装正式版在下一版本发布后 24 小时内自动更新并恢复原窗口状态（未具备条件前保持 not-run）",
       "status": "pending"
     }

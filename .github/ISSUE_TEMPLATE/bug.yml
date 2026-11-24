@@ -1,0 +1,26 @@
+name: 缺陷
+description: 行为不对、崩溃或数据问题
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: 发生了什么
+      description: 实际看到的现象；不要贴存档内容、账号、密钥或令牌。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 怎样复现
+      description: 步骤与预期结果；涉及游戏或修改器时写明名称与版本。
+  - type: input
+    id: version
+    attributes:
+      label: 版本与通道
+      description: “设置 › 关于”里的版本号与通道（spawn / spawn-dev）。
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志或截图
+      description: 可选。发出前去掉用户名、路径里的个人信息等私人内容。

@@ -29,7 +29,7 @@ flowchart LR
   - 远端不可变初始提交基线（`ad7454c1ab58bb2019e0f0ba6810c5928f8a335e`）与激活态 `main-protection` 规则集；
   - 根治理套件（`README.md`、`AGENTS.md`、`CONTRIBUTING.md`、`REVIEW.md`、`SECURITY.md`、`DESIGN.md`、`USER-ACTIONS.md`、`LICENSE`）；
   - 全套 `docs/requirements/`、`docs/decisions/`、`docs/design/`、`docs/modules/`、`docs/engineering/`、`docs/delivery/`、`docs/governance/`、`docs/dev-rules/` 正本与 `docs/research/` 归档；
-  - `scripts/check_docs.py` 与 `.github/workflows/docs.yml` CI 门禁。
+  - `scripts/check_docs.py` 与 `.github/workflows/docs.yml` CI 门禁（2026-11-24 并入 `ci.yml` 的 `repository-quality`，见 [#12](https://github.com/chialecode/spawn/issues/12)）。
 - **准出标准**：满足 `AC-01`，本地 `feat/m1-foundation` 形成唯一带 DCO 签名的原子提交并通过独立审查。
 
 ### 2.2 `M2`：Clean Host 主壳、Steamrip/GOG 游戏库启动接管与单机成就自动捕获闭环（首发代码交付阶段）

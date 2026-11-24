@@ -28,7 +28,7 @@ SPAWN 是一个横跨进程调度、存储去重、离线协议解析、图形�
 ### 3.1 不可变第一提交与单阶段单提交 DCO 规则
 1. **不可变初始锚点**：仓库 `main` 分支永久保留第一提交 `ad7454c1ab58bb2019e0f0ba6810c5928f8a335e`（仅含 0 字节空 `README.md` 与标准 DCO `Signed-off-by`，提交信息 `chore: initialize repository with empty README`），任何阶段严禁重写或强推覆盖该初始提交。
 2. **阶段分支单提交收敛**：每个里程碑在独立分支（如 `feat/m1-foundation`、`feat/m2-clean-host-and-launcher`）推进；同一阶段内的增量修正与审查闭环统一使用 `git commit --amend -s` 合并至当前阶段的唯一提交，保持“一阶段一分支、一阶段一原子提交”。
-3. **受保护主干合并**：远端 `main` 启用 `main-protection` 规则集（禁止删除、禁止强推、强制线性历史、仅允许 Squash Merge、强制解决全部评审会话并通过必选状态检查 `docs`）。
+3. **受保护主干合并**：远端 `main` 启用 `main-protection` 规则集（禁止删除、禁止强推、强制线性历史、仅允许 Squash Merge、强制解决全部评审会话并通过必选状态检查；2026-11-24 起唯一的必选检查是 `repository-quality`，见 [#12](https://github.com/chialecode/spawn/issues/12)）。
 
 ### 3.2 文档即契约与机械化注册表门禁
 1. 全仓受控文档统一登记在 [document-registry.json](../governance/document-registry.json)，明确主责角色、更新时机与阶段分类。

@@ -16,7 +16,8 @@ permissions:
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded PR runs only; every push to main finishes (and seeds caches).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   repository-quality:
@@ -80,6 +81,9 @@ jobs:
         run: |
           python -B scripts/check_docs.py
           git diff --check
+
+      - name: Release tooling unit tests (offline)
+        run: python -B scripts/test_release.py
 
       - name: Set up .NET 10 SDK
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0

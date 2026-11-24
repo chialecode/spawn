@@ -24,7 +24,7 @@
 | :--- | :--- | :--- |
 | **治理规则、架构设计、模块规格、源码与合成测试夹具** | 仓库受管目录（根、`docs/`、`src/`、`tests/`、`scripts/`） | 正常纳入 Git 跟踪；所有 `.md`/治理 `.json` 登记入 [document-registry.json](../governance/document-registry.json)；零隐私、零绝对路径 |
 | **手工开发调试数据库与本地 Vault 沙箱** | `.local/dev-data/` 与 `.local/dev-vault/`（通过 `SPAWN_DATA_DIR` 指向） | 已被 [`.gitignore`](../../.gitignore) 排除，严禁入库；与用户正式版 `%LOCALAPPDATA%\spawn` 彻底隔离 |
-| **门禁执行原始日志、性能分位数采样与覆盖率产物** | `.local/reports/<阶段小写>/`（如 `.local/reports/m2/`） | 已被 `.gitignore` 排除；仅将脱敏后的统计摘要与退出码提炼回写至 `docs/delivery/stage-report.md` |
+| **门禁执行原始日志、性能分位数采样与覆盖率产物** | `.local/reports/<阶段小写>/`（如 `.local/reports/m2/`） | 已被 `.gitignore` 排除；仅将脱敏后的统计摘要与退出码写进 PR；需要长期留存的写进 `docs/evidence/<日期>-<主题>.md` |
 | **个人真实存档样本、本地修改器测试包、临时脚本** | `.local/scratch/` 或 `.local/samples/` | 已被 `.gitignore` 排除；自动化单元测试只能使用仓库 `tests/` 下构造的确定性合成样本，不得依赖 `.local/` 私有样本 |
 | **MSBuild 中间产物与发布安装包** | `bin/`、`obj/`、`TestResults/`、`dist/` | 已被 `.gitignore` 排除；`dist/` 仅保留当前通道最新生成的安装包以节约磁盘空间 |
 | **云同步密钥、API Token、一次性自签证书私钥** | DPAPI 密文位于 `%LOCALAPPDATA%\spawn[-dev]\secrets\<credential-id>.sec`；自签私钥仅驻留内存即用即毁 | **全仓严禁出现 `.env`（`.env.example` 除外）、`.pfx`、`.p12`、`.key`、`.pem`、`.sec`、`.db`、`.sqlite`、`.sppk` 文件**，由 `check_docs.py` 硬性扫描拦截 |

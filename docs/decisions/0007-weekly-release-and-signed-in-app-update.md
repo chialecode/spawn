@@ -4,7 +4,7 @@
 - **日期**：2026-11-22
 - **维护角色**：维护者
 - **关联决策与需求**：`D-15`、`D-23`、`D-30` ~ `D-33`；`NFR-05`、`NFR-06`、`NFR-07`、`NFR-09`、`REQ-SEC-01`；验收 `AC-25`
-- **部分替代**：[集中工程事项台账](open-questions.md) `LOOP-05` 中“`M6` 收官阶段补齐 Ed25519 离线公钥验签在线更新引擎”的承接阶段与签名算法；`%ProgramFiles%\spawn\Overlay\` 自签名证书部署仍留在 `LOOP-05`
+- **部分替代**：[集中工程事项台账](open-questions.md) `LOOP-05` 中“`M6` 收官阶段补齐 Ed25519 离线公钥验签在线更新引擎”的承接阶段与签名算法；`%ProgramFiles%\spawn\Overlay\` 自签名证书部署见 [#27](https://github.com/chialecode/spawn/issues/27)
 
 ---
 
@@ -38,7 +38,7 @@
 | 通道 | 构建方式 | 如何更新 |
 | :--- | :--- | :--- |
 | 正式版 `spawn` | GitHub Actions 每周构建，**自包含** `win-x64`，剥离全部 `*.pdb`（另出符号包） | 应用内每 24 小时检查一次，ECDSA 验签 + SHA-256 校验后静默安装并恢复窗口/托盘状态 |
-| 开发版 `spawn-dev` | 本机 `package.py --install-dev`，依赖框架发布，保留托管 `*.pdb`，剥离原生 `*.pdb` | **永不自查更新**；Agent 每次本地提交或 `amend` 后自动重装（`D-32`） |
+| 开发版 `spawn-dev` | 本机 `package.py --install-dev`，依赖框架发布，保留托管 `*.pdb`，剥离原生 `*.pdb` | **永不自查更新**；Agent 每次合并进 `main` 后自动重装（`D-34`，原为每次本地提交后，`D-32`） |
 | 测试身份 `spawn-test` / `spawn-dev-test` | 仅自动化演练 | 不更新 |
 
 ### 3.2 每周发布流水线（`D-30`）

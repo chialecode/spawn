@@ -6,7 +6,7 @@ AI Agent 与程序员遵循同一套规则：开工前先读 [AGENTS.md](AGENTS.
 
 ## 1. 开发环境要求
 
-SPAWN 面向 **Windows 10 (21H1, Build 19043+) / Windows 11 x64** 开发与运行。完整工具链、版本矩阵与可选验证外设详见 [技术选型与开发环境清单](docs/engineering/technology-selection.md) 。
+SPAWN 面向 **Windows 10 (21H1, Build 19043+) / Windows 11 x64** 开发与运行。完整工具链、版本矩阵与可选验证外设详见 [技术选型与开发环境清单](docs/engineering/technology-selection.md)。
 
 | 组件类别 | 版本要求 | 用途说明 | 快速安装命令（`winget`） |
 | :--- | :--- | :--- | :--- |
@@ -36,7 +36,7 @@ SPAWN 面向 **Windows 10 (21H1, Build 19043+) / Windows 11 x64** 开发与运�
 
 - **不可变根提交**：`main` 分支第一提交 `ad7454c1ab58bb2019e0f0ba6810c5928f8a335e` 为不可变锚点，严禁改写。
 - **分支与提交**：每个 issue 从最新 `main` 切一个分支，Conventional Commits；PR 合并时 squash 成一个提交，分支里提交几次都可以，PR 推送后的修复追加新提交。
-- **强制 DCO 签名**：所有提交必须包含与提交者身份一致的 `Signed-off-by` 尾注（使用 `-s` 参数）；`main-protection` 规则集要求 PR 仅允许 Squash 合并（使用 `PR_TITLE` 与 `PR_BODY`），因此 PR 正文末尾同样须保留有效的 `Signed-off-by` 行（见 [PR 模板](.github/PULL_REQUEST_TEMPLATE.md)）。
+- **强制 DCO 签名**：所有提交必须包含与提交者身份一致的 `Signed-off-by` 尾注（使用 `-s` 参数）；`main-protection` 规则集要求 PR 仅允许 Squash 合并（使用 `PR_TITLE` 与 `PR_BODY`），仓库开启了网页提交签名要求，squash 合并时 GitHub 会给合并提交补上 `Signed-off-by`，PR 正文不用手写。
 - **精确暂存**：一律使用 `git add -u` 或显式文件相对路径暂存，严禁使用 `git add .`。
 
 ---

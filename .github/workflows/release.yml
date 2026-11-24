@@ -3,10 +3,10 @@
 # - Never triggered by push or pull_request.
 # - Runs ONLY from refs/heads/main: `plan` is gated on github.ref (check/build/publish skip with it)
 #   and `publish` re-asserts the main ref; the `release` environment additionally restricts
-#   deployment branches to main (ACT-009).
+#   deployment branches to main (issue #9).
 # - Top-level permissions are empty; only `publish` holds `contents: write` and only runs when
-#   repository variable SPAWN_RELEASE_PUBLISH == '1' (ACT-010) and scheduled or explicitly requested.
-# - The update-signing private key secret (ACT-009) is restricted exclusively to `build`
+#   repository variable SPAWN_RELEASE_PUBLISH == '1' (issue #9) and scheduled or explicitly requested.
+# - The update-signing private key secret (issue #9) is restricted exclusively to `build`
 #   under the `release` environment, written to a random RUNNER_TEMP file, and deleted in `finally`.
 
 name: Weekly Release

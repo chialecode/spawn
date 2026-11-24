@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Collections.Specialized;
 using System.IO;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
@@ -2269,6 +2270,681 @@ public sealed class OverlayAndShellHeadlessGateTests
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
         public void Dispose() { }
+    }
+
+    [Fact]
+    public async Task LibraryScan_EmptyLibraryIncrementalDiscoveryAndMidScanUserSelection_NeverJumpsSelectedGameOrRebuildsDetailRows()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"spawn-scan-sel-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var paths = SpawnPaths.CreateIsolated(tempDir, workspaceRootHint: tempDir);
+            paths.EnsureDirectoriesExist();
+            await using var db = new SpawnDatabase(paths);
+            await db.InitializeAsync();
+
+            string scanRoot = Path.Combine(tempDir, "ScanRoot");
+            Directory.CreateDirectory(scanRoot);
+
+            // Discovered in reverse alphabetical order so each newly scanned game inserts ABOVE earlier games in LibraryGroups.
+            var plannedGames = new[]
+            {
+                CreateSyntheticScanGame("game-echo", "Echo Sanctuary", scanRoot, PlatformSource.Steamrip),
+                CreateSyntheticScanGame("game-delta", "Delta Horizon", scanRoot, PlatformSource.GogOffline),
+                CreateSyntheticScanGame("game-alpha", "Alpha Quest", scanRoot, PlatformSource.Steamrip),
+                CreateSyntheticScanGame("game-bravo", "Bravo Odyssey", scanRoot, PlatformSource.GogOffline),
+            };
+
+            var eventBus = new InMemorySpawnEventBus();
+            var gatedLibrary = new GatedIncrementalGameLibraryService(db, eventBus, scanRoot, plannedGames);
+            var gatedAchievements = new ConfigurableFakeAchievementService();
+            foreach (var g in plannedGames)
+            {
+                gatedAchievements.SetSummary(g.GameId,
+                [
+                    new GameAchievementItemDto
+                    {
+                        Definition = new AchievementDefinitionDto
+                        {
+                            ApiName = $"ACH_{g.GameId}_1",
+                            DisplayName = $"{g.Title} Secret",
+                            Description = $"Hidden condition for {g.Title}",
+                            IsHidden = true,
+                        },
+                    },
+                ]);
+            }
+
+            var keyProvider = new SteamApiKeyProvider(paths, allowLocalDevFallback: false);
+            await using var ipcClient = new OverlayIpcClient(paths);
+            using var guard = new AntiCheatGuardService(
+                residualProcessProbe: static () => [],
+                highRiskEnvironmentProbe: static () => new HighRiskEnvironmentReport([], []));
+            var themeMgr = new ThemeManagerService();
+            var fakeLaunch = new FakeGameLaunchService();
+            var fakeGameData = new FakeGameDataManagementService();
+            var fakeGate = new FakeTrainerSafetyGate();
+            var fakeCatalog = new FakeTrainerCatalogService();
+            var fakeRuntime = new FakeTrainerRuntimeService();
+            var fakeSnapshots = new FakePreTrainerSnapshotService();
+
+            var settingsVm = new SettingsViewModel(paths, db, keyProvider, ipcClient, guard, themeMgr);
+            var trainerVm = new TrainerWorkbenchViewModel(
+                paths, db, fakeCatalog, fakeRuntime, fakeSnapshots, fakeGate, guard, gatedLibrary, fakeLaunch, static _ => { });
+            using var mainVm = new MainWindowViewModel(
+                paths, db, gatedLibrary, fakeLaunch, gatedAchievements, fakeGameData, guard, ipcClient,
+                eventBus, fakeCatalog, fakeRuntime, fakeGate, settingsVm, trainerVm, static _ => { });
+
+            await mainVm.InitializeAsync();
+            await settingsVm.AddScanDirectoryPathAsync(scanRoot, triggerImmediateScan: false);
+
+            Assert.Empty(mainVm.AllGames);
+            Assert.Null(mainVm.SelectedGame);
+            Assert.True(mainVm.ShowLibraryEmptyState);
+
+            var selectionTransitions = new List<string?>();
+            mainVm.PropertyChanged += (_, e) =>
+            {
+                if (e.PropertyName == nameof(MainWindowViewModel.SelectedGame))
+                {
+                    selectionTransitions.Add(mainVm.SelectedGame?.GameId);
+                }
+            };
+
+            int allGamesResetCount = 0;
+            int allGroupResetCount = 0;
+            mainVm.AllGames.CollectionChanged += (_, e) =>
+            {
+                if (e.Action == NotifyCollectionChangedAction.Reset)
+                {
+                    allGamesResetCount++;
+                }
+            };
+            mainVm.LibraryGroups[0].Items.CollectionChanged += (_, e) =>
+            {
+                if (e.Action == NotifyCollectionChangedAction.Reset)
+                {
+                    allGroupResetCount++;
+                }
+            };
+
+            int filteredAchievementsResetCount = 0;
+            mainVm.FilteredAchievements.CollectionChanged += (_, e) =>
+            {
+                if (e.Action == NotifyCollectionChangedAction.Reset)
+                {
+                    filteredAchievementsResetCount++;
+                }
+            };
+
+            // Start scanning the 4-game root directory asynchronously.
+            Task scanTask = mainVm.ScanDefaultLibraryCommand.ExecuteAsync(null);
+
+            // Step 1: Release game 1 (Echo Sanctuary) -> library was empty, so it auto-selects Echo Sanctuary once.
+            gatedLibrary.AllowNextDiscovery(0);
+            await gatedLibrary.WaitDiscoveryPublishedAsync(0).WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.NotNull(mainVm.SelectedGame);
+            Assert.Equal("game-echo", mainVm.SelectedGame!.GameId);
+            Assert.Equal(["game-echo"], selectionTransitions);
+            Assert.Single(mainVm.FilteredAchievements);
+
+            // User reveals hidden spoiler on Echo Sanctuary's achievement row; unrelated scan updates must NOT reset it.
+            mainVm.FilteredAchievements[0].RevealRowSpoilerCommand.Execute(null);
+            Assert.False(mainVm.FilteredAchievements[0].CanClickToRevealSpoiler);
+            int resetsAfterEchoLoaded = filteredAchievementsResetCount;
+
+            // Step 2: Release game 2 (Delta Horizon, sorts BEFORE Echo Sanctuary).
+            // SelectedGame MUST stay Echo Sanctuary with zero jump and zero FilteredAchievements reset!
+            gatedLibrary.AllowNextDiscovery(1);
+            await gatedLibrary.WaitDiscoveryPublishedAsync(1).WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Equal(["game-delta", "game-echo"], mainVm.LibraryGroups[0].Items.Select(x => x.GameId).ToArray());
+            Assert.Equal("game-echo", mainVm.SelectedGame.GameId);
+            Assert.Equal(["game-echo"], selectionTransitions);
+            Assert.Equal(resetsAfterEchoLoaded, filteredAchievementsResetCount);
+            Assert.False(mainVm.FilteredAchievements[0].CanClickToRevealSpoiler);
+
+            // Step 3: User clicks newly discovered Delta Horizon mid-scan!
+            var deltaVm = mainVm.AllGames.Single(g => g.GameId == "game-delta");
+            mainVm.SelectLibraryGameCommand.Execute(deltaVm);
+
+            Assert.Same(deltaVm, mainVm.SelectedGame);
+            Assert.Equal(["game-echo", "game-delta"], selectionTransitions);
+            int resetsAfterDeltaSelected = filteredAchievementsResetCount;
+
+            // Step 4: Release games 3 & 4 (Alpha Quest, Bravo Odyssey — both insert ABOVE Delta Horizon!)
+            // plus background AchievementSchemaUpdatedEvent for Alpha & Bravo, then let scan complete.
+            gatedLibrary.AllowNextDiscovery(2);
+            await gatedLibrary.WaitDiscoveryPublishedAsync(2).WaitAsync(TimeSpan.FromSeconds(5));
+            await eventBus.PublishAsync(new AchievementSchemaUpdatedEvent(
+                "game-alpha", 0, 1, AchievementCaptureMode.SteamEmulator, "Goldberg · 就绪", DateTimeOffset.UtcNow))
+                .AsTask()
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            gatedLibrary.AllowNextDiscovery(3);
+            await gatedLibrary.WaitDiscoveryPublishedAsync(3).WaitAsync(TimeSpan.FromSeconds(5));
+            await scanTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Equal(
+                ["game-alpha", "game-bravo", "game-delta", "game-echo"],
+                mainVm.LibraryGroups[0].Items.Select(x => x.GameId).ToArray());
+            Assert.Same(deltaVm, mainVm.SelectedGame);
+            Assert.True(deltaVm.IsSelected);
+            Assert.All(mainVm.AllGames.Where(g => g.GameId != "game-delta"), g => Assert.False(g.IsSelected));
+
+            // Strictly 2 transitions across the entire 4-game scan: initial auto-select (Echo) + user click (Delta).
+            Assert.Equal(["game-echo", "game-delta"], selectionTransitions);
+            Assert.Equal(resetsAfterDeltaSelected, filteredAchievementsResetCount);
+            Assert.Equal(0, allGamesResetCount);
+            Assert.Equal(0, allGroupResetCount);
+        }
+        finally
+        {
+            CleanupTempDir(tempDir);
+        }
+    }
+
+    [Fact]
+    public async Task LibraryReload_UserClicksGameDuringInFlightAsyncQuery_NeverRevertsToStaleSelection()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"spawn-reload-race-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var paths = SpawnPaths.CreateIsolated(tempDir, workspaceRootHint: tempDir);
+            paths.EnsureDirectoriesExist();
+            await using var db = new SpawnDatabase(paths);
+            await db.InitializeAsync();
+
+            string scanRoot = Path.Combine(tempDir, "Games");
+            Directory.CreateDirectory(scanRoot);
+            var gameA = CreateSyntheticScanGame("game-a", "Alpha Quest", scanRoot, PlatformSource.Steamrip);
+            var gameB = CreateSyntheticScanGame("game-b", "Bravo Odyssey", scanRoot, PlatformSource.GogOffline);
+            var gameC = CreateSyntheticScanGame("game-c", "Charlie Tactics", scanRoot, PlatformSource.Steamrip);
+            var gameD = CreateSyntheticScanGame("game-d", "Delta Horizon", scanRoot, PlatformSource.GogOffline);
+
+            await db.UpsertGameAsync(gameA);
+            await db.UpsertGameAsync(gameB);
+
+            var eventBus = new InMemorySpawnEventBus();
+            var library = new FakeGameLibraryService(db);
+            var gatedAchievements = new ConfigurableFakeAchievementService();
+            var keyProvider = new SteamApiKeyProvider(paths, allowLocalDevFallback: false);
+            await using var ipcClient = new OverlayIpcClient(paths);
+            using var guard = new AntiCheatGuardService(
+                residualProcessProbe: static () => [],
+                highRiskEnvironmentProbe: static () => new HighRiskEnvironmentReport([], []));
+            var themeMgr = new ThemeManagerService();
+            var fakeLaunch = new FakeGameLaunchService();
+            var fakeGameData = new FakeGameDataManagementService();
+            var fakeGate = new FakeTrainerSafetyGate();
+            var fakeCatalog = new FakeTrainerCatalogService();
+            var fakeRuntime = new FakeTrainerRuntimeService();
+            var fakeSnapshots = new FakePreTrainerSnapshotService();
+
+            var settingsVm = new SettingsViewModel(paths, db, keyProvider, ipcClient, guard, themeMgr);
+            var trainerVm = new TrainerWorkbenchViewModel(
+                paths, db, fakeCatalog, fakeRuntime, fakeSnapshots, fakeGate, guard, library, fakeLaunch, static _ => { });
+            using var mainVm = new MainWindowViewModel(
+                paths, db, library, fakeLaunch, gatedAchievements, fakeGameData, guard, ipcClient,
+                eventBus, fakeCatalog, fakeRuntime, fakeGate, settingsVm, trainerVm, static _ => { });
+
+            await mainVm.InitializeAsync();
+            var vmA = mainVm.AllGames.Single(g => g.GameId == "game-a");
+            var vmB = mainVm.AllGames.Single(g => g.GameId == "game-b");
+            mainVm.SelectLibraryGameCommand.Execute(vmA);
+            Assert.Same(vmA, mainVm.SelectedGame);
+
+            var selectionTransitions = new List<string?>();
+            mainVm.PropertyChanged += (_, e) =>
+            {
+                if (e.PropertyName == nameof(MainWindowViewModel.SelectedGame))
+                {
+                    selectionTransitions.Add(mainVm.SelectedGame?.GameId);
+                }
+            };
+
+            // Pause inside GetGameAchievementsAsync during the reload triggered by gameC.
+            var enteredQueryTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var releaseQueryTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            gatedAchievements.PauseOnGameId("game-c", enteredQueryTcs, releaseQueryTcs.Task);
+
+            await db.UpsertGameAsync(gameC);
+            Task publishCTask = eventBus.PublishAsync(new GameImportedOrRescannedEvent(gameC, IsNewImport: true, DateTimeOffset.UtcNow)).AsTask();
+            await enteredQueryTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            // Enqueue another scan event (gameD) while Pass #1 is suspended mid-await to exercise single-flight coalescing.
+            await db.UpsertGameAsync(gameD);
+            Task publishDTask = eventBus.PublishAsync(new GameImportedOrRescannedEvent(gameD, IsNewImport: true, DateTimeOffset.UtcNow)).AsTask();
+
+            // User clicks Game B WHILE the reload for Game C is suspended mid-await (when SelectedGame had been Game A)!
+            mainVm.SelectLibraryGameCommand.Execute(vmB);
+            Assert.Same(vmB, mainVm.SelectedGame);
+
+            // Release the paused async query and wait for both coalesced passes to complete.
+            gatedAchievements.ClearPause();
+            releaseQueryTcs.SetResult();
+            await Task.WhenAll(publishCTask, publishDTask).WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Equal(4, mainVm.AllGames.Count);
+            Assert.Same(vmB, mainVm.SelectedGame);
+            Assert.Equal(["game-b"], selectionTransitions);
+        }
+        finally
+        {
+            CleanupTempDir(tempDir);
+        }
+    }
+
+    [Fact]
+    public async Task LibraryImport_SingleGameVsMultiGameBatchAndStaDispatcher_RespectsSelectionPrecedence()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"spawn-import-sta-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var paths = SpawnPaths.CreateIsolated(tempDir, workspaceRootHint: tempDir);
+            paths.EnsureDirectoriesExist();
+            await using var db = new SpawnDatabase(paths);
+            await db.InitializeAsync();
+
+            string batchFolder = Path.Combine(tempDir, "BatchFolder");
+            Directory.CreateDirectory(batchFolder);
+            string singleDirE = Path.Combine(tempDir, "SingleE");
+            Directory.CreateDirectory(singleDirE);
+            string singleDirF = Path.Combine(tempDir, "SingleF");
+            Directory.CreateDirectory(singleDirF);
+
+            var gameA = CreateSyntheticScanGame("game-a", "Alpha Quest", tempDir, PlatformSource.Steamrip);
+            var gameB = CreateSyntheticScanGame("game-b", "Bravo Odyssey", batchFolder, PlatformSource.Steamrip);
+            var gameC = CreateSyntheticScanGame("game-c", "Charlie Tactics", batchFolder, PlatformSource.GogOffline);
+            var gameE = new GameRecord
+            {
+                GameId = "game-e",
+                Title = "Echo Sanctuary",
+                InstallDir = singleDirE,
+                ExecutableRelPath = "echo.exe",
+                PlatformSource = PlatformSource.Standalone,
+                AntiCheatTier = AntiCheatTier.Tier0,
+            };
+            var gameF = new GameRecord
+            {
+                GameId = "game-f",
+                Title = "Fable Frontier",
+                InstallDir = singleDirF,
+                ExecutableRelPath = "fable.exe",
+                PlatformSource = PlatformSource.Standalone,
+                AntiCheatTier = AntiCheatTier.Tier0,
+            };
+
+            await db.UpsertGameAsync(gameA);
+
+            // Run on a dedicated STA thread with a real WPF Dispatcher message loop to verify Dispatcher.InvokeAsync marshaling.
+            ExceptionDispatchInfo? capturedError = null;
+            var staThread = new Thread(() =>
+            {
+                var staDispatcher = Dispatcher.CurrentDispatcher;
+                var frame = new DispatcherFrame();
+                _ = staDispatcher.InvokeAsync(() => _ = ExecuteOnStaAsync());
+                Dispatcher.PushFrame(frame);
+                staDispatcher.InvokeShutdown();
+
+                async Task ExecuteOnStaAsync()
+                {
+                    try
+                    {
+                        var eventBus = new InMemorySpawnEventBus();
+                        var library = new ScriptedImportAndScanLibraryService(
+                            db,
+                            eventBus,
+                            directImportsByPath: new Dictionary<string, GameRecord>(StringComparer.OrdinalIgnoreCase)
+                            {
+                                [Path.GetFullPath(singleDirE)] = gameE,
+                                [Path.GetFullPath(singleDirF)] = gameF,
+                            },
+                            batchScansByRoot: new Dictionary<string, IReadOnlyList<GameRecord>>(StringComparer.OrdinalIgnoreCase)
+                            {
+                                [Path.GetFullPath(batchFolder)] = [gameB, gameC],
+                            });
+
+                        var achievements = new ConfigurableFakeAchievementService();
+                        var keyProvider = new SteamApiKeyProvider(paths, allowLocalDevFallback: false);
+                        await using var ipcClient = new OverlayIpcClient(paths);
+                        using var guard = new AntiCheatGuardService(
+                            residualProcessProbe: static () => [],
+                            highRiskEnvironmentProbe: static () => new HighRiskEnvironmentReport([], []));
+                        var themeMgr = new ThemeManagerService();
+                        var fakeLaunch = new FakeGameLaunchService();
+                        var fakeGameData = new FakeGameDataManagementService();
+                        var fakeGate = new FakeTrainerSafetyGate();
+                        var fakeCatalog = new FakeTrainerCatalogService();
+                        var fakeRuntime = new FakeTrainerRuntimeService();
+                        var fakeSnapshots = new FakePreTrainerSnapshotService();
+
+                        var settingsVm = new SettingsViewModel(paths, db, keyProvider, ipcClient, guard, themeMgr);
+                        var trainerVm = new TrainerWorkbenchViewModel(
+                            paths, db, fakeCatalog, fakeRuntime, fakeSnapshots, fakeGate, guard, library, fakeLaunch, static _ => { });
+                        using var mainVm = new MainWindowViewModel(
+                            paths, db, library, fakeLaunch, achievements, fakeGameData, guard, ipcClient,
+                            eventBus, fakeCatalog, fakeRuntime, fakeGate, settingsVm, trainerVm, static _ => { },
+                            uiDispatcher: staDispatcher);
+
+                        await mainVm.InitializeAsync();
+                        var vmA = mainVm.AllGames.Single(g => g.GameId == "game-a");
+                        mainVm.SelectLibraryGameCommand.Execute(vmA);
+
+                        var transitions = new List<string?>();
+                        mainVm.PropertyChanged += (_, e) =>
+                        {
+                            if (e.PropertyName == nameof(MainWindowViewModel.SelectedGame))
+                            {
+                                transitions.Add(mainVm.SelectedGame?.GameId);
+                            }
+                        };
+
+                        // 1. Dropping a multi-game parent folder while Game A is selected MUST keep Game A selected (0 transitions).
+                        await mainVm.ImportDroppedPathsAsync([batchFolder]);
+                        await staDispatcher.InvokeAsync(static () => { }, DispatcherPriority.Background);
+                        Assert.Equal(3, mainVm.AllGames.Count);
+                        Assert.Same(vmA, mainVm.SelectedGame);
+                        Assert.Empty(transitions);
+
+                        // 2. Manual single-game import of Game E from Settings focuses Game E cleanly in 1 transition.
+                        await mainVm.ImportManualGameFromSettingsAsync(singleDirE);
+                        await staDispatcher.InvokeAsync(static () => { }, DispatcherPriority.Background);
+                        Assert.Equal("game-e", mainVm.SelectedGame?.GameId);
+                        Assert.Equal(["game-e"], transitions);
+
+                        // 3. Single-game drag-drop of Game F while user clicks Game B mid-import: user click wins!
+                        var enteredImportFTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                        var releaseImportFTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                        library.PauseDirectImport(Path.GetFullPath(singleDirF), enteredImportFTcs, releaseImportFTcs.Task);
+
+                        Task dropFTask = mainVm.ImportDroppedPathsAsync([singleDirF]);
+                        await enteredImportFTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+                        var vmB = mainVm.AllGames.Single(g => g.GameId == "game-b");
+                        mainVm.SelectLibraryGameCommand.Execute(vmB);
+                        Assert.Same(vmB, mainVm.SelectedGame);
+
+                        releaseImportFTcs.SetResult();
+                        await dropFTask.WaitAsync(TimeSpan.FromSeconds(5));
+                        await staDispatcher.InvokeAsync(static () => { }, DispatcherPriority.Background).Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+                        Assert.Equal(5, mainVm.AllGames.Count);
+                        Assert.Same(vmB, mainVm.SelectedGame);
+                        Assert.Equal(["game-e", "game-b"], transitions);
+                    }
+                    catch (Exception ex)
+                    {
+                        capturedError = ExceptionDispatchInfo.Capture(ex);
+                    }
+                    finally
+                    {
+                        frame.Continue = false;
+                    }
+                }
+            });
+            staThread.SetApartmentState(ApartmentState.STA);
+            staThread.IsBackground = true;
+            staThread.Start();
+            staThread.Join();
+
+            capturedError?.Throw();
+        }
+        finally
+        {
+            CleanupTempDir(tempDir);
+        }
+    }
+
+    private static GameRecord CreateSyntheticScanGame(string gameId, string title, string parentRoot, PlatformSource source)
+    {
+        string installDir = Path.Combine(parentRoot, gameId);
+        Directory.CreateDirectory(installDir);
+        return new GameRecord
+        {
+            GameId = gameId,
+            Title = title,
+            SortTitle = title,
+            InstallDir = installDir,
+            ExecutableRelPath = "game.exe",
+            PlatformSource = source,
+            AntiCheatTier = AntiCheatTier.Tier0,
+        };
+    }
+
+    private sealed class GatedIncrementalGameLibraryService : IGameLibraryService
+    {
+        private readonly SpawnDatabase _db;
+        private readonly ISpawnEventBus _eventBus;
+        private readonly string _expectedRoot;
+        private readonly IReadOnlyList<GameRecord> _games;
+        private readonly TaskCompletionSource[] _allowStep;
+        private readonly TaskCompletionSource[] _publishedStep;
+
+        public GatedIncrementalGameLibraryService(
+            SpawnDatabase db,
+            ISpawnEventBus eventBus,
+            string expectedRoot,
+            IReadOnlyList<GameRecord> games)
+        {
+            _db = db;
+            _eventBus = eventBus;
+            _expectedRoot = Path.GetFullPath(expectedRoot);
+            _games = games;
+            _allowStep = Enumerable.Range(0, games.Count)
+                .Select(static _ => new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously))
+                .ToArray();
+            _publishedStep = Enumerable.Range(0, games.Count)
+                .Select(static _ => new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously))
+                .ToArray();
+        }
+
+        public void AllowNextDiscovery(int index) => _allowStep[index].TrySetResult();
+        public Task WaitDiscoveryPublishedAsync(int index) => _publishedStep[index].Task;
+
+        public Task<IReadOnlyList<GameRecord>> GetAllGamesAsync(CancellationToken cancellationToken = default) =>
+            _db.GetAllGamesAsync(cancellationToken);
+
+        public Task<GameRecord?> GetGameByIdAsync(string gameId, CancellationToken cancellationToken = default) =>
+            _db.GetGameByIdAsync(gameId, cancellationToken);
+
+        public Task<GameRecord?> ImportGameAsync(string directoryOrExePath, CancellationToken cancellationToken = default) =>
+            Task.FromResult<GameRecord?>(null);
+
+        public async Task<IReadOnlyList<GameRecord>> ScanLibraryDirectoryAsync(string rootDirectory, CancellationToken cancellationToken = default)
+        {
+            if (!string.Equals(Path.GetFullPath(rootDirectory), _expectedRoot, StringComparison.OrdinalIgnoreCase))
+            {
+                return [];
+            }
+
+            var discovered = new List<GameRecord>(_games.Count);
+            for (int i = 0; i < _games.Count; i++)
+            {
+                await _allowStep[i].Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                var game = _games[i];
+                await _db.UpsertGameAsync(game, cancellationToken).ConfigureAwait(false);
+                await _eventBus.PublishAsync(
+                    new GameImportedOrRescannedEvent(game, IsNewImport: true, DateTimeOffset.UtcNow),
+                    cancellationToken).ConfigureAwait(false);
+                discovered.Add(game);
+                _publishedStep[i].TrySetResult();
+            }
+
+            return discovered;
+        }
+
+        public Task<GameRecord?> RescanGameAsync(string gameId, CancellationToken cancellationToken = default) =>
+            _db.GetGameByIdAsync(gameId, cancellationToken);
+
+        public Task<GameRecord?> UpdateGameMetadataAsync(string gameId, GameMetadataUpdate update, CancellationToken cancellationToken = default) =>
+            _db.GetGameByIdAsync(gameId, cancellationToken);
+
+        public Task<bool> RemoveGameAsync(string gameId, CancellationToken cancellationToken = default) =>
+            _db.DeleteGameAsync(gameId, cancellationToken);
+    }
+
+    private sealed class ScriptedImportAndScanLibraryService(
+        SpawnDatabase db,
+        ISpawnEventBus eventBus,
+        Dictionary<string, GameRecord> directImportsByPath,
+        Dictionary<string, IReadOnlyList<GameRecord>> batchScansByRoot) : IGameLibraryService
+    {
+        private string? _pausedDirectPath;
+        private TaskCompletionSource? _enteredPause;
+        private Task? _releasePause;
+
+        public void PauseDirectImport(string normalizedPath, TaskCompletionSource entered, Task release)
+        {
+            _pausedDirectPath = normalizedPath;
+            _enteredPause = entered;
+            _releasePause = release;
+        }
+
+        public Task<IReadOnlyList<GameRecord>> GetAllGamesAsync(CancellationToken cancellationToken = default) =>
+            db.GetAllGamesAsync(cancellationToken);
+
+        public Task<GameRecord?> GetGameByIdAsync(string gameId, CancellationToken cancellationToken = default) =>
+            db.GetGameByIdAsync(gameId, cancellationToken);
+
+        public async Task<GameRecord?> ImportGameAsync(string directoryOrExePath, CancellationToken cancellationToken = default)
+        {
+            string full = Path.GetFullPath(directoryOrExePath);
+            if (!directImportsByPath.TryGetValue(full, out var record))
+            {
+                return null;
+            }
+
+            if (_pausedDirectPath is not null && string.Equals(_pausedDirectPath, full, StringComparison.OrdinalIgnoreCase))
+            {
+                _enteredPause?.TrySetResult();
+                if (_releasePause is not null)
+                {
+                    await _releasePause.WaitAsync(cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            await db.UpsertGameAsync(record, cancellationToken).ConfigureAwait(false);
+            await eventBus.PublishAsync(
+                new GameImportedOrRescannedEvent(record, IsNewImport: true, DateTimeOffset.UtcNow),
+                cancellationToken).ConfigureAwait(false);
+            return record;
+        }
+
+        public async Task<IReadOnlyList<GameRecord>> ScanLibraryDirectoryAsync(string rootDirectory, CancellationToken cancellationToken = default)
+        {
+            string full = Path.GetFullPath(rootDirectory);
+            if (!batchScansByRoot.TryGetValue(full, out var batch))
+            {
+                return [];
+            }
+
+            var results = new List<GameRecord>(batch.Count);
+            foreach (var rec in batch)
+            {
+                await Task.Run(async () =>
+                {
+                    await db.UpsertGameAsync(rec, cancellationToken).ConfigureAwait(false);
+                    await eventBus.PublishAsync(
+                        new GameImportedOrRescannedEvent(rec, IsNewImport: true, DateTimeOffset.UtcNow),
+                        cancellationToken).ConfigureAwait(false);
+                }, cancellationToken).ConfigureAwait(false);
+                results.Add(rec);
+            }
+
+            return results;
+        }
+
+        public Task<GameRecord?> RescanGameAsync(string gameId, CancellationToken cancellationToken = default) =>
+            db.GetGameByIdAsync(gameId, cancellationToken);
+
+        public Task<GameRecord?> UpdateGameMetadataAsync(string gameId, GameMetadataUpdate update, CancellationToken cancellationToken = default) =>
+            db.GetGameByIdAsync(gameId, cancellationToken);
+
+        public Task<bool> RemoveGameAsync(string gameId, CancellationToken cancellationToken = default) =>
+            db.DeleteGameAsync(gameId, cancellationToken);
+    }
+
+    private sealed class ConfigurableFakeAchievementService : IAchievementService
+    {
+        private readonly Dictionary<string, IReadOnlyList<GameAchievementItemDto>> _itemsByGame = new(StringComparer.OrdinalIgnoreCase);
+        private string? _pauseGameId;
+        private TaskCompletionSource? _enteredPause;
+        private Task? _releasePause;
+
+        public event EventHandler<AchievementUnlockedNotification>? AchievementUnlocked
+        {
+            add { }
+            remove { }
+        }
+
+        public void SetSummary(string gameId, IReadOnlyList<GameAchievementItemDto> items) =>
+            _itemsByGame[gameId] = items;
+
+        public void PauseOnGameId(string gameId, TaskCompletionSource entered, Task release)
+        {
+            _pauseGameId = gameId;
+            _enteredPause = entered;
+            _releasePause = release;
+        }
+
+        public void ClearPause()
+        {
+            _pauseGameId = null;
+            _enteredPause = null;
+            _releasePause = null;
+        }
+
+        public async Task<GameAchievementSummaryDto> GetGameAchievementsAsync(string gameId, CancellationToken cancellationToken = default)
+        {
+            if (_pauseGameId is not null && string.Equals(_pauseGameId, gameId, StringComparison.OrdinalIgnoreCase))
+            {
+                _enteredPause?.TrySetResult();
+                if (_releasePause is not null)
+                {
+                    await _releasePause.WaitAsync(cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            _itemsByGame.TryGetValue(gameId, out var items);
+            var list = items ?? [];
+            return new GameAchievementSummaryDto
+            {
+                GameId = gameId,
+                ChannelStatusText = "就绪",
+                UnlockedCount = list.Count(static x => x.IsUnlocked),
+                TotalCount = list.Count,
+                Items = list,
+            };
+        }
+
+        public Task<IReadOnlyList<AchievementUnlockDto>> GetRecentUnlocksAsync(int limit = 20, CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<AchievementUnlockDto>>([]);
+
+        public Task<GameAchievementSummaryDto> SyncGameSchemaAsync(string gameId, bool forceRefresh = false, CancellationToken cancellationToken = default) =>
+            GetGameAchievementsAsync(gameId, cancellationToken);
+
+        public Task<int> ScanLocalUnlocksAsync(string gameId, bool silentSeed = false, CancellationToken cancellationToken = default) =>
+            Task.FromResult(0);
+
+        public Task<bool> SetAchievementUnlockedAsync(string gameId, string apiName, bool unlocked, CancellationToken cancellationToken = default) =>
+            Task.FromResult(true);
+
+        public Task<GbeForkActivationResult> ActivateGbeForkAsync(string gameId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new GbeForkActivationResult { Succeeded = false, Message = "stub" });
+
+        public Task<GbeForkActivationResult> RestoreOriginalDllAsync(string gameId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new GbeForkActivationResult { Succeeded = false, Message = "stub" });
+
+        public Task SendTestToastAsync(string? gameId = null, OverlayThemeKind? themeOverride = null, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task StartMonitoringAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task StopMonitoringAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 
     private static string LocateRepositoryRoot()

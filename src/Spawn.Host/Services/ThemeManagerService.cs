@@ -29,6 +29,7 @@ public sealed class ThemeManagerService
         CurrentTheme = theme;
         if (Application.Current is null)
         {
+            ThemeChanged?.Invoke(theme);
             return;
         }
 

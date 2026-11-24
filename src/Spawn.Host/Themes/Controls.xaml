@@ -2,8 +2,8 @@
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
     <!-- Typography Defaults -->
-    <FontFamily x:Key="SpawnUiFont">Segoe UI Variable Text, Segoe UI, Microsoft YaHei UI</FontFamily>
-    <FontFamily x:Key="SpawnMonoFont">Cascadia Mono, Consolas</FontFamily>
+    <FontFamily x:Key="SpawnUiFont">Inter, Segoe UI Variable Text, Segoe UI, Microsoft YaHei UI, Microsoft YaHei</FontFamily>
+    <FontFamily x:Key="SpawnMonoFont">JetBrains Mono, Cascadia Mono, Consolas, Microsoft YaHei UI, Microsoft YaHei</FontFamily>
 
     <!-- 1. Left Narrow Icon Rail Button (40x40, CornerRadius=10, Linear Vector Icon) -->
     <Style x:Key="IconRailButtonStyle" TargetType="RadioButton">

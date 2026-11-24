@@ -21,6 +21,8 @@
     <SpawnCommitSha Condition="'$(SpawnCommitSha)' == ''">local</SpawnCommitSha>
     <SpawnBuildTimeUtc Condition="'$(SpawnBuildTimeUtc)' == ''">dev</SpawnBuildTimeUtc>
     <InformationalVersion>$(SpawnVersion)+$(SpawnCommitSha)</InformationalVersion>
+    <SpawnApplicationIcon Condition="'$(SpawnApplicationIcon)' == '' and '$(SpawnChannel)' == 'release'">$(MSBuildThisFileDirectory)assets\icon.ico</SpawnApplicationIcon>
+    <SpawnApplicationIcon Condition="'$(SpawnApplicationIcon)' == ''">$(MSBuildThisFileDirectory)assets\icon-dev.ico</SpawnApplicationIcon>
     <ApplicationIcon Condition="'$(SpawnApplicationIcon)' != '' and Exists('$(SpawnApplicationIcon)')">$(SpawnApplicationIcon)</ApplicationIcon>
   </PropertyGroup>
 

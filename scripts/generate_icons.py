@@ -15,9 +15,11 @@ Run from the repository root:  python -B scripts/generate_icons.py
 
 from __future__ import annotations
 
+import argparse
 import math
 from pathlib import Path
 import struct
+import sys
 import zlib
 
 UNITS = 1024
@@ -243,20 +245,64 @@ def encode_ico(master_rgba: bytes, master_size: int, sizes: tuple[int, ...] = IC
     return header + bytes(dir_entries) + bytes(payloads)
 
 
+def render_expected_icon_files(dev_badge: bool) -> tuple[bytes, bytes]:
+    rgba = render_master_rgba(dev_badge=dev_badge)
+    png_bytes = encode_png_rgba(downsample_box_rgba(rgba, UNITS, PNG_SIZE), PNG_SIZE, PNG_SIZE)
+    ico_bytes = encode_ico(rgba, UNITS, ICO_SIZES)
+    return png_bytes, ico_bytes
+
+
 def generate_all_icons(assets_dir: Path) -> None:
     assets_dir.mkdir(parents=True, exist_ok=True)
     for is_dev, stem in ((False, "icon"), (True, "icon-dev")):
-        rgba = render_master_rgba(dev_badge=is_dev)
+        png_bytes, ico_bytes = render_expected_icon_files(dev_badge=is_dev)
         png_path = assets_dir / f"{stem}.png"
         ico_path = assets_dir / f"{stem}.ico"
-        png_path.write_bytes(encode_png_rgba(downsample_box_rgba(rgba, UNITS, PNG_SIZE), PNG_SIZE, PNG_SIZE))
-        ico_path.write_bytes(encode_ico(rgba, UNITS, ICO_SIZES))
+        png_path.write_bytes(png_bytes)
+        ico_path.write_bytes(ico_bytes)
         print(f"[icons] wrote {png_path.name} ({png_path.stat().st_size} B) and {ico_path.name} ({ico_path.stat().st_size} B)")
 
 
-def main() -> int:
+def check_all_icons(assets_dir: Path) -> bool:
+    mismatches: list[str] = []
+    for is_dev, stem in ((False, "icon"), (True, "icon-dev")):
+        expected_png, expected_ico = render_expected_icon_files(dev_badge=is_dev)
+        for path, expected in ((assets_dir / f"{stem}.png", expected_png), (assets_dir / f"{stem}.ico", expected_ico)):
+            if not path.is_file():
+                mismatches.append(f"missing {path.name}")
+                continue
+            actual = path.read_bytes()
+            if actual != expected:
+                mismatches.append(f"{path.name} differs (expected {len(expected)} B, got {len(actual)} B)")
+
+    if mismatches:
+        for item in mismatches:
+            print(f"[icons] check failed: {item}", file=sys.stderr)
+        return False
+
+    print("[icons] check passed: icon.png, icon.ico, icon-dev.png, and icon-dev.ico match generator output.")
+    return True
+
+
+def main(argv: list[str] | None = None) -> int:
     repo_root = Path(__file__).resolve().parents[1]
-    generate_all_icons(repo_root / "assets")
+    parser = argparse.ArgumentParser(description="Generate or verify canonical brand icon assets.")
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Verify committed PNG/ICO assets match deterministic generator output without modifying files.",
+    )
+    parser.add_argument(
+        "--assets-dir",
+        type=Path,
+        default=repo_root / "assets",
+        help="Target directory containing icon(.png|.ico) and icon-dev(.png|.ico).",
+    )
+    args = parser.parse_args(argv)
+    if args.check:
+        return 0 if check_all_icons(args.assets_dir) else 1
+
+    generate_all_icons(args.assets_dir)
     return 0
 
 

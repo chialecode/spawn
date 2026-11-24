@@ -3,9 +3,11 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
 using Spawn.Contracts;
+using Spawn.Host.Helpers;
 using Spawn.Host.Services;
 using Spawn.Host.ViewModels;
 
@@ -54,7 +56,10 @@ public partial class MainWindow : Window
         TextCompositionManager.AddPreviewTextInputUpdateHandler(TrainerSidebarSearchTextBox, (_, _) => _isTrainerSearchImeComposing = true);
         TextCompositionManager.AddPreviewTextInputHandler(TrainerSidebarSearchTextBox, (_, _) => _isTrainerSearchImeComposing = false);
 
+        SourceInitialized += OnWindowSourceInitialized;
         Loaded += OnWindowLoaded;
+        Closed += OnWindowClosed;
+        _viewModel.Settings.PropertyChanged += OnSettingsPropertyChanged;
     }
 
     public void PrepareForApplicationExit()
@@ -74,11 +79,40 @@ public partial class MainWindow : Window
             WindowState = WindowState.Normal;
         }
 
+        SyncDwmWindowFrameTheme();
         UpdateMaximizedLayoutChrome();
         _ = Activate();
         Topmost = true;
         Topmost = false;
         _ = Focus();
+    }
+
+    private void OnWindowSourceInitialized(object? sender, EventArgs e)
+    {
+        SyncDwmWindowFrameTheme();
+    }
+
+    private void OnWindowClosed(object? sender, EventArgs e)
+    {
+        _viewModel.Settings.PropertyChanged -= OnSettingsPropertyChanged;
+    }
+
+    private void OnSettingsPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (string.IsNullOrEmpty(e.PropertyName)
+            || string.Equals(e.PropertyName, nameof(SettingsViewModel.SelectedUiTheme), StringComparison.Ordinal))
+        {
+            SyncDwmWindowFrameTheme();
+        }
+    }
+
+    private void SyncDwmWindowFrameTheme()
+    {
+        nint hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd != nint.Zero)
+        {
+            _ = DwmWindowFrameHelper.TrySyncImmersiveDarkMode(hwnd, _viewModel.Settings.SelectedUiTheme);
+        }
     }
 
     private void OnWindowLoaded(object sender, RoutedEventArgs e)

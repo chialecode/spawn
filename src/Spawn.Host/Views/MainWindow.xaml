@@ -17,7 +17,7 @@
         ResizeMode="CanResize"
         Background="{DynamicResource PageBackgroundBrush}"
         Foreground="{DynamicResource PrimaryTextBrush}"
-        FontFamily="{StaticResource SpawnUiFont}"
+        FontFamily="{DynamicResource SpawnUiFont}"
         Typography.NumeralAlignment="Tabular"
         AllowDrop="True"
         UseLayoutRounding="True"
@@ -39,7 +39,11 @@
     </WindowChrome.WindowChrome>
 
     <Window.Resources>
-        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="../Themes/Controls.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+            <BooleanToVisibilityConverter x:Key="BoolToVis" />
         <conv:InverseBooleanToVisibilityConverter x:Key="InvBoolToVis" />
         <conv:StringNotEmptyToVisibilityConverter x:Key="StrNotEmptyToVis" />
         <conv:NullToVisibilityConverter x:Key="NullToVis" />
@@ -1790,6 +1794,7 @@
             </Border>
             </Grid>
         </DataTemplate>
+        </ResourceDictionary>
     </Window.Resources>
 
     <!-- Root Shell Border (Compensates maximized borderless thickness) -->

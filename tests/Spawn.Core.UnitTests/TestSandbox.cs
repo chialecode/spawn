@@ -133,6 +133,30 @@ public sealed class ManualTimeProvider : TimeProvider
         }
     }
 
+    /// <summary>
+    /// Timers that are set and have not fired yet. A test moves the clock only while the code under test waits on one, so a step never lands
+    /// between two of its waits and gets lost (#31).
+    /// </summary>
+    public int PendingTimerCount
+    {
+        get
+        {
+            lock (_gate)
+            {
+                int pending = 0;
+                foreach (var entry in _timers)
+                {
+                    if (!entry.Disposed && entry.DueAtUtc != DateTimeOffset.MaxValue)
+                    {
+                        pending++;
+                    }
+                }
+
+                return pending;
+            }
+        }
+    }
+
     public void Advance(TimeSpan delta)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(delta, TimeSpan.Zero);

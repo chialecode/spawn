@@ -74,8 +74,7 @@ public sealed class AntiCheatAndSafeProcessTests
 
         for (int i = 0; i < 12; i++)
         {
-            clock.Advance(TimeSpan.FromMilliseconds(250));
-            await Task.Yield();
+            await AdvanceWhenWaitingAsync(clock, cooldownTask);
         }
 
         Assert.Equal(AntiCheatGuardPhase.ResidualGuardWatch, guard.CurrentSnapshot.Phase);
@@ -84,8 +83,8 @@ public sealed class AntiCheatAndSafeProcessTests
 
         // SGuard64.exe finally terminates -> enters mandatory 15.0s residual cooldown
         Volatile.Write(ref simulatedResiduals, []);
-        clock.Advance(TimeSpan.FromMilliseconds(250));
-        await SpinWaitUntilAsync(() => guard.CurrentSnapshot.Phase == AntiCheatGuardPhase.CooldownLocked);
+        await AdvanceWhenWaitingAsync(clock, cooldownTask);
+        await SpinWaitUntilAsync(() => guard.CurrentSnapshot.Phase == AntiCheatGuardPhase.CooldownLocked, timeoutMs: 10_000);
 
         Assert.Equal(AntiCheatGuardPhase.CooldownLocked, guard.CurrentSnapshot.Phase);
         Assert.True(guard.CurrentSnapshot.RemainingCooldownSeconds > 14.0);
@@ -93,8 +92,7 @@ public sealed class AntiCheatAndSafeProcessTests
         // Advance 14.5s -> still locked!
         for (int i = 0; i < 58; i++)
         {
-            clock.Advance(TimeSpan.FromMilliseconds(250));
-            await Task.Yield();
+            await AdvanceWhenWaitingAsync(clock, cooldownTask);
         }
 
         Assert.Equal(AntiCheatGuardPhase.CooldownLocked, guard.CurrentSnapshot.Phase);
@@ -104,11 +102,13 @@ public sealed class AntiCheatAndSafeProcessTests
         // Advance past the 15.0s mark -> transitions cleanly back to IdleSafe
         for (int i = 0; i < 4; i++)
         {
-            clock.Advance(TimeSpan.FromMilliseconds(250));
-            await Task.Yield();
+            if (!await AdvanceWhenWaitingAsync(clock, cooldownTask))
+            {
+                break;
+            }
         }
 
-        await cooldownTask.WaitAsync(TimeSpan.FromSeconds(2));
+        await cooldownTask.WaitAsync(TimeSpan.FromSeconds(10));
         Assert.Equal(AntiCheatGuardPhase.IdleSafe, guard.CurrentSnapshot.Phase);
         Assert.False(guard.CurrentSnapshot.IsHighRiskLocked);
         Assert.Equal(0.0, guard.CurrentSnapshot.RemainingCooldownSeconds);
@@ -358,6 +358,29 @@ public sealed class AntiCheatAndSafeProcessTests
             Interlocked.Increment(ref _startCount);
             throw new InvalidOperationException("Must not start any process in this test.");
         }
+    }
+
+    /// <summary>
+    /// Moves the clock one 250 ms poll only once the guard's loop waits on its timer: a step taken while the loop is between two polls would
+    /// move the time without waking it, and it would then wait for a timer nothing fires (#31). Returns false, without moving the clock, when
+    /// <paramref name="loop"/> finished instead.
+    /// </summary>
+    private static async Task<bool> AdvanceWhenWaitingAsync(ManualTimeProvider clock, Task loop, int timeoutMs = 10_000)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (clock.PendingTimerCount == 0)
+        {
+            if (loop.IsCompleted)
+            {
+                return false;
+            }
+
+            Assert.True(sw.ElapsedMilliseconds < timeoutMs, "The guard did not wait on its poll timer in time.");
+            await Task.Delay(2);
+        }
+
+        clock.Advance(TimeSpan.FromMilliseconds(250));
+        return true;
     }
 
     private static async Task AdvanceAsync(ManualTimeProvider clock, TimeSpan total)

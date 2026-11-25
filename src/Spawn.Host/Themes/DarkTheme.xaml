@@ -65,4 +65,40 @@
     <SolidColorBrush x:Key="WarningSoftBannerBorderBrush" Color="#78350F" />
     <SolidColorBrush x:Key="ScrollThumbBrush" Color="#374151" />
     <SolidColorBrush x:Key="ScrollThumbHoverBrush" Color="#4B5563" />
+
+    <!-- Branching Save Tree Lane Palette (0..7) & Semantic Diff/Tag Brushes -->
+    <SolidColorBrush x:Key="SaveBranchLane0Brush" Color="#3B82F6" />
+    <SolidColorBrush x:Key="SaveBranchLane1Brush" Color="#34D399" />
+    <SolidColorBrush x:Key="SaveBranchLane2Brush" Color="#A78BFA" />
+    <SolidColorBrush x:Key="SaveBranchLane3Brush" Color="#FBBF24" />
+    <SolidColorBrush x:Key="SaveBranchLane4Brush" Color="#F472B6" />
+    <SolidColorBrush x:Key="SaveBranchLane5Brush" Color="#22D3EE" />
+    <SolidColorBrush x:Key="SaveBranchLane6Brush" Color="#F87171" />
+    <SolidColorBrush x:Key="SaveBranchLane7Brush" Color="#818CF8" />
+
+    <SolidColorBrush x:Key="SaveBranchLane0SoftBrush" Color="#172B4D" />
+    <SolidColorBrush x:Key="SaveBranchLane1SoftBrush" Color="#132F26" />
+    <SolidColorBrush x:Key="SaveBranchLane2SoftBrush" Color="#2E1B46" />
+    <SolidColorBrush x:Key="SaveBranchLane3SoftBrush" Color="#332711" />
+    <SolidColorBrush x:Key="SaveBranchLane4SoftBrush" Color="#3D172B" />
+    <SolidColorBrush x:Key="SaveBranchLane5SoftBrush" Color="#112E38" />
+    <SolidColorBrush x:Key="SaveBranchLane6SoftBrush" Color="#3B181E" />
+    <SolidColorBrush x:Key="SaveBranchLane7SoftBrush" Color="#1E2044" />
+
+    <SolidColorBrush x:Key="SaveHeadRingBrush" Color="#34D399" />
+    <SolidColorBrush x:Key="SavePinStarBrush" Color="#FBBF24" />
+
+    <SolidColorBrush x:Key="SaveTagSaveBgBrush" Color="#172B4D" />
+    <SolidColorBrush x:Key="SaveTagSaveFgBrush" Color="#60A5FA" />
+    <SolidColorBrush x:Key="SaveTagConfigBgBrush" Color="#262B35" />
+    <SolidColorBrush x:Key="SaveTagConfigFgBrush" Color="#9CA3AF" />
+    <SolidColorBrush x:Key="SaveTagRegistryBgBrush" Color="#2E1B46" />
+    <SolidColorBrush x:Key="SaveTagRegistryFgBrush" Color="#C084FC" />
+
+    <SolidColorBrush x:Key="DiffAddedBrush" Color="#34D399" />
+    <SolidColorBrush x:Key="DiffAddedSoftBrush" Color="#132F26" />
+    <SolidColorBrush x:Key="DiffModifiedBrush" Color="#FBBF24" />
+    <SolidColorBrush x:Key="DiffModifiedSoftBrush" Color="#332711" />
+    <SolidColorBrush x:Key="DiffRemovedBrush" Color="#F87171" />
+    <SolidColorBrush x:Key="DiffRemovedSoftBrush" Color="#3B181E" />
 </ResourceDictionary>

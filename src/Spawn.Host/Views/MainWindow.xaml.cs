@@ -21,6 +21,7 @@ public partial class MainWindow : Window
     private readonly HashSet<Popup> _openPopups = [];
     private bool _isManualImportImeComposing;
     private bool _isTrainerSearchImeComposing;
+    private bool _isSaveSearchImeComposing;
     private bool _isApplicationExiting;
 
     public event Action? HiddenToTray;
@@ -55,6 +56,10 @@ public partial class MainWindow : Window
         TextCompositionManager.AddPreviewTextInputStartHandler(TrainerSidebarSearchTextBox, (_, _) => _isTrainerSearchImeComposing = true);
         TextCompositionManager.AddPreviewTextInputUpdateHandler(TrainerSidebarSearchTextBox, (_, _) => _isTrainerSearchImeComposing = true);
         TextCompositionManager.AddPreviewTextInputHandler(TrainerSidebarSearchTextBox, (_, _) => _isTrainerSearchImeComposing = false);
+
+        TextCompositionManager.AddPreviewTextInputStartHandler(SaveSidebarSearchTextBox, (_, _) => _isSaveSearchImeComposing = true);
+        TextCompositionManager.AddPreviewTextInputUpdateHandler(SaveSidebarSearchTextBox, (_, _) => _isSaveSearchImeComposing = true);
+        TextCompositionManager.AddPreviewTextInputHandler(SaveSidebarSearchTextBox, (_, _) => _isSaveSearchImeComposing = false);
 
         SourceInitialized += OnWindowSourceInitialized;
         Loaded += OnWindowLoaded;
@@ -286,6 +291,40 @@ public partial class MainWindow : Window
         }
 
         _isTrainerSearchImeComposing = false;
+    }
+
+    private void OnSaveSidebarSearchPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.ImeProcessed)
+        {
+            _isSaveSearchImeComposing = true;
+            return;
+        }
+
+        if (e.Key == Key.Enter)
+        {
+            if (_isSaveSearchImeComposing)
+            {
+                return;
+            }
+
+            e.Handled = true;
+            if (_viewModel.SaveSidebarGames.Count == 1)
+            {
+                _viewModel.SelectSaveSidebarGameCommand.Execute(_viewModel.SaveSidebarGames[0]);
+            }
+
+            return;
+        }
+
+        if (e.Key == Key.Escape && !_isSaveSearchImeComposing && !string.IsNullOrEmpty(_viewModel.SaveSidebarSearchText))
+        {
+            _viewModel.SaveSidebarSearchText = string.Empty;
+            e.Handled = true;
+            return;
+        }
+
+        _isSaveSearchImeComposing = false;
     }
 
     private void OnManagedPopupOpened(object? sender, EventArgs e)

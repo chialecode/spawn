@@ -163,4 +163,72 @@ public static class UiFormatters
         OverlaySoundPreset.CustomWav => "自定义 WAV 音频文件",
         _ => "Steam 原版同款音效（推荐）",
     };
+
+    public static string FormatSaveTriggerLabel(SaveSnapshotTriggerKind trigger) => trigger switch
+    {
+        SaveSnapshotTriggerKind.Manual => "手动备份",
+        SaveSnapshotTriggerKind.ManualPin => "手动固定",
+        SaveSnapshotTriggerKind.AutoQuiescent => "静默热备",
+        SaveSnapshotTriggerKind.PostExit => "退出自动",
+        SaveSnapshotTriggerKind.PreRollbackSafety => "回滚安全点",
+        SaveSnapshotTriggerKind.PreBranchSwitchSafety => "切分支安全点",
+        SaveSnapshotTriggerKind.PreTrainerImport => "修改器前导入",
+        SaveSnapshotTriggerKind.CloudPull => "云端拉取",
+        SaveSnapshotTriggerKind.CloudDivergenceBackup => "分叉保留备份",
+        SaveSnapshotTriggerKind.BranchFork => "分支起点",
+        _ => "存档快照",
+    };
+
+    public static string FormatSaveFileCategoryTag(SaveFileCategory category) => category switch
+    {
+        SaveFileCategory.Save => "[save]",
+        SaveFileCategory.Config => "[config]",
+        SaveFileCategory.RegistryExport => "[registry]",
+        _ => "[save]",
+    };
+
+    public static string FormatCloudProviderLabel(CloudSyncProviderType provider) => provider switch
+    {
+        CloudSyncProviderType.LocalFolder => "本地同步目录 / 网盘",
+        CloudSyncProviderType.WebDav => "WebDAV 服务器",
+        CloudSyncProviderType.S3 => "S3 / R2 对象存储",
+        _ => "本地同步目录",
+    };
+
+    public static string FormatCloudSyncRelationLabel(CloudSyncRelation relation) => relation switch
+    {
+        CloudSyncRelation.NotConfigured => "未配置云端端点",
+        CloudSyncRelation.UpToDate => "已与云端同步",
+        CloudSyncRelation.FastForwardPush => "本机领先 · 可推送至云端",
+        CloudSyncRelation.FastForwardPull => "云端有新进度 · 可拉取",
+        CloudSyncRelation.Diverged => "发现双端分叉冲突",
+        CloudSyncRelation.Error => "云同步异常",
+        _ => "未知状态",
+    };
+
+    public static string FormatSaveWatcherStatusLabel(SaveWatcherStatusKind status) => status switch
+    {
+        SaveWatcherStatusKind.Watching => "实时监听中",
+        SaveWatcherStatusKind.Debouncing => "检测到写入 · 静默防撕裂等待中",
+        SaveWatcherStatusKind.Capturing => "正在增量备份快照…",
+        SaveWatcherStatusKind.Error => "监听异常",
+        _ => "待机未监听",
+    };
+
+    public static string FormatDeduplicationPercent(double ratio)
+    {
+        double pct = Math.Clamp(ratio, 0.0, 1.0) * 100.0;
+        return string.Create(CultureInfo.InvariantCulture, $"去重节省 {pct:0.0}%");
+    }
+
+    public static string FormatByteDelta(long deltaBytes)
+    {
+        if (deltaBytes == 0)
+        {
+            return "±0 B";
+        }
+
+        string sign = deltaBytes > 0 ? "+" : "-";
+        return $"{sign}{FormatByteSize(Math.Abs(deltaBytes))}";
+    }
 }

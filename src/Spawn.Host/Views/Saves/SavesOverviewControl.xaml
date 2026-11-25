@@ -1,0 +1,330 @@
+<UserControl x:Class="Spawn.Host.Views.Saves.SavesOverviewControl"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:conv="clr-namespace:Spawn.Host.Converters"
+             xmlns:savesVm="clr-namespace:Spawn.Host.ViewModels.Saves"
+             FontFamily="{DynamicResource SpawnUiFont}"
+             Foreground="{DynamicResource PrimaryTextBrush}"
+             Background="{DynamicResource PageBackgroundBrush}"
+             Typography.NumeralAlignment="Tabular">
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <conv:InverseBooleanToVisibilityConverter x:Key="InvBoolToVis" />
+        <conv:NullToVisibilityConverter x:Key="NullToVis" />
+    </UserControl.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <!-- Row 0: Vault Summary Strip + Cloud Quick Bar -->
+            <RowDefinition Height="Auto" />
+            <!-- Row 1: Optional Cloud Conflict Alert Banner -->
+            <RowDefinition Height="Auto" />
+            <!-- Row 2: Section Header -->
+            <RowDefinition Height="Auto" />
+            <!-- Row 3 (*): Virtualized Recycling Per-Game Save List -->
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- Row 0: Flat Summary Strip & Vault Path Bar -->
+        <Border Grid.Row="0"
+                BorderBrush="{DynamicResource DividerBrush}"
+                BorderThickness="0,0,0,1"
+                Padding="0,0,0,16">
+            <StackPanel>
+                <DockPanel LastChildFill="False">
+                    <WrapPanel DockPanel.Dock="Left" Orientation="Horizontal" VerticalAlignment="Center">
+                        <StackPanel Margin="0,0,34,6">
+                            <TextBlock Text="存档快照总数" FontSize="12.5" Foreground="{DynamicResource SecondaryTextBrush}" />
+                            <TextBlock Text="{Binding TotalSaveSnapshotsCount}"
+                                       FontFamily="{StaticResource SpawnMonoFont}"
+                                       FontSize="24"
+                                       FontWeight="SemiBold"
+                                       Margin="0,3,0,0" />
+                        </StackPanel>
+
+                        <StackPanel Margin="0,0,34,6">
+                            <TextBlock Text="活跃存档分支" FontSize="12.5" Foreground="{DynamicResource SecondaryTextBrush}" />
+                            <TextBlock Text="{Binding TotalSaveBranchesCount}"
+                                       FontFamily="{StaticResource SpawnMonoFont}"
+                                       FontSize="24"
+                                       FontWeight="SemiBold"
+                                       Margin="0,3,0,0" />
+                        </StackPanel>
+
+                        <StackPanel Margin="0,0,34,6">
+                            <TextBlock Text="CAS 去重实占" FontSize="12.5" Foreground="{DynamicResource SecondaryTextBrush}" />
+                            <StackPanel Orientation="Horizontal" Margin="0,3,0,0" VerticalAlignment="Bottom">
+                                <TextBlock Text="{Binding SaveVaultStoredSizeText}"
+                                           FontFamily="{StaticResource SpawnMonoFont}"
+                                           FontSize="22"
+                                           FontWeight="SemiBold" />
+                                <TextBlock Text="{Binding SaveVaultDedupRatioText}"
+                                           FontFamily="{StaticResource SpawnMonoFont}"
+                                           FontSize="12"
+                                           Foreground="{DynamicResource RunningGreenBrush}"
+                                           Margin="8,0,0,4"
+                                           VerticalAlignment="Bottom" />
+                            </StackPanel>
+                        </StackPanel>
+                    </WrapPanel>
+
+                    <!-- SINGLE Primary CTA on Overview -->
+                    <Button DockPanel.Dock="Right"
+                            Style="{StaticResource PrimaryCapsuleButtonStyle}"
+                            Height="36"
+                            Padding="18,0"
+                            VerticalAlignment="Center"
+                            Content="立即同步全部"
+                            Command="{Binding SyncAllCloudSavesCommand}"
+                            IsEnabled="{Binding CanSyncAllCloudSaves}" />
+                </DockPanel>
+
+                <!-- CAS Vault Path & Settings Bar -->
+                <Border CornerRadius="8"
+                        Background="{DynamicResource SubtleSurfaceBrush}"
+                        BorderBrush="{DynamicResource DividerBrush}"
+                        BorderThickness="1"
+                        Padding="12,9"
+                        Margin="0,10,0,0">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,12,0">
+                            <TextBlock Text="FastCDC + BLAKE3 + Zstd 块级去重存档库（严禁将 spawn.db 直接放进网盘）"
+                                       FontSize="11.5"
+                                       Foreground="{DynamicResource SecondaryTextBrush}" />
+                            <TextBlock Text="{Binding SaveVaultPathText}"
+                                       ToolTip="{Binding SaveVaultPathText}"
+                                       FontFamily="{StaticResource SpawnMonoFont}"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource PrimaryTextBrush}"
+                                       TextTrimming="CharacterEllipsis"
+                                       Margin="0,2,0,0" />
+                        </StackPanel>
+                        <WrapPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                            <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                                    Height="28"
+                                    Padding="12,0"
+                                    FontSize="12"
+                                    Margin="0,2,8,2"
+                                    Content="打开存档库目录"
+                                    Command="{Binding OpenSaveVaultFolderCommand}" />
+                            <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                                    Height="28"
+                                    Padding="12,0"
+                                    FontSize="12"
+                                    Margin="0,2,0,2"
+                                    Content="云同步与自动备份设置"
+                                    Command="{Binding OpenSavesSettingsCommand}" />
+                        </WrapPanel>
+                    </Grid>
+                </Border>
+            </StackPanel>
+        </Border>
+
+        <!-- Row 1: Cloud Conflict Alert Banner (Visible only when any game has divergence) -->
+        <Border Grid.Row="1"
+                CornerRadius="10"
+                Background="{DynamicResource WarningSoftBannerBackgroundBrush}"
+                BorderBrush="{DynamicResource WarningSoftBannerBorderBrush}"
+                BorderThickness="1"
+                Padding="14,10"
+                Margin="0,14,0,0"
+                Visibility="{Binding HasAnyCloudConflict, Converter={StaticResource BoolToVis}}">
+            <DockPanel LastChildFill="False">
+                <StackPanel DockPanel.Dock="Left" VerticalAlignment="Center">
+                    <TextBlock Text="存在未处理的云端双端存档分叉冲突"
+                               FontSize="13.5"
+                               FontWeight="SemiBold"
+                               Foreground="{DynamicResource WarningAmberBrush}" />
+                    <TextBlock Text="点击下方对应游戏可进入分叉决策向导，安全保留双端进度为独立分支。"
+                               FontSize="12"
+                               Foreground="{DynamicResource SecondaryTextBrush}"
+                               Margin="0,2,0,0" />
+                </StackPanel>
+                <Button DockPanel.Dock="Right"
+                        Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                        Height="30"
+                        Padding="12,0"
+                        FontSize="12"
+                        Content="前往首个冲突游戏"
+                        Command="{Binding OpenFirstConflictedSaveGameCommand}" />
+            </DockPanel>
+        </Border>
+
+        <!-- Row 2: List Header -->
+        <DockPanel Grid.Row="2" LastChildFill="False" Margin="0,18,0,8">
+            <TextBlock DockPanel.Dock="Left"
+                       Text="全部游戏存档库"
+                       FontSize="15"
+                       FontWeight="SemiBold"
+                       Foreground="{DynamicResource PrimaryTextBrush}"
+                       VerticalAlignment="Center" />
+            <TextBlock DockPanel.Dock="Right"
+                       Text="点击任意游戏进入树状分叉存档工作台"
+                       FontSize="12"
+                       Foreground="{DynamicResource MutedTextBrush}"
+                       VerticalAlignment="Center" />
+        </DockPanel>
+
+        <!-- Row 3 (*): Virtualized Per-Game Overview List -->
+        <Grid Grid.Row="3">
+            <ListBox ItemsSource="{Binding ManagedSaveGames}"
+                     Background="Transparent"
+                     BorderThickness="0"
+                     Padding="0,0,4,24"
+                     HorizontalContentAlignment="Stretch"
+                     ScrollViewer.CanContentScroll="True"
+                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                     ScrollViewer.VerticalScrollBarVisibility="Auto"
+                     VirtualizingPanel.IsVirtualizing="True"
+                     VirtualizingPanel.VirtualizationMode="Recycling"
+                     VirtualizingPanel.ScrollUnit="Pixel"
+                     Visibility="{Binding HasManagedSaveGames, Converter={StaticResource BoolToVis}}">
+                <ListBox.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <VirtualizingStackPanel IsVirtualizing="True" VirtualizationMode="Recycling" />
+                    </ItemsPanelTemplate>
+                </ListBox.ItemsPanel>
+                <ListBox.ItemContainerStyle>
+                    <Style TargetType="ListBoxItem">
+                        <Setter Property="Focusable" Value="False" />
+                        <Setter Property="Padding" Value="0" />
+                        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="ListBoxItem">
+                                    <ContentPresenter HorizontalAlignment="Stretch" />
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                    </Style>
+                </ListBox.ItemContainerStyle>
+                <ListBox.ItemTemplate>
+                    <DataTemplate DataType="{x:Type savesVm:ManagedSaveGameOverviewItemViewModel}">
+                        <Border BorderBrush="{DynamicResource DividerBrush}"
+                                BorderThickness="0,0,0,1"
+                                Padding="0,12">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="42" />
+                                    <ColumnDefinition Width="12" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+
+                                <Border Grid.Column="0"
+                                        Width="42"
+                                        Height="42"
+                                        CornerRadius="8"
+                                        Background="{DynamicResource SubtleSurfaceBrush}"
+                                        BorderBrush="{DynamicResource DividerBrush}"
+                                        BorderThickness="1"
+                                        ClipToBounds="True">
+                                    <Grid>
+                                        <TextBlock Text="{Binding GameInitials}"
+                                                   FontSize="14"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource SecondaryTextBrush}"
+                                                   HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center"
+                                                   Visibility="{Binding GameIcon, Converter={StaticResource NullToVis}, ConverterParameter=Invert}" />
+                                        <Image Source="{Binding GameIcon}"
+                                               Stretch="UniformToFill"
+                                               RenderOptions.BitmapScalingMode="HighQuality"
+                                               Visibility="{Binding GameIcon, Converter={StaticResource NullToVis}}" />
+                                    </Grid>
+                                </Border>
+
+                                <StackPanel Grid.Column="2" VerticalAlignment="Center" Margin="0,0,12,0">
+                                    <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding GameTitle}"
+                                                   FontSize="14"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource PrimaryTextBrush}"
+                                                   VerticalAlignment="Center" />
+                                        <Border CornerRadius="4"
+                                                Background="{DynamicResource SaveBranchLane0SoftBrush}"
+                                                Padding="6,1"
+                                                Margin="8,0,0,0"
+                                                VerticalAlignment="Center">
+                                            <TextBlock Text="{Binding ActiveBranchName}"
+                                                       FontFamily="{StaticResource SpawnMonoFont}"
+                                                       FontSize="11"
+                                                       FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource AccentBrush}" />
+                                        </Border>
+                                        <Border CornerRadius="4"
+                                                Background="{DynamicResource WarningAmberSoftBrush}"
+                                                Padding="6,1"
+                                                Margin="6,0,0,0"
+                                                VerticalAlignment="Center"
+                                                Visibility="{Binding HasCloudConflict, Converter={StaticResource BoolToVis}}">
+                                            <TextBlock Text="⚠ 分叉冲突"
+                                                       FontSize="11"
+                                                       FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource WarningAmberBrush}" />
+                                        </Border>
+                                    </WrapPanel>
+
+                                    <TextBlock FontFamily="{StaticResource SpawnMonoFont}"
+                                               FontSize="11.5"
+                                               Foreground="{DynamicResource SecondaryTextBrush}"
+                                               Margin="0,4,0,0">
+                                        <Run Text="{Binding BranchAndSnapshotMetricsText, Mode=OneWay}" />
+                                        <Run Text=" · " />
+                                        <Run Text="{Binding StorageMetricsText, Mode=OneWay}" />
+                                    </TextBlock>
+
+                                    <TextBlock FontSize="11.5"
+                                               Foreground="{DynamicResource MutedTextBrush}"
+                                               Margin="0,2,0,0">
+                                        <Run Text="{Binding LastSnapshotText, Mode=OneWay}" />
+                                        <Run Text=" · " />
+                                        <Run Text="{Binding CloudStatusText, Mode=OneWay}" />
+                                    </TextBlock>
+                                </StackPanel>
+
+                                <WrapPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
+                                    <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                                            Height="30"
+                                            Padding="12,0"
+                                            FontSize="12"
+                                            Margin="0,2,6,2"
+                                            Content="快速备份"
+                                            Command="{Binding QuickBackupCommand}"
+                                            IsEnabled="{Binding IsNotBusy}" />
+                                    <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                                            Height="30"
+                                            Padding="12,0"
+                                            FontSize="12"
+                                            Margin="0,2,0,2"
+                                            Content="打开存档树"
+                                            Command="{Binding OpenTreeCommand}" />
+                                </WrapPanel>
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+
+            <StackPanel HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        MaxWidth="460"
+                        Visibility="{Binding HasManagedSaveGames, Converter={StaticResource InvBoolToVis}}">
+                <TextBlock Text="暂无已入库游戏可供存档管理"
+                           FontSize="15.5"
+                           FontWeight="SemiBold"
+                           HorizontalAlignment="Center" />
+                <TextBlock Text="请先在「设置 → 常规与游戏库」导入单机游戏，即可体验 Git 式多分支树状存档与 32MB SPPK 云同步。"
+                           FontSize="12.5"
+                           Foreground="{DynamicResource SecondaryTextBrush}"
+                           TextAlignment="Center"
+                           TextWrapping="Wrap"
+                           Margin="0,8,0,0" />
+            </StackPanel>
+        </Grid>
+    </Grid>
+</UserControl>

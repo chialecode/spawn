@@ -7,6 +7,7 @@ using Spawn.Core;
 using Spawn.Core.Update;
 using Spawn.Host.Services;
 using Spawn.Host.ViewModels;
+using Spawn.Host.ViewModels.Saves;
 using Spawn.Host.Views;
 using Spawn.Modules.Achievement;
 using Spawn.Modules.Launcher;
@@ -83,6 +84,13 @@ public partial class App : Application
                 sp.GetRequiredService<PreTrainerSaveSnapshotService>(),
                 sp.GetRequiredService<UpdateActivityTracker>())));
 
+        DecorateSingletonIfRegistered<ISaveTimeMachineService>(
+            services,
+            (inner, sp) => new ActivityTrackingSaveTimeMachineService(inner, sp.GetRequiredService<UpdateActivityTracker>()));
+        DecorateSingletonIfRegistered<ICloudSaveSyncService>(
+            services,
+            (inner, sp) => new ActivityTrackingCloudSaveSyncService(inner, sp.GetRequiredService<UpdateActivityTracker>()));
+
         services.Replace(ServiceDescriptor.Singleton<IUpdateIdleEvaluator>(sp =>
             new HostUpdateIdleEvaluator(
                 sp.GetRequiredService<IGameLaunchService>(),
@@ -97,6 +105,7 @@ public partial class App : Application
         services.AddSingleton<UpdateViewModel>();
         services.AddSingleton<SettingsViewModel>();
         services.AddSingleton<TrainerWorkbenchViewModel>();
+        services.AddSingleton<SaveWorkbenchViewModel>();
         services.AddSingleton<MainWindowViewModel>();
 
         _serviceProvider = services.BuildServiceProvider();
@@ -110,6 +119,12 @@ public partial class App : Application
 
         var achievementService = _serviceProvider.GetRequiredService<IAchievementService>();
         await achievementService.StartMonitoringAsync().ConfigureAwait(true);
+
+        var saveWatcher = _serviceProvider.GetService<ISaveWatcherService>();
+        if (saveWatcher is not null)
+        {
+            await saveWatcher.StartAsync().ConfigureAwait(true);
+        }
 
         var updateService = _serviceProvider.GetRequiredService<IUpdateService>();
         bool consumedValidUpdateMarker = _startupDecision is { ConsumedValidRestartMarker: true }
@@ -327,6 +342,21 @@ public partial class App : Application
                 }
             }
 
+            var saveWatcher = _serviceProvider.GetService<ISaveWatcherService>();
+            if (saveWatcher is not null)
+            {
+                try
+                {
+                    await saveWatcher.StopAsync()
+                        .WaitAsync(GracefulStopServiceTimeout)
+                        .ConfigureAwait(true);
+                }
+                catch (TimeoutException)
+                {
+                    // Bounded exit: never hang --quit-for-update forever.
+                }
+            }
+
             var achievementService = _serviceProvider.GetService<IAchievementService>();
             if (achievementService is not null)
             {
@@ -420,6 +450,12 @@ public partial class App : Application
                     await achievementService.StartMonitoringAsync().ConfigureAwait(true);
                 }
 
+                var saveWatcher = _serviceProvider.GetService<ISaveWatcherService>();
+                if (saveWatcher is not null)
+                {
+                    await saveWatcher.StartAsync().ConfigureAwait(true);
+                }
+
                 var updateService = _serviceProvider.GetService<IUpdateService>();
                 updateService?.StartBackgroundScheduler();
             }
@@ -471,6 +507,29 @@ public partial class App : Application
 
         public Task AbortDeferredShutdownAsync(CancellationToken cancellationToken = default) =>
             app.Dispatcher.InvokeAsync(() => app.AbortDeferredShutdownCoreAsync()).Task.Unwrap();
+    }
+
+    private static void DecorateSingletonIfRegistered<TService>(
+        ServiceCollection services,
+        Func<TService, IServiceProvider, TService> decoratorFactory)
+        where TService : class
+    {
+        ServiceDescriptor? existing = services.LastOrDefault(d => d.ServiceType == typeof(TService));
+        if (existing is null)
+        {
+            return;
+        }
+
+        services.Remove(existing);
+        services.AddSingleton<TService>(sp =>
+        {
+            TService inner = existing.ImplementationInstance is TService inst
+                ? inst
+                : existing.ImplementationFactory is not null
+                    ? (TService)existing.ImplementationFactory(sp)
+                    : (TService)ActivatorUtilities.CreateInstance(sp, existing.ImplementationType!);
+            return decoratorFactory(inner, sp);
+        });
     }
 
     protected override void OnExit(ExitEventArgs e)

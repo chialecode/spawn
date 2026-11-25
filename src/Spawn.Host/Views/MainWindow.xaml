@@ -4,6 +4,8 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:conv="clr-namespace:Spawn.Host.Converters"
         xmlns:vm="clr-namespace:Spawn.Host.ViewModels"
+        xmlns:savesVm="clr-namespace:Spawn.Host.ViewModels.Saves"
+        xmlns:savesViews="clr-namespace:Spawn.Host.Views.Saves"
         xmlns:contracts="clr-namespace:Spawn.Contracts;assembly=Spawn.Contracts"
         Title="SPAWN"
         Width="1220"
@@ -171,6 +173,133 @@
                                 <Setter TargetName="TagTxt" Property="Foreground" Value="{DynamicResource RunningGreenBrush}" />
                                 <Setter TargetName="TagTxt" Property="FontWeight" Value="SemiBold" />
                             </DataTrigger>
+                            <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                <Setter TargetName="RowBd" Property="Background" Value="{DynamicResource SelectedPillBrush}" />
+                                <Setter TargetName="TitleTxt" Property="Foreground" Value="{DynamicResource AccentBrush}" />
+                                <Setter TargetName="TitleTxt" Property="FontWeight" Value="SemiBold" />
+                            </DataTrigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Button.Template>
+            </Button>
+        </DataTemplate>
+
+        <!-- Saves Contextual Sidebar Game Row DataTemplate -->
+        <DataTemplate x:Key="SaveSidebarGameItemTemplate" DataType="{x:Type savesVm:SaveSidebarGameItemViewModel}">
+            <Button Cursor="Hand"
+                    Margin="8,1.5"
+                    Padding="0"
+                    FocusVisualStyle="{x:Null}"
+                    Command="{Binding DataContext.SelectSaveSidebarGameCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                    CommandParameter="{Binding}">
+                <Button.Template>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="RowBd"
+                                Height="48"
+                                CornerRadius="8"
+                                Padding="9,0,9,0"
+                                Background="Transparent">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="28" />
+                                    <ColumnDefinition Width="9" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+
+                                <Grid Grid.Column="0" Width="28" Height="28" VerticalAlignment="Center">
+                                    <Border CornerRadius="6"
+                                            Background="{DynamicResource SubtleSurfaceBrush}"
+                                            BorderBrush="{DynamicResource DividerBrush}"
+                                            BorderThickness="1"
+                                            ClipToBounds="True">
+                                        <Grid>
+                                            <TextBlock Text="{Binding InitialsText}"
+                                                       FontSize="11"
+                                                       FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource SecondaryTextBrush}"
+                                                       HorizontalAlignment="Center"
+                                                       VerticalAlignment="Center"
+                                                       Visibility="{Binding SmallIcon, Converter={StaticResource NullToVis}, ConverterParameter=Invert}" />
+                                            <Image Source="{Binding SmallIcon}"
+                                                   Stretch="UniformToFill"
+                                                   RenderOptions.BitmapScalingMode="HighQuality"
+                                                   Visibility="{Binding SmallIcon, Converter={StaticResource NullToVis}}" />
+                                        </Grid>
+                                    </Border>
+                                    <Border CornerRadius="7"
+                                            Margin="-2"
+                                            BorderBrush="{DynamicResource RunningGreenBrush}"
+                                            BorderThickness="1.8"
+                                            Visibility="{Binding IsStatusWatching, Converter={StaticResource BoolToVis}}" />
+                                </Grid>
+
+                                <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                                    <DockPanel LastChildFill="True">
+                                        <Border DockPanel.Dock="Right"
+                                                CornerRadius="4"
+                                                Padding="5,1"
+                                                Margin="6,0,0,0"
+                                                VerticalAlignment="Center">
+                                            <Border.Style>
+                                                <Style TargetType="Border">
+                                                    <Setter Property="Background" Value="{DynamicResource SubtleSurfaceBrush}" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsStatusConflict}" Value="True">
+                                                            <Setter Property="Background" Value="{DynamicResource WarningAmberSoftBrush}" />
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding IsStatusWatching}" Value="True">
+                                                            <Setter Property="Background" Value="{DynamicResource RunningGreenSoftBrush}" />
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding IsStatusHasSaves}" Value="True">
+                                                            <Setter Property="Background" Value="{DynamicResource SelectedPillBrush}" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Border.Style>
+                                            <TextBlock Text="{Binding StatusPillText}"
+                                                       FontFamily="{StaticResource SpawnMonoFont}"
+                                                       FontSize="10.5"
+                                                       FontWeight="SemiBold">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock">
+                                                        <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsStatusConflict}" Value="True">
+                                                                <Setter Property="Foreground" Value="{DynamicResource WarningAmberBrush}" />
+                                                            </DataTrigger>
+                                                            <DataTrigger Binding="{Binding IsStatusWatching}" Value="True">
+                                                                <Setter Property="Foreground" Value="{DynamicResource RunningGreenBrush}" />
+                                                            </DataTrigger>
+                                                            <DataTrigger Binding="{Binding IsStatusHasSaves}" Value="True">
+                                                                <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
+                                        </Border>
+
+                                        <TextBlock x:Name="TitleTxt"
+                                                   Text="{Binding Title}"
+                                                   FontSize="13"
+                                                   Foreground="{DynamicResource PrimaryTextBrush}"
+                                                   VerticalAlignment="Center"
+                                                   TextTrimming="CharacterEllipsis" />
+                                    </DockPanel>
+
+                                    <TextBlock Text="{Binding SubtitleText}"
+                                               FontFamily="{StaticResource SpawnMonoFont}"
+                                               FontSize="11"
+                                               Foreground="{DynamicResource MutedTextBrush}"
+                                               TextTrimming="CharacterEllipsis"
+                                               Margin="0,2,0,0" />
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="RowBd" Property="Background" Value="{DynamicResource ItemHoverBrush}" />
+                            </Trigger>
                             <DataTrigger Binding="{Binding IsSelected}" Value="True">
                                 <Setter TargetName="RowBd" Property="Background" Value="{DynamicResource SelectedPillBrush}" />
                                 <Setter TargetName="TitleTxt" Property="Foreground" Value="{DynamicResource AccentBrush}" />
@@ -1816,7 +1945,64 @@
                             </Path>
                         </RadioButton>
 
-                        <!-- 3. Trainers Manager + 8px Emerald Green Running Dot -->
+                        <!-- 3. Save Time Machine & Branching Saves + Status Dot -->
+                        <RadioButton Style="{StaticResource IconRailButtonStyle}"
+                                     GroupName="PrimaryRailGroup"
+                                     ToolTip="{Binding SavesRailToolTip}"
+                                     AutomationProperties.Name="存档"
+                                     IsChecked="{Binding ActiveSection, Converter={StaticResource EqToBool}, ConverterParameter={x:Static vm:PrimaryNavSection.Saves}}">
+                            <Grid Width="24" Height="24">
+                                <Path Data="M6,5 V19 M18,7 V10 C18,13 15,14 12,14 H6 M4,5 A2,2 0 1,0 8,5 A2,2 0 1,0 4,5 M16,5 A2,2 0 1,0 20,5 A2,2 0 1,0 16,5 M4,19 A2,2 0 1,0 8,19 A2,2 0 1,0 4,19"
+                                      Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}"
+                                      StrokeStartLineCap="Round"
+                                      StrokeEndLineCap="Round"
+                                      StrokeLineJoin="Round"
+                                      Stretch="Uniform"
+                                      Width="19"
+                                      Height="19"
+                                      HorizontalAlignment="Center"
+                                      VerticalAlignment="Center">
+                                    <Path.Style>
+                                        <Style TargetType="Path">
+                                            <Setter Property="StrokeThickness" Value="1.6" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=RadioButton}}" Value="True">
+                                                    <Setter Property="StrokeThickness" Value="2.0" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Path.Style>
+                                </Path>
+                                <!-- 8px Emerald (Watching) / Amber (Conflict) Status Dot -->
+                                <Border Width="10"
+                                        Height="10"
+                                        CornerRadius="5"
+                                        BorderBrush="{DynamicResource RailBackgroundBrush}"
+                                        BorderThickness="1"
+                                        HorizontalAlignment="Right"
+                                        VerticalAlignment="Top"
+                                        Margin="0,-2,-2,0">
+                                    <Border.Style>
+                                        <Style TargetType="Border">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                            <Setter Property="Background" Value="{DynamicResource RunningGreenBrush}" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding HasAnySaveWatcherActive}" Value="True">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                    <Setter Property="Background" Value="{DynamicResource RunningGreenBrush}" />
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding HasAnyCloudConflict}" Value="True">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                    <Setter Property="Background" Value="{DynamicResource WarningAmberBrush}" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Border.Style>
+                                </Border>
+                            </Grid>
+                        </RadioButton>
+
+                        <!-- 4. Trainers Manager + 8px Emerald Green Running Dot -->
                         <RadioButton Style="{StaticResource IconRailButtonStyle}"
                                      GroupName="PrimaryRailGroup"
                                      ToolTip="{Binding TrainersRailToolTip}"
@@ -2099,6 +2285,197 @@
                         </ScrollViewer>
                     </DockPanel>
 
+                    <!-- Context B1: Save Time Machine Sidebar -->
+                    <DockPanel Visibility="{Binding ActiveSection, Converter={StaticResource EqToVis}, ConverterParameter=Saves}">
+                        <Border DockPanel.Dock="Top"
+                                Height="52"
+                                Padding="16,0,10,0"
+                                Background="Transparent"
+                                MouseLeftButtonDown="OnTitleBarDragMouseDown">
+                            <Grid>
+                                <TextBlock Text="存档"
+                                           FontSize="18"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource PrimaryTextBrush}"
+                                           VerticalAlignment="Center" />
+                                <Button Style="{StaticResource SubtleIconButtonStyle}"
+                                        HorizontalAlignment="Right"
+                                        VerticalAlignment="Center"
+                                        ToolTip="刷新存档库与分支状态"
+                                        AutomationProperties.Name="刷新存档库"
+                                        Command="{Binding RefreshSaveHubCommand}">
+                                    <Path Data="M19,8 A7.5,7.5 0 1,0 20,13.5 M19,3.8 V8.2 H14.6"
+                                          Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                          StrokeThickness="1.6"
+                                          StrokeStartLineCap="Round"
+                                          StrokeEndLineCap="Round"
+                                          StrokeLineJoin="Round"
+                                          Stretch="Uniform"
+                                          Width="15"
+                                          Height="15" />
+                                </Button>
+                            </Grid>
+                        </Border>
+
+                        <!-- Fixed Top Overview Row + IME-Guarded Search Box -->
+                        <StackPanel DockPanel.Dock="Top" Margin="0,2,0,4">
+                            <Button Cursor="Hand"
+                                    Margin="8,1,8,8"
+                                    Padding="0"
+                                    FocusVisualStyle="{x:Null}"
+                                    AutomationProperties.Name="全部存档总览"
+                                    Command="{Binding SelectSavesOverviewCommand}">
+                                <Button.Template>
+                                    <ControlTemplate TargetType="Button">
+                                        <Border x:Name="RowBd"
+                                                Height="38"
+                                                CornerRadius="8"
+                                                Padding="10,0"
+                                                Background="Transparent">
+                                            <DockPanel LastChildFill="False">
+                                                <StackPanel Orientation="Horizontal" DockPanel.Dock="Left" VerticalAlignment="Center">
+                                                    <Path x:Name="OverviewIcon"
+                                                          Data="M6,5 V19 M18,7 V10 C18,13 15,14 12,14 H6 M4,5 A2,2 0 1,0 8,5 A2,2 0 1,0 4,5 M16,5 A2,2 0 1,0 20,5 A2,2 0 1,0 16,5"
+                                                          Stroke="{DynamicResource SecondaryTextBrush}"
+                                                          StrokeThickness="1.55"
+                                                          StrokeLineJoin="Round"
+                                                          Stretch="Uniform"
+                                                          Width="14.5"
+                                                          Height="14.5"
+                                                          VerticalAlignment="Center" />
+                                                    <TextBlock x:Name="OverviewText"
+                                                               Text="全部存档总览"
+                                                               FontSize="13.5"
+                                                               Foreground="{DynamicResource PrimaryTextBrush}"
+                                                               Margin="9,0,0,0"
+                                                               VerticalAlignment="Center" />
+                                                </StackPanel>
+
+                                                <Border DockPanel.Dock="Right"
+                                                        CornerRadius="10"
+                                                        Padding="7,1.5"
+                                                        VerticalAlignment="Center">
+                                                    <Border.Style>
+                                                        <Style TargetType="Border">
+                                                            <Setter Property="Background" Value="{DynamicResource SubtleSurfaceBrush}" />
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding HasAnyCloudConflict}" Value="True">
+                                                                    <Setter Property="Background" Value="{DynamicResource WarningAmberSoftBrush}" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Border.Style>
+                                                    <TextBlock Text="{Binding SaveOverviewCountBadgeText}"
+                                                               FontFamily="{StaticResource SpawnMonoFont}"
+                                                               FontSize="11"
+                                                               FontWeight="SemiBold">
+                                                        <TextBlock.Style>
+                                                            <Style TargetType="TextBlock">
+                                                                <Setter Property="Foreground" Value="{DynamicResource SecondaryTextBrush}" />
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding HasAnyCloudConflict}" Value="True">
+                                                                        <Setter Property="Foreground" Value="{DynamicResource WarningAmberBrush}" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </TextBlock.Style>
+                                                    </TextBlock>
+                                                </Border>
+                                            </DockPanel>
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="RowBd" Property="Background" Value="{DynamicResource ItemHoverBrush}" />
+                                            </Trigger>
+                                            <DataTrigger Binding="{Binding IsSaveOverviewSelected}" Value="True">
+                                                <Setter TargetName="RowBd" Property="Background" Value="{DynamicResource SelectedPillBrush}" />
+                                                <Setter TargetName="OverviewIcon" Property="Stroke" Value="{DynamicResource AccentBrush}" />
+                                                <Setter TargetName="OverviewText" Property="Foreground" Value="{DynamicResource AccentBrush}" />
+                                                <Setter TargetName="OverviewText" Property="FontWeight" Value="SemiBold" />
+                                            </DataTrigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </Button.Template>
+                            </Button>
+
+                            <!-- IME-Guarded Saves Sidebar Search Box -->
+                            <Border Height="30"
+                                    Margin="10,0,10,8"
+                                    CornerRadius="15"
+                                    Background="{DynamicResource CapsuleInputBackgroundBrush}"
+                                    BorderBrush="{DynamicResource ControlBorderBrush}"
+                                    BorderThickness="1"
+                                    Padding="10,0,6,0">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="16" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <Path Grid.Column="0"
+                                          Data="M6.5,1 A5.5,5.5 0 1,0 6.5,12 A5.5,5.5 0 1,0 6.5,1 M10.6,10.6 L14.2,14.2"
+                                          Stroke="{DynamicResource MutedTextBrush}"
+                                          StrokeThickness="1.4"
+                                          Stretch="Uniform"
+                                          Width="12.5"
+                                          Height="12.5"
+                                          VerticalAlignment="Center" />
+                                    <TextBlock Grid.Column="1"
+                                               Text="筛选游戏或分支…"
+                                               FontSize="12"
+                                               Foreground="{DynamicResource MutedTextBrush}"
+                                               VerticalAlignment="Center"
+                                               Margin="5,0,0,0"
+                                               IsHitTestVisible="False"
+                                               Visibility="{Binding SaveSidebarSearchText, Converter={StaticResource StrNotEmptyToVis}, ConverterParameter=Invert}" />
+                                    <TextBox x:Name="SaveSidebarSearchTextBox"
+                                             Grid.Column="1"
+                                             Text="{Binding SaveSidebarSearchText, UpdateSourceTrigger=PropertyChanged}"
+                                             Background="Transparent"
+                                             BorderThickness="0"
+                                             Foreground="{DynamicResource PrimaryTextBrush}"
+                                             CaretBrush="{DynamicResource AccentBrush}"
+                                             FontSize="12"
+                                             VerticalContentAlignment="Center"
+                                             Margin="4,0,2,0"
+                                             AutomationProperties.Name="筛选存档游戏列表"
+                                             PreviewKeyDown="OnSaveSidebarSearchPreviewKeyDown" />
+                                    <Button Grid.Column="2"
+                                            Style="{StaticResource SubtleIconButtonStyle}"
+                                            Width="20"
+                                            Height="20"
+                                            ToolTip="清空筛选"
+                                            Command="{Binding ClearSaveSidebarSearchCommand}"
+                                            Visibility="{Binding SaveSidebarSearchText, Converter={StaticResource StrNotEmptyToVis}}">
+                                        <Path Data="M0,0 L7,7 M7,0 L0,7"
+                                              Stroke="{DynamicResource MutedTextBrush}"
+                                              StrokeThickness="1.3"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                                    </Button>
+                                </Grid>
+                            </Border>
+
+                            <TextBlock Text="按游戏管理（冲突 / 最近备份优先）"
+                                       FontSize="11.5"
+                                       Foreground="{DynamicResource MutedTextBrush}"
+                                       Margin="16,2,12,2" />
+                        </StackPanel>
+
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                            <StackPanel Margin="0,0,0,14">
+                                <ItemsControl ItemsSource="{Binding SaveSidebarGames}"
+                                              ItemTemplate="{StaticResource SaveSidebarGameItemTemplate}" />
+
+                                <TextBlock Text="没有匹配的游戏条目"
+                                           FontSize="12.5"
+                                           Foreground="{DynamicResource MutedTextBrush}"
+                                           Margin="18,14,16,0"
+                                           Visibility="{Binding HasFilteredSaveSidebarGames, Converter={StaticResource InvBoolToVis}}" />
+                            </StackPanel>
+                        </ScrollViewer>
+                    </DockPanel>
+
                     <!-- Context B2: Trainers Manager Sidebar -->
                     <DockPanel Visibility="{Binding ActiveSection, Converter={StaticResource EqToVis}, ConverterParameter=Trainers}">
                         <Border DockPanel.Dock="Top"
@@ -2368,6 +2745,24 @@
                                           Height="15"
                                           VerticalAlignment="Center" />
                                     <TextBlock Text="弹窗外观与音效" Margin="10,0,0,0" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </RadioButton>
+
+                            <RadioButton Style="{StaticResource SidebarNavRowRadioStyle}"
+                                         GroupName="SettingsCategoryGroup"
+                                         IsChecked="{Binding Settings.SelectedCategory, Converter={StaticResource EqToBool}, ConverterParameter={x:Static vm:SettingsCategory.SavesAndCloudSync}}">
+                                <StackPanel Orientation="Horizontal">
+                                    <Path Data="M6,5 V19 M18,7 V10 C18,13 15,14 12,14 H6 M4,5 A2,2 0 1,0 8,5 A2,2 0 1,0 4,5 M16,5 A2,2 0 1,0 20,5 A2,2 0 1,0 16,5"
+                                          Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}"
+                                          StrokeThickness="1.6"
+                                          StrokeStartLineCap="Round"
+                                          StrokeEndLineCap="Round"
+                                          StrokeLineJoin="Round"
+                                          Stretch="Uniform"
+                                          Width="15"
+                                          Height="15"
+                                          VerticalAlignment="Center" />
+                                    <TextBlock Text="存档与云同步" Margin="10,0,0,0" VerticalAlignment="Center" />
                                 </StackPanel>
                             </RadioButton>
 
@@ -2690,11 +3085,11 @@
                 </Grid>
 
                 <!-- ============================================================== -->
-                <!-- 3B. Selected Game Detail + [成就 | 游戏数据] Dual Sub-Tabs      -->
+                <!-- 3B. Selected Game Detail + [成就 | 存档 | 游戏数据 | 修改器]    -->
                 <!-- ============================================================== -->
                 <Grid Grid.Row="2"
-                      Margin="32,20,32,0"
-                      MaxWidth="1000"
+                      Margin="28,18,28,0"
+                      MaxWidth="1160"
                       Visibility="{Binding ShowLibraryGameWorkbench, Converter={StaticResource BoolToVis}}">
                     <Grid.RowDefinitions>
                         <!-- Game Header -->
@@ -2913,6 +3308,10 @@
                                                     Click="OnAnyPopupMenuItemClick"
                                                     Command="{Binding OpenSelectedGameFolderCommand}" />
                                             <Button Style="{StaticResource FloatingMenuItemButtonStyle}"
+                                                    Content="存档时间机器（分支存档）"
+                                                    Click="OnAnyPopupMenuItemClick"
+                                                    Command="{Binding OpenGameSavesSubTabCommand}" />
+                                            <Button Style="{StaticResource FloatingMenuItemButtonStyle}"
                                                     Content="管理 / 清理游戏数据"
                                                     Click="OnAnyPopupMenuItemClick"
                                                     Command="{Binding OpenGameDataSubTabCommand}" />
@@ -2956,7 +3355,7 @@
                         </StackPanel>
                     </Grid>
 
-                    <!-- Row 1: Triple Sub-Tab Strip: [成就 (已解锁/总数)] | [游戏数据] | [修改器] -->
+                    <!-- Row 1: Quad Sub-Tab Strip: [成就 (已解锁/总数)] | [存档] | [游戏数据] | [修改器] -->
                     <Border Grid.Row="1"
                             BorderBrush="{DynamicResource DividerBrush}"
                             BorderThickness="0,0,0,1">
@@ -2965,14 +3364,21 @@
                                          GroupName="GameDetailPrimarySubTabs"
                                          FontSize="14"
                                          Padding="4,9"
-                                         Margin="0,0,26,0"
+                                         Margin="0,0,24,0"
                                          Content="{Binding AchievementsSubTabHeaderText}"
                                          IsChecked="{Binding SelectedGameSubTab, Converter={StaticResource EqToBool}, ConverterParameter={x:Static vm:GameDetailSubTab.Achievements}}" />
                             <RadioButton Style="{StaticResource UnderlineTabRadioStyle}"
                                          GroupName="GameDetailPrimarySubTabs"
                                          FontSize="14"
                                          Padding="4,9"
-                                         Margin="0,0,26,0"
+                                         Margin="0,0,24,0"
+                                         Content="存档"
+                                         IsChecked="{Binding SelectedGameSubTab, Converter={StaticResource EqToBool}, ConverterParameter={x:Static vm:GameDetailSubTab.Saves}}" />
+                            <RadioButton Style="{StaticResource UnderlineTabRadioStyle}"
+                                         GroupName="GameDetailPrimarySubTabs"
+                                         FontSize="14"
+                                         Padding="4,9"
+                                         Margin="0,0,24,0"
                                          Content="游戏数据"
                                          IsChecked="{Binding SelectedGameSubTab, Converter={StaticResource EqToBool}, ConverterParameter={x:Static vm:GameDetailSubTab.GameData}}" />
                             <RadioButton Style="{StaticResource UnderlineTabRadioStyle}"
@@ -2989,6 +3395,11 @@
                                     Content="{Binding}"
                                     ContentTemplate="{StaticResource AchievementManagementListTemplate}"
                                     Visibility="{Binding ShowGameAchievementsSubPanel, Converter={StaticResource BoolToVis}}" />
+
+                    <!-- Row 2A2: Sub-Tab "存档" (Branching Save Tree & Cloud Sync Workbench) -->
+                    <savesViews:SaveWorkbenchControl Grid.Row="2"
+                                                     DataContext="{Binding Saves}"
+                                                     Visibility="{Binding DataContext.ShowGameSavesSubPanel, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVis}}" />
 
                     <!-- Row 2B: Sub-Tab "游戏数据" (PCGamingWiki + Engine + Reversible Cleanup) -->
                     <Grid Grid.Row="2"
@@ -3355,6 +3766,112 @@
                     <ContentControl Grid.Row="1"
                                     Content="{Binding}"
                                     ContentTemplate="{StaticResource AchievementManagementListTemplate}" />
+                </Grid>
+
+                <!-- ============================================================== -->
+                <!-- 3D2. Saves Center: Global Saves Vault & Sync Overview          -->
+                <!-- ============================================================== -->
+                <savesViews:SavesOverviewControl Grid.Row="2"
+                                                 Margin="28,18,28,0"
+                                                 MaxWidth="1120"
+                                                 Visibility="{Binding ShowSavesOverviewPanel, Converter={StaticResource BoolToVis}}" />
+
+                <!-- ============================================================== -->
+                <!-- 3D3. Saves Center: Per-Game Branching Save Tree Workbench      -->
+                <!-- ============================================================== -->
+                <Grid Grid.Row="2"
+                      Margin="28,16,28,0"
+                      MaxWidth="1160"
+                      Visibility="{Binding ShowSavesSingleGamePanel, Converter={StaticResource BoolToVis}}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <!-- Compact Game Context Header -->
+                    <Border Grid.Row="0"
+                            DataContext="{Binding SelectedSaveGame}"
+                            BorderBrush="{DynamicResource DividerBrush}"
+                            BorderThickness="0,0,0,1"
+                            Padding="0,0,0,10">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="42" />
+                                <ColumnDefinition Width="12" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <Border Grid.Column="0"
+                                    Width="42"
+                                    Height="42"
+                                    CornerRadius="8"
+                                    Background="{DynamicResource SubtleSurfaceBrush}"
+                                    BorderBrush="{DynamicResource DividerBrush}"
+                                    BorderThickness="1"
+                                    ClipToBounds="True"
+                                    VerticalAlignment="Center">
+                                <Grid>
+                                    <TextBlock Text="{Binding InitialsText}"
+                                               FontSize="15"
+                                               FontWeight="Bold"
+                                               Foreground="{DynamicResource MutedTextBrush}"
+                                               HorizontalAlignment="Center"
+                                               VerticalAlignment="Center"
+                                               Visibility="{Binding SmallIcon, Converter={StaticResource NullToVis}, ConverterParameter=Invert}" />
+                                    <Image Source="{Binding SmallIcon}"
+                                           Stretch="UniformToFill"
+                                           RenderOptions.BitmapScalingMode="HighQuality"
+                                           Visibility="{Binding SmallIcon, Converter={StaticResource NullToVis}}" />
+                                </Grid>
+                            </Border>
+
+                            <StackPanel Grid.Column="2" VerticalAlignment="Center" Margin="0,0,12,0">
+                                <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding Title}"
+                                               FontSize="18"
+                                               FontWeight="SemiBold"
+                                               Foreground="{DynamicResource PrimaryTextBrush}"
+                                               VerticalAlignment="Center" />
+                                    <TextBlock Text=" · "
+                                               FontSize="12.5"
+                                               Foreground="{DynamicResource MutedTextBrush}"
+                                               VerticalAlignment="Center" />
+                                    <TextBlock Text="{Binding PlatformFullLabel}"
+                                               FontSize="12.5"
+                                               Foreground="{DynamicResource SecondaryTextBrush}"
+                                               VerticalAlignment="Center" />
+                                </WrapPanel>
+                                <TextBlock Text="{Binding PlaytimeSummaryText}"
+                                           FontFamily="{StaticResource SpawnMonoFont}"
+                                           FontSize="11.5"
+                                           Foreground="{DynamicResource MutedTextBrush}"
+                                           Margin="0,3,0,0" />
+                            </StackPanel>
+
+                            <WrapPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
+                                <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                                        Height="30"
+                                        Padding="12,0"
+                                        FontSize="12"
+                                        Margin="0,2,8,2"
+                                        Content="返回总览"
+                                        Command="{Binding DataContext.SelectSavesOverviewCommand, RelativeSource={RelativeSource AncestorType=Window}}" />
+                                <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                                        Height="30"
+                                        Padding="12,0"
+                                        FontSize="12"
+                                        Margin="0,2,0,2"
+                                        Content="在游戏库中查看"
+                                        Command="{Binding DataContext.JumpToGameInLibraryCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                        CommandParameter="{Binding GameId}" />
+                            </WrapPanel>
+                        </Grid>
+                    </Border>
+
+                    <!-- Reused Full Branching Save Tree Workbench -->
+                    <savesViews:SaveWorkbenchControl Grid.Row="1"
+                                                     DataContext="{Binding Saves}" />
                 </Grid>
 
                 <!-- ============================================================== -->
@@ -4948,6 +5465,9 @@
                                 </StackPanel>
                             </Border>
                         </StackPanel>
+
+                        <!-- Category 8: Save Time Machine & Cloud Sync (SettingsCategory.SavesAndCloudSync) -->
+                        <savesViews:SavesSettingsControl Visibility="{Binding SelectedCategory, Converter={StaticResource EqToVis}, ConverterParameter=SavesAndCloudSync}" />
 
                         <!-- Category 4: Appearance Theme (Light Default / Dark Geek) -->
                         <StackPanel Visibility="{Binding SelectedCategory, Converter={StaticResource EqToVis}, ConverterParameter=AppearanceTheme}">

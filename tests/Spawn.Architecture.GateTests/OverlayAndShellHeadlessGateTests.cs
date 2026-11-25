@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Collections.Specialized;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -17,9 +18,11 @@ using NAudio.Wave;
 using Spawn.Contracts;
 using Spawn.Core;
 using Spawn.Core.Update;
+using Spawn.Host;
 using Spawn.Host.Helpers;
 using Spawn.Host.Services;
 using Spawn.Host.ViewModels;
+using Spawn.Host.Views;
 using Spawn.Modules.Achievement;
 using Spawn.Modules.Launcher;
 using Spawn.Modules.Progress;
@@ -259,6 +262,187 @@ public sealed class OverlayAndShellHeadlessGateTests
 
         Assert.True(popupCount >= 4, $"Expected at least 4 <Popup>/<ContextMenu> elements in MainWindow.xaml (RowMore, GameHeaderMore, TrainerMore, ManagedTrainerRowMore), found {popupCount}.");
         Assert.True(violations.Count == 0, string.Join(Environment.NewLine, violations));
+    }
+
+    [Fact]
+    public void PackUriAssemblyNeutralityAudit_AllHostAndOverlaySources_NeverHardcodeAssemblyComponentPackUri()
+    {
+        // Packaging compiles Spawn.Host with -p:SpawnHostAssemblyName=spawn / spawn-dev.
+        // Any hardcoded "/Spawn.Host;component/...", "/Spawn.OverlayHost;component/...", or
+        // "pack://application:,,,/Spawn...." URI passes under dotnet test but throws FileNotFoundException
+        // inside ResourceDictionary.set_Source on startup of installed spawn-dev.exe / spawn.exe!
+        string repoRoot = LocateRepositoryRoot();
+        string[] sourceRoots =
+        [
+            Path.Combine(repoRoot, "src", "Spawn.Host"),
+            Path.Combine(repoRoot, "src", "Spawn.OverlayHost"),
+        ];
+
+        string[] forbiddenTokens =
+        [
+            "Spawn.Host;component",
+            "Spawn.OverlayHost;component",
+            "pack://application:,,,/Spawn.",
+        ];
+
+        int scannedXamlCount = 0;
+        int scannedCsCount = 0;
+        var violations = new List<string>();
+
+        foreach (string root in sourceRoots)
+        {
+            Assert.True(Directory.Exists(root), $"Expected source root to exist: {root}");
+
+            foreach (string file in Directory.EnumerateFiles(root, "*.*", SearchOption.AllDirectories))
+            {
+                string norm = file.Replace('\\', '/');
+                if (norm.Contains("/bin/", StringComparison.OrdinalIgnoreCase)
+                    || norm.Contains("/obj/", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                string ext = Path.GetExtension(file);
+                bool isXaml = string.Equals(ext, ".xaml", StringComparison.OrdinalIgnoreCase);
+                bool isCs = string.Equals(ext, ".cs", StringComparison.OrdinalIgnoreCase);
+                if (!isXaml && !isCs)
+                {
+                    continue;
+                }
+
+                if (isXaml)
+                {
+                    scannedXamlCount++;
+                }
+                else
+                {
+                    scannedCsCount++;
+                }
+
+                string relPath = Path.GetRelativePath(repoRoot, file).Replace('\\', '/');
+                string[] lines = File.ReadAllLines(file, Encoding.UTF8);
+                for (int i = 0; i < lines.Length; i++)
+                {
+                    string line = lines[i];
+                    foreach (string token in forbiddenTokens)
+                    {
+                        if (line.Contains(token, StringComparison.OrdinalIgnoreCase))
+                        {
+                            violations.Add(
+                                $"{relPath}:{i + 1} contains hardcoded assembly pack URI token '{token}'. Use an assembly-neutral relative URI in XAML (e.g. '../../Themes/Controls.xaml') or typeof(...).Assembly.GetName().Name in C#.");
+                        }
+                    }
+                }
+
+                if (isXaml)
+                {
+                    XDocument doc = XDocument.Load(file, LoadOptions.SetLineInfo);
+                    foreach (XElement rd in doc.Descendants().Where(e => e.Name.LocalName == "ResourceDictionary"))
+                    {
+                        string? source = rd.Attribute("Source")?.Value;
+                        if (string.IsNullOrWhiteSpace(source))
+                        {
+                            continue;
+                        }
+
+                        if (source.Contains(";component", StringComparison.OrdinalIgnoreCase)
+                            || source.StartsWith("/Spawn.", StringComparison.OrdinalIgnoreCase))
+                        {
+                            int lineNo = (rd as System.Xml.IXmlLineInfo)?.LineNumber ?? 0;
+                            violations.Add(
+                                $"{relPath}:{lineNo} <ResourceDictionary Source=\"{source}\"> must not hardcode an assembly name; use an assembly-neutral relative URI instead.");
+                        }
+                    }
+                }
+            }
+        }
+
+        Assert.True(scannedXamlCount >= 6, $"Expected at least 6 XAML files under Spawn.Host / Spawn.OverlayHost, scanned {scannedXamlCount}.");
+        Assert.True(scannedCsCount >= 20, $"Expected at least 20 C# files under Spawn.Host / Spawn.OverlayHost, scanned {scannedCsCount}.");
+        Assert.True(violations.Count == 0, string.Join(Environment.NewLine, violations));
+    }
+
+    [Fact]
+    public async Task MainWindow_HeadlessStaInitializeComponent_SucceedsWithoutShowingWindow()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"spawn-mainwindow-init-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+
+        try
+        {
+            var paths = SpawnPaths.CreateIsolated(tempDir, workspaceRootHint: tempDir);
+            paths.EnsureDirectoriesExist();
+
+            var services = new ServiceCollection();
+            App.RegisterHostCoreAndModuleServices(services, paths);
+            services.AddSingleton<TrayIconService>();
+
+            await using ServiceProvider sp = services.BuildServiceProvider(new ServiceProviderOptions
+            {
+                ValidateOnBuild = true,
+                ValidateScopes = true,
+            });
+
+            await sp.GetRequiredService<SpawnDatabase>().InitializeAsync();
+
+            using MainWindowViewModel mainVm = sp.GetRequiredService<MainWindowViewModel>();
+            using TrayIconService trayService = sp.GetRequiredService<TrayIconService>();
+
+            Exception? staException = null;
+            var staThread = new Thread(() =>
+            {
+                try
+                {
+                    RuntimeHelpers.RunClassConstructor(typeof(Application).TypeHandle);
+
+                    var window = new MainWindow(mainVm, trayService, static () => { });
+                    try
+                    {
+                        Assert.False(window.IsVisible);
+                        Assert.NotNull(window.FindName("WindowOuterBorder"));
+                        Assert.NotNull(window.FindName("SaveSidebarSearchTextBox"));
+                        Assert.NotNull(window.FindName("TrainerSidebarSearchTextBox"));
+                    }
+                    finally
+                    {
+                        window.Close();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    staException = ex;
+                }
+                finally
+                {
+                    Dispatcher.CurrentDispatcher.InvokeShutdown();
+                }
+            });
+
+            staThread.SetApartmentState(ApartmentState.STA);
+            staThread.IsBackground = true;
+            staThread.Start();
+            Assert.True(staThread.Join(TimeSpan.FromSeconds(60)), "STA headless MainWindow InitializeComponent test timed out.");
+
+            if (staException is not null)
+            {
+                ExceptionDispatchInfo.Capture(staException).Throw();
+            }
+        }
+        finally
+        {
+            try
+            {
+                Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+                if (Directory.Exists(tempDir))
+                {
+                    Directory.Delete(tempDir, recursive: true);
+                }
+            }
+            catch
+            {
+                // Best-effort temp cleanup.
+            }
+        }
     }
 
     [Theory]

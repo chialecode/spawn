@@ -8,9 +8,14 @@
              Background="{DynamicResource PageBackgroundBrush}"
              Typography.NumeralAlignment="Tabular">
     <UserControl.Resources>
-        <BooleanToVisibilityConverter x:Key="BoolToVis" />
-        <conv:InverseBooleanToVisibilityConverter x:Key="InvBoolToVis" />
-        <conv:NullToVisibilityConverter x:Key="NullToVis" />
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="../../Themes/Controls.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+            <BooleanToVisibilityConverter x:Key="BoolToVis" />
+            <conv:InverseBooleanToVisibilityConverter x:Key="InvBoolToVis" />
+            <conv:NullToVisibilityConverter x:Key="NullToVis" />
+        </ResourceDictionary>
     </UserControl.Resources>
 
     <Grid>

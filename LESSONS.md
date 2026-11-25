@@ -18,3 +18,4 @@
 
 - **安装器的压缩算法也要过许可证白名单。** NSIS 的安装器外壳与 zlib 模块是 zlib/libpng 许可，但 LZMA 模块是带链接例外的 CPL-1.0，不在白名单里；本仓的安装包统一用 zlib。证据：[#11](https://github.com/chialecode/spawn/issues/11)。出现 1 次。
 - **NSIS 的 `/D=` 必须是命令行最后一个参数且不加引号。** 安装器把 `/D=` 之后的整段原样当作目录，路径带空格也一样；用参数列表拼命令会给它加引号，静默安装就装错地方。命令行拼成字符串，`/D=<目录>` 放在末尾。证据：[#11](https://github.com/chialecode/spawn/issues/11)。出现 1 次。
+- **XAML 与 C# 的 Pack URI 严禁硬编码 `/Spawn.Host;component/` 或 `/Spawn.OverlayHost;component/`。** 打包脚本通过 `-p:SpawnHostAssemblyName=spawn` / `spawn-dev` 重命名宿主程序集，硬编码原程序集名在 `dotnet test` 下能过、装机后启动即抛 `FileNotFoundException` 闪退；XAML 里一律用相对路径（如 `../../Themes/Controls.xaml`），C# 里用 `typeof(...).Assembly.GetName().Name` 动态拼装。证据：[#54](https://github.com/chialecode/spawn/issues/54)。出现 1 次。

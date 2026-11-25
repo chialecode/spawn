@@ -49,16 +49,16 @@
 - **是否构建**：`plan` 任务计算自上一个 `v<主>.<次>.*` 标签以来 `main` 的 first-parent 提交数（每个 Squash 合入的 PR 对应一个），为 `0` 则本周跳过；首次发布没有标签，直接构建。
 - **版本号**：版本线取 `NEXT_BASE_VERSION` 的 `主.次`，新版本为已有最高补丁号 `+1`，首个版本为 `NEXT_BASE_VERSION` 本身；开发版为 `<下一正式版本>-dev.<UTC 时间戳>`。
 - **任务链**：`plan`（ubuntu，只读）→ `check`（windows-2025，等价 `quick_gate`：构建、全量测试、`check_docs`、`git diff --check`）→ `build`（windows-2025，`environment: release`，自包含打包、签名更新清单、隔离安装演练、上传 7 天构建产物）→ `publish`（ubuntu，**唯一**拥有 `contents: write` 的任务）。
-- **发布开关**：`publish` 仅在 `main` 分支、`vars.SPAWN_RELEASE_PUBLISH == '1'` 且（定时触发或手动输入 `publish=true`）时运行。该仓库变量即用户一次性给出的长期发布授权（[#9](https://github.com/chialecode/spawn/issues/9)），关闭变量即可随时停发。
-- **发布步骤**：`sha256sum -c SHA256SUMS` → 核对 `VERSION.txt` 通道与版本 → `openssl` 以仓库内公钥复核清单签名 → `gh release create v<版本> --draft` 上传全部文件 → 逐项核对资产齐全 → 转为正式版并标记 `--latest`。
-- **供应链**：所有 `uses:` 以 40 位提交 SHA 钉扎并遵守 7 天冷却；顶层 `permissions: {}`；签名私钥仅存在于 `release` 环境 Secret `SPAWN_UPDATE_SIGNING_KEY_PEM`，在 `build` 任务内写入 `RUNNER_TEMP` 临时文件并在 `finally` 中删除，严禁回显。
+- **发布开关**：`publish` 仅在 `main` 分支、`vars.RELEASE_PUBLISH == '1'` 且（定时触发或手动输入 `publish=true`）时运行。该仓库变量即用户一次性给出的长期发布授权（[#9](https://github.com/chialecode/spawn/issues/9)），关闭变量即可随时停发。
+- **发布步骤**：`sha256sum -c SHA256SUMS` → 核对 `VERSION.txt` 通道与版本 → `openssl` 以仓库内公钥（`release-keys/98ada0750903e1ab.pub.pem`）复核清单签名 → `gh release create v<版本> --draft` 上传全部文件 → 逐项核对资产齐全 → 转为正式版并标记 `--latest`。
+- **供应链**：所有 `uses:` 以 40 位提交 SHA 钉扎并遵守 7 天冷却；顶层 `permissions: {}`；签名私钥本机存放于仓库外 `%APPDATA%\spawn-release\update-signing.key`（PKCS#8 PEM，发布脚本拒绝读取仓库目录内的私钥），CI 仅存在于 `release` 环境 Secret `UPDATE_SIGNING_KEY_PEM`，在 `build` 任务内写入 `RUNNER_TEMP` 临时文件并在 `finally` 中删除，严禁回显。
 
 ### 3.3 签名应用内更新（`D-31`）
 
 - **只有正式版检查**：`SpawnChannel == release` 才启用；开发版与源码运行时设置页显示“开发版由本机打包自动重装”。
 - **频率**：启动后 60 秒检查一次，之后每 24 小时一次；设置页可手动检查，也可关闭自动检查。离线时静默顺延，不弹窗。
 - **来源与网络边界**：`https://github.com/chialecode/spawn/releases/latest/download/update-windows-x64.json` 及 `.sig`；仅 HTTPS，主机白名单 `github.com`、`objects.githubusercontent.com`、`release-assets.githubusercontent.com`，手动重定向最多 5 跳，清单上限 `64KB`、安装包上限 `300MB`；User-Agent 如实标为 `SPAWN-Updater/<版本>`，**不携带任何设备或用户标识**（与 `NFR-06` 零遥测兼容）。
-- **校验链**：清单先用编译进 `Spawn.Core` 的 ECDSA P-256 公钥验签（与 `installer/update-signing-public.pem` 逐字节一致，由门禁测试断言）→ 通道必须为 `release` → 版本必须**严格高于**当前版本（拒绝降级与同版本）→ 安装包 URL 必须位于 `https://github.com/chialecode/spawn/releases/download/v<版本>/` 之下 → 下载到 `<DataRoot>\cache\updates\<版本>\*.partial`，核对大小与 SHA-256 后原子重命名，只保留最新一份。
+- **校验链**：清单先用编译进 `Spawn.Core` 的 ECDSA P-256 公钥验签（与 `release-keys/98ada0750903e1ab.pub.pem` 逐字节一致，由门禁测试断言）→ 通道必须为 `release` → 版本必须**严格高于**当前版本（拒绝降级与同版本）→ 安装包 URL 必须位于 `https://github.com/chialecode/spawn/releases/download/v<版本>/` 之下 → 下载到 `<DataRoot>\cache\updates\<版本>\*.partial`，核对大小与 SHA-256 后原子重命名，只保留最新一份。
 - **安装时机（默认值见 [#16](https://github.com/chialecode/spawn/issues/16)）**：自动下载；SPAWN **空闲**时（无受追踪游戏运行、无修改器会话、无存档快照/回滚/数据清理进行中）且仅驻留托盘才自动安装；主窗口打开时只显示“新版本已就绪，重启更新”提示条与托盘提示，由用户点击。设置可改为“仅提醒”。
 - **安装动作**：启动前以禁止写入的句柄重新核对 SHA-256，并持有到安装器进程创建完成（同 `F-02` 的 TOCTOU 防护）→ `RequestQuitForUpdateAsync(UpdateRestartReason.Update)`（先停修改器会话、写重启标记）→ `ShellExecute` 启动按用户安装包 `/S /RELAUNCH`（零 UAC；2026-11-24 前为 Inno Setup 的 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /SPAWNRELAUNCH`）→ 安装器检测到 `/RELAUNCH` 后以 `--after-update` 拉起新版本，并按重启标记恢复窗口或托盘状态。
 - **记录**：`app_settings` 中保存最近一次/下一次检查时间与结果，以及最近 20 条更新记录（时间、旧版本 → 新版本、自动/手动、结果）；本阶段不升级 Schema。

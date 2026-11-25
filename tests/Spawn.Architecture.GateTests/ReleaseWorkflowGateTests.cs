@@ -106,7 +106,8 @@ public sealed class ReleaseWorkflowGateTests
         Assert.False(
             ContainsTopLevelOr(publish.IfCondition!),
             "publish if-condition must not contain a top-level `||` that could bypass the main ref guard.");
-        Assert.Contains("vars.SPAWN_RELEASE_PUBLISH == '1'", publish.IfCondition, StringComparison.Ordinal);
+        Assert.Contains("vars.RELEASE_PUBLISH == '1'", publish.IfCondition, StringComparison.Ordinal);
+        Assert.DoesNotContain("SPAWN_RELEASE_PUBLISH", publish.IfCondition, StringComparison.Ordinal);
         Assert.Contains("github.event_name == 'schedule'", publish.IfCondition, StringComparison.Ordinal);
         Assert.Contains("inputs.publish == true", publish.IfCondition, StringComparison.Ordinal);
 
@@ -259,17 +260,18 @@ public sealed class ReleaseWorkflowGateTests
         ParsedWorkflow workflow = LoadReleaseWorkflow();
         ParsedJob build = workflow.Jobs["build"];
 
-        // 1. Secret SPAWN_UPDATE_SIGNING_KEY_PEM must appear ONLY in the build job (with environment: release).
-        Assert.DoesNotContain("SPAWN_UPDATE_SIGNING_KEY_PEM", workflow.HeaderText, StringComparison.Ordinal);
+        // 1. Secret UPDATE_SIGNING_KEY_PEM must appear ONLY in the build job (with environment: release).
+        Assert.DoesNotContain("UPDATE_SIGNING_KEY_PEM", workflow.HeaderText, StringComparison.Ordinal);
         foreach (ParsedJob job in workflow.Jobs.Values)
         {
+            Assert.DoesNotContain("SPAWN_UPDATE_SIGNING_KEY_PEM", job.RawBlock, StringComparison.Ordinal);
             if (job.Name == "build")
             {
-                Assert.Contains("secrets.SPAWN_UPDATE_SIGNING_KEY_PEM", job.RawBlock, StringComparison.Ordinal);
+                Assert.Contains("secrets.UPDATE_SIGNING_KEY_PEM", job.RawBlock, StringComparison.Ordinal);
             }
             else
             {
-                Assert.DoesNotContain("SPAWN_UPDATE_SIGNING_KEY_PEM", job.RawBlock, StringComparison.Ordinal);
+                Assert.DoesNotContain("UPDATE_SIGNING_KEY_PEM", job.RawBlock, StringComparison.Ordinal);
                 Assert.DoesNotContain("SPAWN_UPDATE_SIGNING_KEY", job.RawBlock, StringComparison.Ordinal);
             }
         }
@@ -280,6 +282,9 @@ public sealed class ReleaseWorkflowGateTests
         string repoRoot = LocateRepositoryRoot();
         string workflowText = File.ReadAllText(Path.Combine(repoRoot, ".github", "workflows", "release.yml"));
         Assert.DoesNotContain("SPAWN_MAKENSIS_PATH", workflowText, StringComparison.Ordinal);
+        Assert.DoesNotContain("SPAWN_RELEASE_PUBLISH", workflowText, StringComparison.Ordinal);
+        Assert.DoesNotContain("SPAWN_UPDATE_SIGNING_KEY_PEM", workflowText, StringComparison.Ordinal);
+        Assert.DoesNotContain("installer/update-signing-public.pem", workflowText, StringComparison.Ordinal);
         Assert.DoesNotContain("innosetup", workflowText, StringComparison.OrdinalIgnoreCase);
         string packagePy = File.ReadAllText(Path.Combine(repoRoot, "scripts", "package.py"));
         Assert.Contains($"NSIS_ZIP_URL = \"{ExpectedNsis313ZipUrl}\"", packagePy, StringComparison.Ordinal);
@@ -291,7 +296,7 @@ public sealed class ReleaseWorkflowGateTests
         // 3. Signing step: writes secret to RUNNER_TEMP random file, runs release.py --build, cleans up in finally, never echoes key.
         ParsedStep signStep = Assert.Single(
             build.Steps,
-            s => s.RawBlock.Contains("secrets.SPAWN_UPDATE_SIGNING_KEY_PEM", StringComparison.Ordinal));
+            s => s.RawBlock.Contains("secrets.UPDATE_SIGNING_KEY_PEM", StringComparison.Ordinal));
         string signRun = signStep.Run ?? string.Empty;
         Assert.Contains("RUNNER_TEMP", signRun, StringComparison.Ordinal);
         Assert.Contains("SPAWN_UPDATE_SIGNING_KEY", signRun, StringComparison.Ordinal);
@@ -351,13 +356,13 @@ public sealed class ReleaseWorkflowGateTests
         int channelIndex = scripts.IndexOf("channel=release", StringComparison.Ordinal);
         int versionIndex = scripts.IndexOf("version=${RELEASE_VERSION}", StringComparison.Ordinal);
         int opensslIndex = scripts.IndexOf(
-            "openssl dgst -sha256 -verify installer/update-signing-public.pem",
+            "openssl dgst -sha256 -verify release-keys/98ada0750903e1ab.pub.pem",
             StringComparison.Ordinal);
 
         Assert.True(shaIndex >= 0, "publish job must verify artifacts with `sha256sum -c SHA256SUMS`.");
         Assert.True(channelIndex > shaIndex, "publish job must verify `channel=release` in VERSION.txt after checksum verification.");
         Assert.True(versionIndex > shaIndex, "publish job must verify matching `version=` in VERSION.txt after checksum verification.");
-        Assert.True(opensslIndex > versionIndex, "publish job must verify signature with `openssl dgst -sha256 -verify installer/update-signing-public.pem`.");
+        Assert.True(opensslIndex > versionIndex, "publish job must verify signature with `openssl dgst -sha256 -verify release-keys/98ada0750903e1ab.pub.pem`.");
         Assert.Contains("update-windows-x64.json.sig", scripts, StringComparison.Ordinal);
         Assert.Contains("update-windows-x64.json", scripts, StringComparison.Ordinal);
 

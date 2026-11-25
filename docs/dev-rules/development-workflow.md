@@ -46,7 +46,7 @@
 PR 只要碰到下列任一项就是高风险，加 `risk:high`，Agent 不自行合并：
 
 - 安装包、安装与卸载行为、开发版自动安装（`scripts/package.py`、`installer/`、卸载项）；
-- 更新、签名、发布流程与密钥（应用内更新与验签、`scripts/release.py`、`release.yml`、`installer/update-signing-public.pem`）；
+- 更新、签名、发布流程与密钥（应用内更新与验签、`scripts/release.py`、`release.yml`、`release-keys/`）；
 - 反作弊联锁与进程隔离（`AntiCheatTier`、15 秒冷却、Clean Host 引用与 IAT 门禁白名单、`JobObject` 标志、提权与 UAC、跨完整性级别 IPC ACL）；
 - `spawn.db` Schema 与迁移、`SPAWN_Vault` / 硬链接 / Junction 部署、存档备份与回滚、凭据存储；
 - 游戏数据清理与删除（`GameDataManagementService`、安全围栏、回收站与还原、注册表导出）；

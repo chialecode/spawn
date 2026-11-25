@@ -191,7 +191,7 @@ public sealed partial class GameDirectoryScanner
     private static partial Regex ExcludedExecutableRegex();
 
     [GeneratedRegex(
-        @"(?:^|[\s\._\-])(?:launcher|autorun|autorunner|menu|redirector|bootstrapper|prereq|prerequisite|setup|install|installer|updater|patcher|config|configuration|settings|benchmark|dedicatedserver|server|crash|reporter|modmanager|editor)(?:$|[\s\._\-]|\d)",
+        @"(?:^|[\s\._\-])(?:launcher|autorun|autorunner|menu|selector|chooser|redirector|bootstrapper|prereq|prerequisite|setup|install|installer|updater|patcher|config|configuration|settings|benchmark|dedicatedserver|server|crash|reporter|modmanager|editor)(?:$|[\s\._\-]|\d)",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex PenalizedExecutableStemRegex();
 
@@ -276,6 +276,8 @@ public sealed partial class GameDirectoryScanner
         return null;
     }
 
+    private const int MaxContainerExpansionDepth = 2;
+
     /// <summary>
     /// Discovers candidate game installation folders inside <paramref name="rootDirectory"/>.
     /// Multi-game anthology/trilogy containers (holding <c>&gt;= 2</c> independent standalone child games without
@@ -291,16 +293,18 @@ public sealed partial class GameDirectoryScanner
 
         string normalizedRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(rootDirectory));
 
-        // Expand multi-game anthology/trilogy containers before checking top-level menu Launcher.exe.
-        var expandedRootChildren = TryExpandMultiGameContainer(normalizedRoot);
-        if (expandedRootChildren.Count >= 2)
-        {
-            return expandedRootChildren;
-        }
-
-        // Check if rootDirectory itself is directly a single game folder (e.g. contains goggame-*.info, steam_appid.txt, or top-level game exe).
+        // Only treat rootDirectory as a direct game or top-level anthology pack when it has direct game/menu markers
+        // at depth 0 (e.g., goggame-*.info, steam_appid.txt, Engine\, or a top-level menu Launcher.exe).
+        // Generic library roots (such as D:\Games or .local\games) do NOT match LooksLikeDirectGameDirectory and
+        // fall through to full per-subdirectory discovery so nested anthologies and deep standalone games both resolve.
         if (LooksLikeDirectGameDirectory(normalizedRoot))
         {
+            var expandedDirectRoot = TryExpandMultiGameContainer(normalizedRoot);
+            if (expandedDirectRoot.Count >= 2)
+            {
+                return expandedDirectRoot;
+            }
+
             return [normalizedRoot];
         }
 
@@ -356,7 +360,16 @@ public sealed partial class GameDirectoryScanner
     /// child game directories). Returns the expanded standalone child directories, or an empty list if <paramref name="directoryPath"/>
     /// is a single game or non-collection folder.
     /// </summary>
-    public static IReadOnlyList<string> TryExpandMultiGameContainer(string directoryPath)
+    public static IReadOnlyList<string> TryExpandMultiGameContainer(string directoryPath) =>
+        TryExpandMultiGameContainerCore(directoryPath, remainingDepth: MaxContainerExpansionDepth)
+            .Select(static c => c.Path)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(static p => Path.GetFileName(p), StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    private static List<(string Path, int? SteamAppId, string? GogGameId)> TryExpandMultiGameContainerCore(
+        string directoryPath,
+        int remainingDepth)
     {
         if (string.IsNullOrWhiteSpace(directoryPath) || !Directory.Exists(directoryPath))
         {
@@ -376,6 +389,17 @@ public sealed partial class GameDirectoryScanner
         if (HasSingleGameEngineOrStoreRootIdentity(normalized))
         {
             return [];
+        }
+
+        string unwrappedContainer = Path.TrimEndingDirectorySeparator(
+            Path.GetFullPath(UnwrapSingleNestedFolderIfNeeded(normalized)));
+        if (!string.Equals(unwrappedContainer, normalized, StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = unwrappedContainer;
+            if (HasSingleGameEngineOrStoreRootIdentity(normalized))
+            {
+                return [];
+            }
         }
 
         var enumOpts = new EnumerationOptions
@@ -399,6 +423,16 @@ public sealed partial class GameDirectoryScanner
                 }
 
                 string unwrapped = Path.TrimEndingDirectorySeparator(Path.GetFullPath(UnwrapSingleNestedFolderIfNeeded(subDir)));
+                if (remainingDepth > 0)
+                {
+                    var nestedExpanded = TryExpandMultiGameContainerCore(unwrapped, remainingDepth - 1);
+                    if (nestedExpanded.Count >= 2)
+                    {
+                        childCandidates.AddRange(nestedExpanded);
+                        continue;
+                    }
+                }
+
                 if (IsIndependentStandaloneChildGame(unwrapped, out int? childAppId, out string? childGogId))
                 {
                     childCandidates.Add((unwrapped, childAppId, childGogId));
@@ -434,11 +468,172 @@ public sealed partial class GameDirectoryScanner
             return [];
         }
 
-        return childCandidates
-            .Select(c => c.Path)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(p => Path.GetFileName(p), StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        return childCandidates;
+    }
+
+    /// <summary>
+    /// Returns <see langword="true"/> when <paramref name="candidateDirectory"/> is already represented in
+    /// <paramref name="importedInstallDirs"/> either by exact directory match, by having <c>&gt;= 1</c> imported
+    /// game installed inside its directory subtree (such as an expanded multi-game anthology or unwrapped archive),
+    /// or by matching one of its expanded standalone child game paths.
+    /// </summary>
+    public static bool IsDirectoryCoveredByImportedGames(
+        string candidateDirectory,
+        IEnumerable<string> importedInstallDirs)
+    {
+        if (string.IsNullOrWhiteSpace(candidateDirectory))
+        {
+            return false;
+        }
+
+        ArgumentNullException.ThrowIfNull(importedInstallDirs);
+
+        string normalizedCandidate;
+        try
+        {
+            normalizedCandidate = Path.TrimEndingDirectorySeparator(Path.GetFullPath(candidateDirectory));
+        }
+        catch
+        {
+            return false;
+        }
+
+        var normalizedSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        string subtreePrefix = normalizedCandidate + Path.DirectorySeparatorChar;
+
+        foreach (string rawDir in importedInstallDirs)
+        {
+            if (string.IsNullOrWhiteSpace(rawDir))
+            {
+                continue;
+            }
+
+            string norm;
+            try
+            {
+                norm = Path.TrimEndingDirectorySeparator(Path.GetFullPath(rawDir));
+            }
+            catch
+            {
+                continue;
+            }
+
+            if (string.Equals(norm, normalizedCandidate, StringComparison.OrdinalIgnoreCase)
+                || norm.StartsWith(subtreePrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            normalizedSet.Add(norm);
+        }
+
+        if (normalizedSet.Count == 0)
+        {
+            return false;
+        }
+
+        var expandedChildren = TryExpandMultiGameContainer(normalizedCandidate);
+        return expandedChildren.Any(normalizedSet.Contains);
+    }
+
+    /// <summary>
+    /// Enumerates unimported top-level game folder names inside <paramref name="localGamesRoot"/>,
+    /// recognizing expanded multi-game anthology containers and unwrapped nested folders as already imported
+    /// while skipping hidden/system/redistributable/soundtrack non-game folders.
+    /// </summary>
+    public static IReadOnlyList<string> FindUnimportedLocalGameFolderNames(
+        string? localGamesRoot,
+        IEnumerable<string> importedInstallDirs)
+    {
+        if (string.IsNullOrWhiteSpace(localGamesRoot) || !Directory.Exists(localGamesRoot))
+        {
+            return [];
+        }
+
+        ArgumentNullException.ThrowIfNull(importedInstallDirs);
+
+        var importedSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var importedList = new List<string>();
+        foreach (string rawDir in importedInstallDirs)
+        {
+            if (string.IsNullOrWhiteSpace(rawDir))
+            {
+                continue;
+            }
+
+            try
+            {
+                string norm = Path.TrimEndingDirectorySeparator(Path.GetFullPath(rawDir));
+                if (importedSet.Add(norm))
+                {
+                    importedList.Add(norm);
+                }
+            }
+            catch
+            {
+                // Ignore malformed persisted path.
+            }
+        }
+
+        var enumOpts = new EnumerationOptions
+        {
+            IgnoreInaccessible = true,
+            RecurseSubdirectories = false,
+            AttributesToSkip = FileAttributes.Hidden | FileAttributes.System,
+        };
+
+        var pendingNames = new List<string>();
+        try
+        {
+            foreach (string subDir in Directory.EnumerateDirectories(localGamesRoot, "*", enumOpts))
+            {
+                string folderName = Path.GetFileName(subDir);
+                if (SkippedSubdirectoryNames.Contains(folderName))
+                {
+                    continue;
+                }
+
+                string fullSub = Path.TrimEndingDirectorySeparator(Path.GetFullPath(subDir));
+                if (importedSet.Contains(fullSub))
+                {
+                    continue;
+                }
+
+                string subPrefix = fullSub + Path.DirectorySeparatorChar;
+                if (importedList.Any(d => d.StartsWith(subPrefix, StringComparison.OrdinalIgnoreCase)))
+                {
+                    continue;
+                }
+
+                var expanded = TryExpandMultiGameContainer(fullSub);
+                if (expanded.Count >= 2)
+                {
+                    if (!expanded.Any(importedSet.Contains))
+                    {
+                        pendingNames.Add(Path.GetFileName(fullSub));
+                    }
+
+                    continue;
+                }
+
+                string unwrapped = UnwrapSingleNestedFolderIfNeeded(fullSub);
+                if (importedSet.Contains(Path.TrimEndingDirectorySeparator(Path.GetFullPath(unwrapped))))
+                {
+                    continue;
+                }
+
+                if (HasAnyValidGameSignal(unwrapped))
+                {
+                    pendingNames.Add(Path.GetFileName(fullSub));
+                }
+            }
+        }
+        catch
+        {
+            return [];
+        }
+
+        return pendingNames;
     }
 
     /// <summary>
@@ -1738,6 +1933,13 @@ public sealed partial class GameDirectoryScanner
 
         try
         {
+            // A multi-game anthology/trilogy container is never a single standalone child game.
+            if (!HasSingleGameEngineOrStoreRootIdentity(childDir)
+                && TryExpandMultiGameContainerCore(childDir, remainingDepth: 0).Count >= 2)
+            {
+                return false;
+            }
+
             var gogInfo = TryParseGogInfo(childDir);
             if (gogInfo is not null)
             {

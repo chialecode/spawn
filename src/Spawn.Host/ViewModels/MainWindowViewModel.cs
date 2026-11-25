@@ -11,6 +11,7 @@ using Spawn.Contracts;
 using Spawn.Core;
 using Spawn.Host.Helpers;
 using Spawn.Host.ViewModels.Saves;
+using Spawn.Modules.Launcher;
 
 namespace Spawn.Host.ViewModels;
 
@@ -498,6 +499,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
         _subscriptions.Add(_eventBus.Subscribe<GameImportedOrRescannedEvent>((ev, _) =>
             DispatchToUiOrInlineAsync(() => HandleGameImportedOrRescannedAsync(ev))));
+
+        _subscriptions.Add(_eventBus.Subscribe<GameRemovedEvent>((_, _) =>
+            DispatchToUiOrInlineAsync(() => EnqueueLibraryReloadAsync(LibraryReloadRequest.PreserveCurrent()))));
 
         _subscriptions.Add(_eventBus.Subscribe<AchievementSchemaUpdatedEvent>((ev, _) =>
             DispatchToUiOrInlineAsync(() => HandleSchemaUpdatedAsync(ev))));
@@ -2214,6 +2218,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         }
 
         ApplyAchievementsCenterAggregates(AllGames, summariesByGameId, recentUnlocks);
+        RefreshUnimportedLocalGamesHint();
         OnPropertyChanged(nameof(HasAnyRunningGame));
         OnPropertyChanged(nameof(LibraryRailToolTip));
 
@@ -2622,27 +2627,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     {
         try
         {
-            string? localGamesRoot = _paths.LocalGamesDirectory;
-            if (string.IsNullOrWhiteSpace(localGamesRoot) || !Directory.Exists(localGamesRoot))
-            {
-                HasUnimportedLocalGamesHint = false;
-                UnimportedLocalGamesHintText = string.Empty;
-                return;
-            }
-
-            var importedDirs = AllGames
-                .Select(g => Path.TrimEndingDirectorySeparator(Path.GetFullPath(g.Record.InstallDir)))
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-            var pendingNames = new List<string>();
-            foreach (string subDir in Directory.EnumerateDirectories(localGamesRoot))
-            {
-                string fullSub = Path.TrimEndingDirectorySeparator(Path.GetFullPath(subDir));
-                if (!importedDirs.Contains(fullSub))
-                {
-                    pendingNames.Add(Path.GetFileName(fullSub));
-                }
-            }
+            var pendingNames = GameDirectoryScanner.FindUnimportedLocalGameFolderNames(
+                _paths.LocalGamesDirectory,
+                AllGames.Select(static g => g.Record.InstallDir));
 
             if (pendingNames.Count > 0)
             {
@@ -2659,6 +2646,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         catch
         {
             HasUnimportedLocalGamesHint = false;
+            UnimportedLocalGamesHintText = string.Empty;
         }
     }
 

@@ -77,6 +77,8 @@ public sealed class AntiCheatAndSafeProcessTests
             await AdvanceWhenWaitingAsync(clock, cooldownTask);
         }
 
+        // Wait until the 12th residual-watch tick finishes probing and arms its next timer before clearing residuals.
+        Assert.True(await WaitForPendingTimerAsync(clock, cooldownTask));
         Assert.Equal(AntiCheatGuardPhase.ResidualGuardWatch, guard.CurrentSnapshot.Phase);
         Assert.Contains("SGuard64.exe", guard.CurrentSnapshot.DetectedResidualProcesses);
         Assert.False(cooldownTask.IsCompleted);
@@ -365,7 +367,7 @@ public sealed class AntiCheatAndSafeProcessTests
     /// move the time without waking it, and it would then wait for a timer nothing fires (#31). Returns false, without moving the clock, when
     /// <paramref name="loop"/> finished instead.
     /// </summary>
-    private static async Task<bool> AdvanceWhenWaitingAsync(ManualTimeProvider clock, Task loop, int timeoutMs = 10_000)
+    private static async Task<bool> WaitForPendingTimerAsync(ManualTimeProvider clock, Task loop, int timeoutMs = 10_000)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         while (clock.PendingTimerCount == 0)
@@ -377,6 +379,16 @@ public sealed class AntiCheatAndSafeProcessTests
 
             Assert.True(sw.ElapsedMilliseconds < timeoutMs, "The guard did not wait on its poll timer in time.");
             await Task.Delay(2);
+        }
+
+        return true;
+    }
+
+    private static async Task<bool> AdvanceWhenWaitingAsync(ManualTimeProvider clock, Task loop, int timeoutMs = 10_000)
+    {
+        if (!await WaitForPendingTimerAsync(clock, loop, timeoutMs))
+        {
+            return false;
         }
 
         clock.Advance(TimeSpan.FromMilliseconds(250));

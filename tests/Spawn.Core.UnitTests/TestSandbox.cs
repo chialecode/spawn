@@ -204,6 +204,7 @@ public sealed class ManualTimeProvider : TimeProvider
     {
         lock (_gate)
         {
+            entry.MarkDisposedLocked();
             _timers.Remove(entry);
         }
     }
@@ -217,6 +218,11 @@ public sealed class ManualTimeProvider : TimeProvider
         public DateTimeOffset DueAtUtc { get; set; }
         public TimeSpan Period { get; set; }
         public bool Disposed { get; private set; }
+
+        public void MarkDisposedLocked()
+        {
+            Disposed = true;
+        }
 
         public ScheduledEntry(
             ManualTimeProvider owner,
@@ -258,7 +264,13 @@ public sealed class ManualTimeProvider : TimeProvider
 
         public void Invoke()
         {
-            if (!Disposed)
+            bool disposed;
+            lock (_owner._gate)
+            {
+                disposed = Disposed;
+            }
+
+            if (!disposed)
             {
                 _callback(_state);
             }
@@ -266,7 +278,6 @@ public sealed class ManualTimeProvider : TimeProvider
 
         public void Dispose()
         {
-            Disposed = true;
             _owner.RemoveTimer(this);
         }
 

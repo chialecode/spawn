@@ -13,6 +13,7 @@ Usage examples:
 from __future__ import annotations
 
 import argparse
+import base64
 import ctypes
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -30,6 +31,10 @@ import zipfile
 DEFAULT_BASE_VERSION = "0.1.1"
 DEFAULT_REPO_URL = "https://github.com/chialecode/spawn"
 SIGNING_KEY_ENV_VAR = "SPAWN_UPDATE_SIGNING_KEY"
+DEFAULT_PUBLIC_KEY_ID = "98ada0750903e1ab"
+DEFAULT_PUBLIC_KEY_REL = Path("release-keys") / f"{DEFAULT_PUBLIC_KEY_ID}.pub.pem"
+DEFAULT_SIGNING_KEY_DIR_NAME = "spawn-release"
+DEFAULT_SIGNING_KEY_FILENAME = "update-signing.key"
 
 BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
 CREATE_NO_WINDOW = 0x08000000
@@ -264,6 +269,63 @@ def build_update_manifest(
     }
 
 
+def compute_public_key_id(public_key_path: Path) -> str:
+    """Compute the 16-char lowercase hex SPKI DER SHA-256 keyId for a SubjectPublicKeyInfo PEM."""
+    pem_text = public_key_path.read_text(encoding="utf-8")
+    b64_body = "".join(
+        ln.strip() for ln in pem_text.splitlines() if ln.strip() and not ln.startswith("-----")
+    )
+    der = base64.b64decode(b64_body, validate=True)
+    return hashlib.sha256(der).hexdigest()[:16]
+
+
+def default_signing_key_path(env: dict[str, str] | None = None) -> Path | None:
+    """Return the default out-of-repo signing key path (%APPDATA%\\spawn-release\\update-signing.key)."""
+    lookup = os.environ if env is None else env
+    appdata = lookup.get("APPDATA", "").strip()
+    if not appdata:
+        return None
+    return Path(appdata) / DEFAULT_SIGNING_KEY_DIR_NAME / DEFAULT_SIGNING_KEY_FILENAME
+
+
+def resolve_signing_key_path(
+    repo_root: Path,
+    *,
+    env: dict[str, str] | None = None,
+) -> Path:
+    """Resolve signing key path (SPAWN_UPDATE_SIGNING_KEY or %APPDATA%\\spawn-release\\update-signing.key).
+
+    Refuses any key stored inside the repository tree and never prints or logs the key path.
+    """
+    lookup = os.environ if env is None else env
+    raw_override = lookup.get(SIGNING_KEY_ENV_VAR, "").strip()
+    if raw_override:
+        candidate = Path(raw_override)
+        source_desc = SIGNING_KEY_ENV_VAR
+    else:
+        default_path = default_signing_key_path(lookup)
+        if default_path is None:
+            raise RuntimeError(
+                f"Signing key not configured: set {SIGNING_KEY_ENV_VAR} or store PKCS#8 PEM at "
+                f"%APPDATA%\\{DEFAULT_SIGNING_KEY_DIR_NAME}\\{DEFAULT_SIGNING_KEY_FILENAME}."
+            )
+        candidate = default_path
+        source_desc = f"%APPDATA%\\{DEFAULT_SIGNING_KEY_DIR_NAME}\\{DEFAULT_SIGNING_KEY_FILENAME}"
+
+    resolved_repo = repo_root.resolve()
+    abs_candidate = Path(os.path.abspath(str(candidate)))
+    resolved_candidate = candidate.resolve()
+    if resolved_candidate.is_relative_to(resolved_repo) or abs_candidate.is_relative_to(resolved_repo):
+        raise RuntimeError(
+            "Signing key inside the repository directory is not allowed; store it outside the repository "
+            f"(e.g. %APPDATA%\\{DEFAULT_SIGNING_KEY_DIR_NAME}\\{DEFAULT_SIGNING_KEY_FILENAME})."
+        )
+
+    if not resolved_candidate.is_file():
+        raise RuntimeError(f"Signing key referenced by {source_desc} does not exist.")
+    return resolved_candidate
+
+
 def sign_manifest_file(
     repo_root: Path,
     manifest_path: Path,
@@ -271,13 +333,12 @@ def sign_manifest_file(
     *,
     env: dict[str, str] | None = None,
 ) -> None:
-    """Sign manifest_path via scripts/sign_update.cs using SPAWN_UPDATE_SIGNING_KEY (never logged)."""
+    """Sign manifest_path via scripts/sign_update.cs using out-of-repo signing key (never logged)."""
     child_env = os.environ.copy() if env is None else dict(env)
-    key_path_str = child_env.get(SIGNING_KEY_ENV_VAR, "").strip()
-    if not key_path_str:
-        raise RuntimeError(f"Environment variable {SIGNING_KEY_ENV_VAR} must be set to sign release manifest.")
-    if not Path(key_path_str).is_file():
-        raise RuntimeError(f"Signing key referenced by {SIGNING_KEY_ENV_VAR} does not exist.")
+    raw_override = child_env.get(SIGNING_KEY_ENV_VAR, "").strip()
+    resolved_key = resolve_signing_key_path(repo_root, env=child_env)
+    key_path_str = str(resolved_key)
+    child_env[SIGNING_KEY_ENV_VAR] = key_path_str
 
     sign_script = repo_root / "scripts" / "sign_update.cs"
     if not sign_script.is_file():
@@ -290,8 +351,8 @@ def sign_manifest_file(
         timeout=120.0,
     )
     if proc.returncode != 0:
-        safe_out = _redact_secret(proc.stdout.strip(), key_path_str)
-        safe_err = _redact_secret(proc.stderr.strip(), key_path_str)
+        safe_out = _redact_secret(_redact_secret(proc.stdout.strip(), key_path_str), raw_override)
+        safe_err = _redact_secret(_redact_secret(proc.stderr.strip(), key_path_str), raw_override)
         raise RuntimeError(
             f"sign_update.cs sign failed (exit {proc.returncode}): {safe_out} {safe_err}".strip()
         )
@@ -558,17 +619,13 @@ def build_release(
     """Build self-contained release installer + symbols + signed manifest atomically into dist/spawn/."""
     parse_semver_triple(version)
 
-    # Validate signing key presence before spending time on dotnet publish + NSIS.
-    key_path_str = os.environ.get(SIGNING_KEY_ENV_VAR, "").strip()
-    if not key_path_str:
-        raise RuntimeError(f"Environment variable {SIGNING_KEY_ENV_VAR} must be set before --build.")
-    if not Path(key_path_str).is_file():
-        raise RuntimeError(f"Signing key referenced by {SIGNING_KEY_ENV_VAR} does not exist.")
+    # Validate out-of-repo signing key presence before spending time on dotnet publish + NSIS.
+    resolve_signing_key_path(repo_root)
 
     resolved_pub_key = (
         public_key_path.resolve()
         if public_key_path is not None
-        else (repo_root / "installer" / "update-signing-public.pem")
+        else (repo_root / DEFAULT_PUBLIC_KEY_REL)
     )
     if not resolved_pub_key.is_file():
         raise FileNotFoundError(f"Public signing key not found: {resolved_pub_key}")
@@ -800,7 +857,10 @@ def main() -> int:
         "--public-key",
         type=Path,
         default=None,
-        help="Optional public key PEM override for verifying signed manifest (default: installer/update-signing-public.pem).",
+        help=(
+            "Optional public key PEM override for verifying signed manifest "
+            f"(default: {DEFAULT_PUBLIC_KEY_REL.as_posix()})."
+        ),
     )
     parser.add_argument(
         "--output-dir",

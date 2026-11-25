@@ -273,7 +273,7 @@ print(json.dumps({"ok": True, "selfInJob": bool(in_job_out.value)}))
         // 2b. W10 release tooling and ECDSA P-256 update-signing public key hygiene
         string releasePyPath = Path.Combine(repoRoot!, "scripts", "release.py");
         string signCsPath = Path.Combine(repoRoot!, "scripts", "sign_update.cs");
-        string pubKeyPath = Path.Combine(repoRoot!, "installer", "update-signing-public.pem");
+        string pubKeyPath = Path.Combine(repoRoot!, "release-keys", $"{Spawn.Core.Update.UpdateSigningPublicKey.KeyId}.pub.pem");
         Assert.True(File.Exists(releasePyPath), $"Missing release script: {releasePyPath}");
         Assert.True(File.Exists(signCsPath), $"Missing signing tool: {signCsPath}");
         Assert.True(File.Exists(pubKeyPath), $"Missing update signing public key: {pubKeyPath}");

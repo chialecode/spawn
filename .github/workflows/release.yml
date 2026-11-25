@@ -5,7 +5,7 @@
 #   and `publish` re-asserts the main ref; the `release` environment additionally restricts
 #   deployment branches to main (issue #9).
 # - Top-level permissions are empty; only `publish` holds `contents: write` and only runs when
-#   repository variable SPAWN_RELEASE_PUBLISH == '1' (issue #9) and scheduled or explicitly requested.
+#   repository variable RELEASE_PUBLISH == '1' (issue #9) and scheduled or explicitly requested.
 # - The update-signing private key secret (issue #9) is restricted exclusively to `build`
 #   under the `release` environment, written to a random RUNNER_TEMP file, and deleted in `finally`.
 
@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: "Publish GitHub Release when SPAWN_RELEASE_PUBLISH=1 is enabled"
+        description: "Publish GitHub Release when RELEASE_PUBLISH=1 is enabled"
         type: boolean
         required: false
         default: false
@@ -180,24 +180,24 @@ jobs:
         shell: pwsh
         env:
           RELEASE_VERSION: ${{ needs.plan.outputs.version }}
-          SPAWN_UPDATE_SIGNING_KEY_PEM: ${{ secrets.SPAWN_UPDATE_SIGNING_KEY_PEM }}
+          UPDATE_SIGNING_KEY_PEM: ${{ secrets.UPDATE_SIGNING_KEY_PEM }}
         run: |
           $ErrorActionPreference = "Stop"
-          if ([string]::IsNullOrWhiteSpace($env:SPAWN_UPDATE_SIGNING_KEY_PEM)) {
-            throw "Missing required release environment secret SPAWN_UPDATE_SIGNING_KEY_PEM."
+          if ([string]::IsNullOrWhiteSpace($env:UPDATE_SIGNING_KEY_PEM)) {
+            throw "Missing required release environment secret UPDATE_SIGNING_KEY_PEM."
           }
           $keyFile = Join-Path $env:RUNNER_TEMP ("spawn-signing-" + [guid]::NewGuid().ToString("N") + ".pem")
           try {
             $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
-            [System.IO.File]::WriteAllText($keyFile, $env:SPAWN_UPDATE_SIGNING_KEY_PEM, $utf8NoBom)
+            [System.IO.File]::WriteAllText($keyFile, $env:UPDATE_SIGNING_KEY_PEM, $utf8NoBom)
             $env:SPAWN_UPDATE_SIGNING_KEY = $keyFile
-            Remove-Item Env:SPAWN_UPDATE_SIGNING_KEY_PEM -ErrorAction SilentlyContinue
+            Remove-Item Env:UPDATE_SIGNING_KEY_PEM -ErrorAction SilentlyContinue
 
             python -B scripts/release.py --build --version $env:RELEASE_VERSION
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           } finally {
             Remove-Item Env:SPAWN_UPDATE_SIGNING_KEY -ErrorAction SilentlyContinue
-            Remove-Item Env:SPAWN_UPDATE_SIGNING_KEY_PEM -ErrorAction SilentlyContinue
+            Remove-Item Env:UPDATE_SIGNING_KEY_PEM -ErrorAction SilentlyContinue
             if (Test-Path -LiteralPath $keyFile) {
               Remove-Item -LiteralPath $keyFile -Force -ErrorAction SilentlyContinue
             }
@@ -256,7 +256,7 @@ jobs:
   publish:
     name: publish
     needs: [plan, build]
-    if: github.ref == 'refs/heads/main' && vars.SPAWN_RELEASE_PUBLISH == '1' && (github.event_name == 'schedule' || inputs.publish == true)
+    if: github.ref == 'refs/heads/main' && vars.RELEASE_PUBLISH == '1' && (github.event_name == 'schedule' || inputs.publish == true)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -279,7 +279,7 @@ jobs:
           RELEASE_VERSION: ${{ needs.plan.outputs.version }}
         run: |
           set -euo pipefail
-          test -f installer/update-signing-public.pem
+          test -f release-keys/98ada0750903e1ab.pub.pem
 
           expected_files=(
             "spawn-setup-${RELEASE_VERSION}-x64.exe"
@@ -315,7 +315,7 @@ jobs:
           assert manifest.get("version") == expected_version, f"unexpected version: {manifest.get('version')!r}"
           PY
 
-          openssl dgst -sha256 -verify installer/update-signing-public.pem -signature release-bundle/update-windows-x64.json.sig release-bundle/update-windows-x64.json
+          openssl dgst -sha256 -verify release-keys/98ada0750903e1ab.pub.pem -signature release-bundle/update-windows-x64.json.sig release-bundle/update-windows-x64.json
 
       - name: Create draft GitHub Release, verify assets, and promote to latest
         shell: bash

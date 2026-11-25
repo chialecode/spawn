@@ -8,7 +8,7 @@ namespace Spawn.Host.Services;
 /// branch-checkout, import, and GC operations in <see cref="UpdateActivityTracker"/> so the auto-updater
 /// never restarts SPAWN mid-write.
 /// </summary>
-internal sealed class ActivityTrackingSaveTimeMachineService(
+public sealed class ActivityTrackingSaveTimeMachineService(
     ISaveTimeMachineService inner,
     UpdateActivityTracker tracker) : ISaveTimeMachineService
 {
@@ -124,7 +124,7 @@ internal sealed class ActivityTrackingSaveTimeMachineService(
 /// Transparent decorator around <see cref="ICloudSaveSyncService"/> that tracks active SPPK sync execution
 /// inside <see cref="UpdateActivityTracker"/>.
 /// </summary>
-internal sealed class ActivityTrackingCloudSaveSyncService(
+public sealed class ActivityTrackingCloudSaveSyncService(
     ICloudSaveSyncService inner,
     UpdateActivityTracker tracker) : ICloudSaveSyncService
 {

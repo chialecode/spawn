@@ -4,8 +4,12 @@ using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
+using Microsoft.Extensions.DependencyInjection;
 using Spawn.Contracts;
+using Spawn.Core;
+using Spawn.Host;
 using Spawn.Host.Controls;
+using Spawn.Host.Services;
 using Spawn.Host.ViewModels;
 using Spawn.Host.ViewModels.Saves;
 using Spawn.Host.Views.Saves;
@@ -246,6 +250,64 @@ public sealed class SaveWorkbenchUiTests
         if (staException is not null)
         {
             ExceptionDispatchInfo.Capture(staException).Throw();
+        }
+    }
+
+    [Fact]
+    public async Task HostDiComposition_ResolvesSaveServicesAndViewModelsWithoutCycles()
+    {
+        string tempRoot = Path.Combine(Path.GetTempPath(), "spawn-host-di-saves-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            var paths = SpawnPaths.CreateIsolated(tempRoot, workspaceRootHint: tempRoot);
+            paths.EnsureDirectoriesExist();
+
+            var services = new ServiceCollection();
+            App.RegisterHostCoreAndModuleServices(services, paths);
+
+            await using ServiceProvider sp = services.BuildServiceProvider(new ServiceProviderOptions
+            {
+                ValidateOnBuild = true,
+                ValidateScopes = true,
+            });
+
+            await sp.GetRequiredService<SpawnDatabase>().InitializeAsync();
+
+            ILudusaviRuleResolver resolver = sp.GetRequiredService<ILudusaviRuleResolver>();
+            ISaveTimeMachineService timeMachine = sp.GetRequiredService<ISaveTimeMachineService>();
+            ISaveWatcherService watcher = sp.GetRequiredService<ISaveWatcherService>();
+            ICloudSaveSyncService cloudSync = sp.GetRequiredService<ICloudSaveSyncService>();
+            SaveWorkbenchViewModel saveVm = sp.GetRequiredService<SaveWorkbenchViewModel>();
+            MainWindowViewModel mainVm = sp.GetRequiredService<MainWindowViewModel>();
+            try
+            {
+                Assert.IsType<ActivityTrackingSaveTimeMachineService>(timeMachine);
+                Assert.IsType<ActivityTrackingCloudSaveSyncService>(cloudSync);
+                Assert.NotNull(resolver);
+                Assert.NotNull(watcher);
+                Assert.True(saveVm.IsServiceAvailable);
+                Assert.Same(saveVm, mainVm.Saves);
+            }
+            finally
+            {
+                mainVm.Dispose();
+            }
+        }
+        finally
+        {
+            try
+            {
+                if (Directory.Exists(tempRoot))
+                {
+                    Directory.Delete(tempRoot, recursive: true);
+                }
+            }
+            catch
+            {
+                // Best-effort temp cleanup.
+            }
         }
     }
 

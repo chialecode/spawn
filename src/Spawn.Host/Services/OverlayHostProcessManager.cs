@@ -19,6 +19,7 @@ public sealed class OverlayHostProcessManager : IAsyncDisposable
     private nint _registeredOverlayHwnd;
     private int _registeredOverlayPid;
     private Action<nint, int>? _onOverlayWindowReady;
+    private int _disposed;
 
     public int? ActiveOverlayProcessId => _registeredOverlayPid > 0 ? _registeredOverlayPid : null;
 
@@ -158,6 +159,11 @@ public sealed class OverlayHostProcessManager : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));

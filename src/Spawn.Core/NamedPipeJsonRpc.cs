@@ -478,6 +478,7 @@ public sealed class NamedPipeJsonRpcClient : IAsyncDisposable
     private NamedPipeClientStream? _stream;
     private CancellationTokenSource? _readCts;
     private Task? _readLoopTask;
+    private int _disposed;
 
     public string PipeName { get; }
     public bool IsConnected => _stream is { IsConnected: true };
@@ -677,6 +678,11 @@ public sealed class NamedPipeJsonRpcClient : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         await _connectLock.WaitAsync().ConfigureAwait(false);
         try
         {

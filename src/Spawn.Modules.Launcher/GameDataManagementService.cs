@@ -73,7 +73,7 @@ public sealed class GameDataManagementService : IGameDataManagementService
             return [];
         }
 
-        var identity = BuildTargetIdentity(game);
+        var identity = await BuildTargetIdentityAsync(game, cancellationToken).ConfigureAwait(false);
         var builder = new CandidateListBuilder(game.GameId, game.InstallDir, identity, _paths, _options);
 
         // 1. PCGamingWiki online + SQLite cached rules.
@@ -162,7 +162,7 @@ public sealed class GameDataManagementService : IGameDataManagementService
             return new GameDataSafetyCheckResult(false, $"安全围栏已拦截含相对跳转段的目标路径：{pathOrRegistryKey}");
         }
 
-        var identity = BuildTargetIdentity(game);
+        var identity = await BuildTargetIdentityAsync(game, cancellationToken).ConfigureAwait(false);
 
         if (LooksLikeRegistryKeyPath(trimmed))
         {
@@ -237,7 +237,7 @@ public sealed class GameDataManagementService : IGameDataManagementService
             return new GameDataSafetyCheckResult(false, fsReason ?? $"安全围栏拦截了不安全的文件恢复目标：{pathOrRegistryKey}");
         }
 
-        if (ContainsDisallowedReparsePoint(normalizedTarget, game.InstallDir, identity, _options))
+        if (ContainsDisallowedReparsePointOrSubtree(normalizedTarget, game.InstallDir, identity, _options))
         {
             return new GameDataSafetyCheckResult(false, $"安全围栏拦截：禁止向符号链接或目录联接点恢复存档：{pathOrRegistryKey}");
         }
@@ -267,7 +267,7 @@ public sealed class GameDataManagementService : IGameDataManagementService
             return GameDataCleanResult.Fail($"《{game.Title}》当前正在运行中，请先关闭游戏后再执行数据清理。");
         }
 
-        var identity = BuildTargetIdentity(game);
+        var identity = await BuildTargetIdentityAsync(game, cancellationToken).ConfigureAwait(false);
         var discovered = await InspectGameDataAsync(game.GameId, refreshOnlineRules: false, cancellationToken)
             .ConfigureAwait(false);
         var entryById = discovered.ToDictionary(e => e.EntryId, StringComparer.OrdinalIgnoreCase);
@@ -657,7 +657,7 @@ public sealed class GameDataManagementService : IGameDataManagementService
         }
 
         var (manifest, snapshotDir) = latest.Value;
-        var restoreIdentity = BuildTargetIdentity(game);
+        var restoreIdentity = await BuildTargetIdentityAsync(game, cancellationToken).ConfigureAwait(false);
         int restoredCount = 0;
         long restoredBytes = 0;
         var warnings = new List<string>();
@@ -893,9 +893,16 @@ public sealed class GameDataManagementService : IGameDataManagementService
         return cachedRecord is not null ? DeserializeCachedRules(cachedRecord.RulesJson) : [];
     }
 
-    private static GameDataTargetIdentity BuildTargetIdentity(GameRecord game)
+    private async Task<GameDataTargetIdentity> BuildTargetIdentityAsync(
+        GameRecord game,
+        CancellationToken cancellationToken)
     {
         var extras = new List<string?>();
+        var titleMap = await _database.GetTrainerTitleMapAsync(game.GameId, cancellationToken).ConfigureAwait(false);
+        string? mappedEnglishTitle = !string.IsNullOrWhiteSpace(titleMap?.EnglishTitle)
+            ? titleMap.EnglishTitle.Trim()
+            : null;
+
         var unity = GameEngineInspector.TryReadUnityAppInfo(game.InstallDir);
         if (unity is not null && GameEngineInspector.IsUsefulUnityProductName(unity.ProductName))
         {
@@ -928,7 +935,7 @@ public sealed class GameDataManagementService : IGameDataManagementService
             }
         }
 
-        var identity = GameDataTargetIdentity.FromGame(game, extras);
+        var identity = GameDataTargetIdentity.FromGame(game, extras, englishTitle: mappedEnglishTitle);
         if (identity.SteamAppId is not > 0)
         {
             var (_, inspectedAppId, _, _) = GameEngineInspector.InspectSteamFiles(game.InstallDir);

@@ -751,7 +751,8 @@ public sealed class GameDataCleanAndUndoTests
         Assert.True(SafeFor(gtaSaDeIdentity, gtaSaDeInstall, Path.Combine(docs, "Rockstar Games", "GTA San Andreas Definitive Edition", "Profiles", "0F74F4C4")));
         Assert.True(SafeFor(gtaSaDeIdentity, gtaSaDeInstall, Path.Combine(localAppData, "Rockstar Games", "GTA San Andreas Definitive Edition", "Saved")));
 
-        // Localized CJK display title still matches via multi-token English install folder promotion.
+        // Localized CJK display title still matches via multi-token English install folder promotion,
+        // AND still enforces remaster/installment vetoes on ExactNames (e.g. LibertyCity.exe, SanAndreas.exe, Crysis.exe, Mafia2.exe)!
         var cjkGta3DeIdentity = GameDataTargetIdentity.FromGame(new GameRecord
         {
             GameId = SpawnId.NewUlid(),
@@ -760,6 +761,42 @@ public sealed class GameDataCleanAndUndoTests
             ExecutableRelPath = Path.Combine("Gameface", "Binaries", "Win64", "LibertyCity.exe"),
         });
         Assert.True(SafeFor(cjkGta3DeIdentity, gta3DeInstall, Path.Combine(docs, "Rockstar Games", "GTA III Definitive Edition", "Profiles", "0F74F4C4")));
+        Assert.False(SafeFor(cjkGta3DeIdentity, gta3DeInstall, Path.Combine(docs, "Rockstar Games", "Liberty City")));
+        Assert.False(SafeFor(cjkGta3DeIdentity, gta3DeInstall, Path.Combine(docs, "Rockstar Games", "GTA III")));
+
+        string cjkGtaSaPureInstall = sandbox.CreateSubDirectory("games", "圣安地列斯决定版");
+        var cjkGtaSaIdentity = GameDataTargetIdentity.FromGame(new GameRecord
+        {
+            GameId = SpawnId.NewUlid(),
+            Title = "侠盗猎车手：圣安地列斯 – 决定版",
+            InstallDir = cjkGtaSaPureInstall,
+            ExecutableRelPath = Path.Combine("Gameface", "Binaries", "Win64", "SanAndreas.exe"),
+        });
+        Assert.False(SafeFor(cjkGtaSaIdentity, cjkGtaSaPureInstall, Path.Combine(docs, "Rockstar Games", "San Andreas")));
+        Assert.False(SafeFor(cjkGtaSaIdentity, cjkGtaSaPureInstall, Path.Combine(docs, "GTA San Andreas User Files")));
+
+        string cjkCrysisPureInstall = sandbox.CreateSubDirectory("games", "孤岛危机重制版");
+        var cjkCrysisRemIdentity = GameDataTargetIdentity.FromGame(
+            new GameRecord
+            {
+                GameId = SpawnId.NewUlid(),
+                Title = "孤岛危机：重制版",
+                InstallDir = cjkCrysisPureInstall,
+                ExecutableRelPath = Path.Combine("Bin64", "Crysis.exe"),
+            },
+            extraProductNames: ["Crysis"]); // Even if unmarked PE ProductName says "Crysis"!
+        Assert.False(SafeFor(cjkCrysisRemIdentity, cjkCrysisPureInstall, Path.Combine(docs, "My Games", "Crysis")));
+
+        string cjkMafia2PureInstall = sandbox.CreateSubDirectory("games", "四海兄弟2决定版");
+        var cjkMafia2DeIdentity = GameDataTargetIdentity.FromGame(new GameRecord
+        {
+            GameId = SpawnId.NewUlid(),
+            Title = "四海兄弟 II：决定版",
+            InstallDir = cjkMafia2PureInstall,
+            ExecutableRelPath = Path.Combine("pc", "Mafia2.exe"),
+        });
+        Assert.False(SafeFor(cjkMafia2DeIdentity, cjkMafia2PureInstall, Path.Combine(docs, "My Games", "Mafia 2")));
+        Assert.False(SafeFor(cjkMafia2DeIdentity, cjkMafia2PureInstall, Path.Combine(docs, "My Games", "Mafia2")));
 
         // GTA V and Red Dead Redemption 2 positive initialism equivalence.
         string gta5Install = sandbox.CreateSubDirectory("games", "Grand Theft Auto V");
@@ -1215,6 +1252,64 @@ public sealed class GameDataCleanAndUndoTests
                 e.PathOrRegistryKey,
                 Path.Combine(options.UserDocumentsOverride!, "Rockstar Games", "Red Dead Redemption 2", "Profiles"),
                 StringComparison.OrdinalIgnoreCase) && e.IsSafeToClean);
+
+        // 6. Pure CJK Title + pure CJK InstallDir:
+        //    (a) Crysis Remastered ("孤岛危机：重制版", Bin64\Crysis.exe) never discovers classic My Games\Crysis;
+        //    (b) GTA Vice City DE ("侠盗猎车手：罪恶都市 – 决定版", ViceCity.exe) + TrainerTitleMap.EnglishTitle discovers
+        //        Documents\Rockstar Games\GTA Vice City Definitive Edition\Profiles\0F74F4C4 while ignoring classic Vice City!
+        string cjkCrysisDir = sandbox.CreateSubDirectory("games", "孤岛危机重制版");
+        Directory.CreateDirectory(Path.Combine(cjkCrysisDir, "Bin64"));
+        await File.WriteAllBytesAsync(Path.Combine(cjkCrysisDir, "Bin64", "Crysis.exe"), new byte[4096]);
+        var cjkCrysisGame = new GameRecord
+        {
+            GameId = SpawnId.NewUlid(),
+            Title = "孤岛危机：重制版",
+            InstallDir = cjkCrysisDir,
+            ExecutableRelPath = Path.Combine("Bin64", "Crysis.exe"),
+            PlatformSource = PlatformSource.Standalone,
+        };
+        await sandbox.Database.UpsertGameAsync(cjkCrysisGame);
+        await sandbox.Database.UpsertTrainerTitleMapAsync(new TrainerTitleMapRecord
+        {
+            GameId = cjkCrysisGame.GameId,
+            EnglishTitle = "Crysis",
+            TitleSource = TrainerTitleSource.Cleaner,
+        });
+        var cjkCrysisEntries = await service.InspectGameDataAsync(cjkCrysisGame.GameId);
+        Assert.DoesNotContain(cjkCrysisEntries, e => string.Equals(e.PathOrRegistryKey, classicCrysisDir, StringComparison.OrdinalIgnoreCase));
+
+        string classicViceCityDir = Directory.CreateDirectory(Path.Combine(options.UserDocumentsOverride!, "Rockstar Games", "Vice City")).FullName;
+        await File.WriteAllTextAsync(Path.Combine(classicViceCityDir, "classic_vc.sav"), "2002_VC_SAVE", Encoding.UTF8);
+
+        string cjkVcInstallDir = sandbox.CreateSubDirectory("games", "罪恶都市决定版");
+        await File.WriteAllBytesAsync(Path.Combine(cjkVcInstallDir, "title.rgl"), [0x52, 0x47, 0x4C, 0x4D]);
+        string cjkVcWin64 = Directory.CreateDirectory(Path.Combine(cjkVcInstallDir, "Gameface", "Binaries", "Win64")).FullName;
+        await File.WriteAllBytesAsync(Path.Combine(cjkVcWin64, "ViceCity.exe"), new byte[4096]);
+
+        var cjkVcGame = new GameRecord
+        {
+            GameId = SpawnId.NewUlid(),
+            Title = "侠盗猎车手：罪恶都市 – 决定版",
+            InstallDir = cjkVcInstallDir,
+            ExecutableRelPath = Path.Combine("Gameface", "Binaries", "Win64", "ViceCity.exe"),
+            PlatformSource = PlatformSource.Standalone,
+            SteamAppId = 1546990,
+        };
+        await sandbox.Database.UpsertGameAsync(cjkVcGame);
+        await sandbox.Database.UpsertTrainerTitleMapAsync(new TrainerTitleMapRecord
+        {
+            GameId = cjkVcGame.GameId,
+            EnglishTitle = "Grand Theft Auto: Vice City – The Definitive Edition",
+        });
+
+        var cjkVcEntries = await service.InspectGameDataAsync(cjkVcGame.GameId);
+        Assert.Contains(
+            cjkVcEntries,
+            e => string.Equals(
+                e.PathOrRegistryKey,
+                Path.Combine(options.UserDocumentsOverride!, "Rockstar Games", "GTA Vice City Definitive Edition", "Profiles", "0F74F4C4"),
+                StringComparison.OrdinalIgnoreCase) && e.IsSafeToClean && e.Category == GameDataCategory.SaveData);
+        Assert.DoesNotContain(cjkVcEntries, e => string.Equals(e.PathOrRegistryKey, classicViceCityDir, StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]

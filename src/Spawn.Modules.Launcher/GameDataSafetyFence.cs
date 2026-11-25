@@ -12,16 +12,21 @@ namespace Spawn.Modules.Launcher;
 public sealed record GameDataTargetIdentity
 {
     public string? Title { get; init; }
+    public string? EnglishTitle { get; init; }
+    public string? InstallFolderTitle { get; init; }
     public int? SteamAppId { get; init; }
     public string? GogGameId { get; init; }
 
-    /// <summary>Fuzzy-matchable names (title, Unity <c>productName</c>, non-generic Unreal project name, multi-token install folder).</summary>
+    /// <summary>Fuzzy-matchable names (title, English title, Unity <c>productName</c>, non-generic Unreal project name, multi-token install folder).</summary>
     public IReadOnlyList<string> ProductNames { get; init; } = [];
 
     /// <summary>Exact-match-only names (executable base name, install folder name) that may be short or generic.</summary>
     public IReadOnlyList<string> ExactNames { get; init; } = [];
 
-    public static GameDataTargetIdentity FromGame(GameRecord game, IEnumerable<string?>? extraProductNames = null)
+    public static GameDataTargetIdentity FromGame(
+        GameRecord game,
+        IEnumerable<string?>? extraProductNames = null,
+        string? englishTitle = null)
     {
         ArgumentNullException.ThrowIfNull(game);
         var products = new List<string>();
@@ -36,7 +41,11 @@ public sealed record GameDataTargetIdentity
             }
         }
 
+        string? resolvedEnglishTitle = GameDataSafetyFence.ResolveUsableEnglishTitleCandidate(englishTitle, game.Title)
+            ?? GameDataSafetyFence.ResolveUsableEnglishTitleCandidate(game.Title, game.Title);
+
         AddUniqueProduct(products, game.Title);
+        AddUniqueProduct(products, resolvedEnglishTitle);
 
         foreach (string? extra in extraProductNames ?? [])
         {
@@ -50,16 +59,27 @@ public sealed record GameDataTargetIdentity
             exact.Add(exeBase);
         }
 
+        string? acceptedInstallFolderTitle = null;
         string dirLeaf = Path.GetFileName(Path.TrimEndingDirectorySeparator(game.InstallDir ?? string.Empty));
         if (!string.IsNullOrWhiteSpace(dirLeaf))
         {
             string cleanedDirTitle = GameTitleCleaner.CleanTitle(dirLeaf, preserveRemasterEdition: true);
-            if (GameDataSafetyFence.CanAcceptInstallFolderForIdentity(dirLeaf, cleanedDirTitle, game.Title))
+            string? referenceTitle = GameTitleCleaner.IsLikelyEnglishTitle(game.Title)
+                ? game.Title
+                : (resolvedEnglishTitle ?? game.Title);
+
+            if (GameDataSafetyFence.CanAcceptInstallFolderForIdentity(dirLeaf, cleanedDirTitle, referenceTitle))
             {
                 exact.Add(dirLeaf);
 
                 if (!string.Equals(cleanedDirTitle, "Unknown Game", StringComparison.OrdinalIgnoreCase)
-                    && GameDataSafetyFence.ShouldPromoteInstallFolderToProductName(cleanedDirTitle, game.Title))
+                    && GameTitleCleaner.IsLikelyEnglishTitle(cleanedDirTitle))
+                {
+                    acceptedInstallFolderTitle = cleanedDirTitle;
+                }
+
+                if (!string.Equals(cleanedDirTitle, "Unknown Game", StringComparison.OrdinalIgnoreCase)
+                    && GameDataSafetyFence.ShouldPromoteInstallFolderToProductName(cleanedDirTitle, referenceTitle))
                 {
                     AddUniqueProduct(products, cleanedDirTitle);
                 }
@@ -69,6 +89,8 @@ public sealed record GameDataTargetIdentity
         return new GameDataTargetIdentity
         {
             Title = game.Title,
+            EnglishTitle = resolvedEnglishTitle,
+            InstallFolderTitle = acceptedInstallFolderTitle,
             SteamAppId = game.SteamAppId,
             GogGameId = game.GogGameId,
             ProductNames = products,
@@ -448,12 +470,7 @@ public static partial class GameDataSafetyFence
             return false;
         }
 
-        if (string.IsNullOrWhiteSpace(gameTitle) || GameTitleCleaner.ContainsCjkCharacters(gameTitle))
-        {
-            return true;
-        }
-
-        if (!GameTitleCleaner.IsLikelyEnglishTitle(gameTitle))
+        if (string.IsNullOrWhiteSpace(gameTitle))
         {
             return true;
         }
@@ -461,6 +478,18 @@ public static partial class GameDataSafetyFence
         string effectiveDir = string.IsNullOrWhiteSpace(cleanedDirTitle) || string.Equals(cleanedDirTitle, "Unknown Game", StringComparison.OrdinalIgnoreCase)
             ? trimmedLeaf
             : cleanedDirTitle;
+
+        if (GameTitleCleaner.ContainsCjkCharacters(gameTitle))
+        {
+            CanonicalTitleProfile dirForCjk = BuildCanonicalProfile(effectiveDir, allowTrailingSaveFolderSuffix: false);
+            CanonicalTitleProfile cjkProfile = BuildCjkFallbackReferenceProfile(gameTitle);
+            return IsEnglishCandidateConsistentWithCjkTitle(dirForCjk, cjkProfile);
+        }
+
+        if (!GameTitleCleaner.IsLikelyEnglishTitle(gameTitle))
+        {
+            return true;
+        }
 
         if (string.Equals(NormalizeName(effectiveDir), NormalizeName(gameTitle), StringComparison.Ordinal))
         {
@@ -542,10 +571,7 @@ public static partial class GameDataSafetyFence
         }
 
         CanonicalTitleProfile segmentProfile = BuildCanonicalProfile(trimmed, allowTrailingSaveFolderSuffix: true);
-        CanonicalTitleProfile? primaryTitleProfile = !string.IsNullOrWhiteSpace(identity.Title)
-                                                     && GameTitleCleaner.IsLikelyEnglishTitle(identity.Title)
-            ? BuildCanonicalProfile(identity.Title, allowTrailingSaveFolderSuffix: false)
-            : null;
+        CanonicalTitleProfile? primaryTitleProfile = ResolveAuthoritativeReferenceProfile(identity);
 
         foreach (string exact in identity.ExactNames)
         {
@@ -638,10 +664,174 @@ public static partial class GameDataSafetyFence
         return false;
     }
 
+    internal static string? ResolveUsableEnglishTitleCandidate(string? rawCandidate, string? primaryTitle)
+    {
+        if (string.IsNullOrWhiteSpace(rawCandidate))
+        {
+            return null;
+        }
+
+        string? cleaned = GameTitleCleaner.CleanEnglishTitle(rawCandidate)
+            ?? (GameTitleCleaner.IsLikelyEnglishTitle(rawCandidate) ? rawCandidate.Trim() : null);
+
+        if (string.IsNullOrWhiteSpace(cleaned)
+            || string.Equals(cleaned, "Unknown Game", StringComparison.OrdinalIgnoreCase)
+            || !GameTitleCleaner.IsLikelyEnglishTitle(cleaned))
+        {
+            return null;
+        }
+
+        if (NormalizeName(cleaned).Length < 4 || ProtectedSharedContainerLeafNames.Contains(cleaned))
+        {
+            return null;
+        }
+
+        CanonicalTitleProfile candidateProfile = BuildCanonicalProfile(cleaned, allowTrailingSaveFolderSuffix: false);
+        if (!candidateProfile.CoreTokens.Any(static token => !token.All(char.IsAsciiDigit)))
+        {
+            return null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(primaryTitle) && GameTitleCleaner.ContainsCjkCharacters(primaryTitle))
+        {
+            CanonicalTitleProfile cjkProfile = BuildCjkFallbackReferenceProfile(primaryTitle);
+            if (!IsEnglishCandidateConsistentWithCjkTitle(candidateProfile, cjkProfile))
+            {
+                return null;
+            }
+        }
+
+        return cleaned;
+    }
+
+    private static bool IsEnglishCandidateConsistentWithCjkTitle(CanonicalTitleProfile englishProfile, CanonicalTitleProfile cjkProfile)
+    {
+        if (!englishProfile.BundleMarkers.SetEquals(cjkProfile.BundleMarkers)
+            || !englishProfile.RemasterMarkers.SetEquals(cjkProfile.RemasterMarkers))
+        {
+            return false;
+        }
+
+        return cjkProfile.Installments.Count == 0
+               || englishProfile.Installments.SequenceEqual(cjkProfile.Installments, StringComparer.Ordinal);
+    }
+
     private static bool HasCompatibleMarkersAndInstallments(CanonicalTitleProfile left, CanonicalTitleProfile right) =>
         left.BundleMarkers.SetEquals(right.BundleMarkers)
         && left.RemasterMarkers.SetEquals(right.RemasterMarkers)
         && left.Installments.SequenceEqual(right.Installments);
+
+    private static CanonicalTitleProfile? ResolveAuthoritativeReferenceProfile(GameDataTargetIdentity identity)
+    {
+        if (!string.IsNullOrWhiteSpace(identity.Title) && GameTitleCleaner.IsLikelyEnglishTitle(identity.Title))
+        {
+            return BuildCanonicalProfile(identity.Title, allowTrailingSaveFolderSuffix: false);
+        }
+
+        if (!string.IsNullOrWhiteSpace(identity.EnglishTitle) && GameTitleCleaner.IsLikelyEnglishTitle(identity.EnglishTitle))
+        {
+            return BuildCanonicalProfile(identity.EnglishTitle, allowTrailingSaveFolderSuffix: false);
+        }
+
+        if (!string.IsNullOrWhiteSpace(identity.InstallFolderTitle) && GameTitleCleaner.IsLikelyEnglishTitle(identity.InstallFolderTitle))
+        {
+            return BuildCanonicalProfile(identity.InstallFolderTitle, allowTrailingSaveFolderSuffix: false);
+        }
+
+        if (!string.IsNullOrWhiteSpace(identity.Title) && GameTitleCleaner.ContainsCjkCharacters(identity.Title))
+        {
+            return BuildCjkFallbackReferenceProfile(identity.Title);
+        }
+
+        return null;
+    }
+
+    private static CanonicalTitleProfile BuildCjkFallbackReferenceProfile(string rawCjkTitle)
+    {
+        string cleaned = GameTitleCleaner.CleanTitle(rawCjkTitle, preserveRemasterEdition: true);
+        var installments = new List<string>(2);
+        var remasterMarkers = new HashSet<string>(StringComparer.Ordinal);
+        var bundleMarkers = new HashSet<string>(StringComparer.Ordinal);
+
+        // Extract explicit CJK remaster/edition qualifiers (never mapping in-word CJK numerals like 四海兄弟 / 影逝二度 to Installments!).
+        if (cleaned.Contains("决定版", StringComparison.Ordinal)
+            || cleaned.Contains("最终版", StringComparison.Ordinal)
+            || cleaned.Contains("決定版", StringComparison.Ordinal)
+            || cleaned.Contains("最終版", StringComparison.Ordinal))
+        {
+            remasterMarkers.Add("definitive");
+        }
+
+        if (cleaned.Contains("重制版", StringComparison.Ordinal)
+            || cleaned.Contains("高清重制", StringComparison.Ordinal)
+            || cleaned.Contains("复刻版", StringComparison.Ordinal)
+            || cleaned.Contains("重製版", StringComparison.Ordinal)
+            || cleaned.Contains("復刻版", StringComparison.Ordinal))
+        {
+            remasterMarkers.Add("remastered");
+        }
+
+        if (cleaned.Contains("周年纪念版", StringComparison.Ordinal)
+            || cleaned.Contains("周年版", StringComparison.Ordinal)
+            || cleaned.Contains("週年紀念版", StringComparison.Ordinal))
+        {
+            remasterMarkers.Add("anniversary");
+        }
+
+        if (cleaned.Contains("增强版", StringComparison.Ordinal)
+            || cleaned.Contains("次世代版", StringComparison.Ordinal)
+            || cleaned.Contains("增強版", StringComparison.Ordinal))
+        {
+            remasterMarkers.Add("enhanced");
+        }
+
+        if (cleaned.Contains("三部曲", StringComparison.Ordinal))
+        {
+            bundleMarkers.Add("trilogy");
+        }
+
+        if (cleaned.Contains("选集", StringComparison.Ordinal) || cleaned.Contains("選集", StringComparison.Ordinal))
+        {
+            bundleMarkers.Add("anthology");
+        }
+
+        if (cleaned.Contains("合集", StringComparison.Ordinal) || cleaned.Contains("收藏集", StringComparison.Ordinal))
+        {
+            bundleMarkers.Add("collection");
+        }
+
+        // Also inspect embedded ASCII tokens (e.g. "III" in "侠盗猎车手III：决定版", "II" in "四海兄弟 II：决定版", "2077" in "赛博朋克 2077").
+        // AlphanumericTokenRegex splits strictly between ASCII [A-Za-z0-9]+ runs and surrounding CJK characters!
+        foreach (Match match in AlphanumericTokenRegex().Matches(cleaned))
+        {
+            string lower = match.Groups[1].Value.ToLowerInvariant();
+            if (lower is "trilogy" or "anthology" or "collection")
+            {
+                bundleMarkers.Add(lower);
+                continue;
+            }
+
+            if (TryMapRemasterMarker(lower, out string? mappedRemaster))
+            {
+                remasterMarkers.Add(mappedRemaster!);
+                continue;
+            }
+
+            if (RomanToArabicInstallments.TryGetValue(lower, out string? romanDigits))
+            {
+                installments.Add(romanDigits);
+                continue;
+            }
+
+            if (lower.All(char.IsAsciiDigit))
+            {
+                string normDigits = lower.TrimStart('0');
+                installments.Add(normDigits.Length == 0 ? "0" : normDigits);
+            }
+        }
+
+        return new CanonicalTitleProfile([], installments, remasterMarkers, bundleMarkers);
+    }
 
     private static bool DoesCanonicalTokenProfileMatch(CanonicalTitleProfile segment, CanonicalTitleProfile product)
     {

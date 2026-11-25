@@ -710,6 +710,123 @@ public sealed class PreTrainerSaveSnapshotServiceTests
         Assert.Equal(expectedSha, await PreTrainerSnapshotManifestStore.ComputeFileSha256HexAsync(savePath));
     }
 
+    [Fact]
+    public async Task Snapshots_WithRealGameDataServiceOnRockstarCustomSavePaths_SnapshotsAndRestoresSavesWhileIgnoringLockedLogsAndSharedContainers()
+    {
+        await using var sandbox = new SnapshotTestSandbox();
+        await sandbox.Database.InitializeAsync();
+
+        var clock = new ManualSnapshotTimeProvider(new DateTimeOffset(2026, 11, 25, 12, 0, 0, TimeSpan.Zero));
+        string installDir = sandbox.CreateSubDirectory("games", "GTA San Andreas - The Definitive Edition");
+        Directory.CreateDirectory(Path.Combine(installDir, "Engine", "Binaries", "Win64"));
+        Directory.CreateDirectory(Path.Combine(installDir, "Gameface", "Content", "Paks"));
+        string win64Dir = Directory.CreateDirectory(Path.Combine(installDir, "Gameface", "Binaries", "Win64")).FullName;
+        await File.WriteAllBytesAsync(Path.Combine(installDir, "title.rgl"), [0x52, 0x47, 0x4C, 0x4D]);
+        await File.WriteAllBytesAsync(Path.Combine(win64Dir, "SanAndreas.exe"), new byte[8192]);
+        await File.WriteAllBytesAsync(Path.Combine(win64Dir, "socialclub.dll"), [0x4D, 0x5A]);
+
+        var gdOptions = new Spawn.Modules.Launcher.GameDataManagementOptions
+        {
+            AllowOnlinePcGamingWikiLookup = false,
+            AllowSystemSteamDiscovery = false,
+            AppDataRoamingOverride = sandbox.CreateSubDirectory("env", "AppDataRoaming"),
+            LocalAppDataOverride = sandbox.CreateSubDirectory("env", "LocalAppData"),
+            LocalLowOverride = sandbox.CreateSubDirectory("env", "LocalLow"),
+            PublicDocumentsOverride = sandbox.CreateSubDirectory("env", "Public", "Documents"),
+            UserDocumentsOverride = sandbox.CreateSubDirectory("env", "UserDocs"),
+            UserProfileOverride = sandbox.CreateSubDirectory("env", "UserProfile"),
+            SavedGamesOverride = sandbox.CreateSubDirectory("env", "SavedGames"),
+            ProgramDataOverride = sandbox.CreateSubDirectory("env", "ProgramData"),
+            SteamInstallDirOverride = sandbox.CreateSubDirectory("env", "Steam"),
+            HkcuSoftwarePrefix = $@"Software\SPAWN-Test\{Guid.NewGuid():N}",
+        };
+
+        string docGameDir = Directory.CreateDirectory(
+            Path.Combine(gdOptions.UserDocumentsOverride!, "Rockstar Games", "GTA San Andreas Definitive Edition")).FullName;
+        string profileDir = Directory.CreateDirectory(Path.Combine(docGameDir, "Profiles", "0F74F4C4")).FullName;
+        string saveFile = Path.Combine(profileDir, "GTASAsf1.sav");
+        byte[] originalSaveBytes = "CJ_GROVE_STREET_PRE_TRAINER_SAVE_V1"u8.ToArray();
+        await File.WriteAllBytesAsync(saveFile, originalSaveBytes);
+        string expectedSha = Convert.ToHexStringLower(SHA256.HashData(originalSaveBytes));
+
+        // Create an exclusively locked log file under Logs\NGX and Saved\Logs to verify accurate Save vs Config/Logs separation
+        // prevents running-game log handles from blocking pre-trainer save snapshots!
+        string ngxLogPath = Path.Combine(Directory.CreateDirectory(Path.Combine(docGameDir, "Logs", "NGX")).FullName, "ngx_active.log");
+        await File.WriteAllTextAsync(ngxLogPath, "ACTIVE_LOCKED_LOG", Encoding.UTF8);
+
+        // Also seed shared GTA_DEF container and sibling GTA III DE save to prove neither is snapshotted or overwritten.
+        string sharedGtaDefFile = Path.Combine(
+            Directory.CreateDirectory(Path.Combine(gdOptions.AppDataRoamingOverride!, "Goldberg SocialClub Emu Saves", "GTA_DEF", "0F74F4C4")).FullName,
+            "shared_sc.dat");
+        await File.WriteAllTextAsync(sharedGtaDefFile, "SHARED_GTA_DEF_LIVE", Encoding.UTF8);
+
+        string siblingGta3Save = Path.Combine(
+            Directory.CreateDirectory(Path.Combine(gdOptions.UserDocumentsOverride!, "Rockstar Games", "GTA III Definitive Edition", "Profiles", "0F74F4C4")).FullName,
+            "GTA3sf1.sav");
+        await File.WriteAllTextAsync(siblingGta3Save, "GTA3_SIBLING_SAVE", Encoding.UTF8);
+
+        string gameId = SpawnId.NewUlid(clock.GetUtcNow());
+        string trainerId = SpawnId.NewUlid(clock.GetUtcNow());
+        await sandbox.Database.UpsertGameAsync(new GameRecord
+        {
+            GameId = gameId,
+            Title = "Grand Theft Auto: San Andreas – The Definitive Edition",
+            SortTitle = "Grand Theft Auto: San Andreas – The Definitive Edition",
+            InstallDir = installDir,
+            ExecutableRelPath = Path.Combine("Gameface", "Binaries", "Win64", "SanAndreas.exe"),
+            PlatformSource = PlatformSource.Standalone,
+            SteamAppId = 1547000,
+            AntiCheatTier = AntiCheatTier.Tier0,
+        });
+        await sandbox.Database.UpsertTrainerAsync(new TrainerCatalogRecord
+        {
+            TrainerId = trainerId,
+            GameId = gameId,
+            Provider = TrainerProviderKind.LocalImport,
+            DisplayName = "Synthetic GTA SA DE Trainer",
+            SandboxRelativePath = $"{gameId}\\{trainerId}\\trainer.exe",
+            FileSha256 = new string('b', 64),
+        });
+
+        var launchStub = new StubSnapshotGameLaunchService();
+        var realGameDataService = new Spawn.Modules.Launcher.GameDataManagementService(
+            sandbox.Database,
+            sandbox.Paths,
+            launchStub,
+            options: gdOptions,
+            timeProvider: clock);
+        var snapshotService = new PreTrainerSaveSnapshotService(
+            sandbox.Database,
+            sandbox.Paths,
+            realGameDataService,
+            launchStub,
+            clock);
+
+        PreTrainerSnapshotResult createResult;
+        await using (new FileStream(ngxLogPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            createResult = await snapshotService.CreateAsync(gameId, trainerId);
+        }
+
+        Assert.True(createResult.Succeeded, createResult.Message);
+        Assert.Equal(PreTrainerSnapshotStatus.Completed, createResult.Status);
+        Assert.Equal(1, createResult.Snapshot!.FileCount);
+
+        // Mutate live save AND delete the Rockstar game directory completely, then restore cleanly after game exit.
+        Directory.Delete(docGameDir, recursive: true);
+        Assert.False(File.Exists(saveFile));
+
+        clock.Advance(TimeSpan.FromMinutes(2));
+        var restoreResult = await snapshotService.RestoreAsync(createResult.Snapshot.SnapshotId);
+
+        Assert.True(restoreResult.Succeeded, restoreResult.Message);
+        Assert.Equal(1, restoreResult.RestoredFileCount);
+        Assert.True(File.Exists(saveFile));
+        Assert.Equal(expectedSha, await PreTrainerSnapshotManifestStore.ComputeFileSha256HexAsync(saveFile));
+        Assert.Equal("SHARED_GTA_DEF_LIVE", await File.ReadAllTextAsync(sharedGtaDefFile));
+        Assert.Equal("GTA3_SIBLING_SAVE", await File.ReadAllTextAsync(siblingGta3Save));
+    }
+
     private static async Task SeedGameAndTrainerAsync(
         SpawnDatabase db,
         string gameId,

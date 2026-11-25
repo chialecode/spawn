@@ -20,7 +20,7 @@
 2. **Active / Background / AFK 三态真实游玩时长引擎**：按 1 秒节拍融合前台窗口焦点、代理缩放/Overlay 窗口白名单、键鼠空闲时间、`XInput` / `RawGameController` 手柄死区突破与 `WASAPI` 会话音频峰值，精细区分真实游玩、切出后台与挂机发呆时长。
 3. **Pre/Post-Launch 断电自愈环境接管管线**：在游戏启动前原子持久化系统基线快照（`environment_rollback.json`），按游戏/Profile 策略自动接管显示器分辨率/刷新率、Windows 11 系统级 HDR 开关、混合架构 CPU P-Core / AMD X3D CCD0 绑定与 `EcoQoS` 豁免、电源计划、32/64 位日韩繁区域转码（`LEProc` / `LRProc`）、`Magpie` / `Lossless Scaling` 超分伴生及 `Wallpaper Engine` 暂停静音；游戏退出或宿主冷启动自检时 100% 幂等还原。
 4. **三级漏斗离线优先元数据刮削引擎**：针对无平台免安装单机包（Steamrip、GOG 离线安装包、日系同人 Galgame/RPG），通过“确定性 ID 探针（含 Unity `*_Data\Plugins\x86_64\steam_api64.cdx|.rne`、UE `ThirdParty\Steamworks` 嵌套识别与 `app.info` 提取） -> PE 头与多级正则降噪 -> 多源异步图谱与竖版海报补全”实现开箱即用的精美海报墙。
-5. **多源游戏数据探查与可逆清理引擎（`IGameDataManagementService`）**：融合 `PCGamingWiki` Cargo/MediaWiki 规则解析缓存（`game_data_rules`）、Unity `LocalLow`（含 `:` 转 `_` 非法字符映射与 `HKCU\Software\<Company>\<Product>` `PlayerPrefs` 注册表）及 Unreal `Saved` 零配置引擎推断、16+ 离线模拟器与原生存档规则，配合防误删安全围栏与 `TrashDir` 快照支持一键安全清理及 `RestoreLastCleanupAsync` 完整还原。
+5. **多源游戏数据探查与可逆清理引擎（`IGameDataManagementService`）**：融合 `PCGamingWiki` Cargo/MediaWiki 规则解析缓存（`game_data_rules`）、Unity `LocalLow`（含 `:` 转 `_` 非法字符映射与 `HKCU\Software\<Company>\<Product>` `PlayerPrefs` 注册表）、Unreal `Saved` 零配置推断（自动跳过 `Gameface`/`UE4Game`/`UE5Game` 等跨游戏共享内部代号并探测发行商自定义文档与 `%LOCALAPPDATA%\<Publisher>\<Game>\Saved` 目录，精确分离 `Profiles`/`SaveGames` 存档与 `Config\WindowsNoEditor`/`Adjustable*.cfg`/`Logs` 配置日志）、16+ 离线模拟器及 Social Club Emu 目录规则；配合支持无歧义系列缩写（如 `Grand Theft Auto` ↔ `GTA`、`Red Dead Redemption` ↔ `RDR`）与可选冠词等价折算、同时强制续作编号/副标题/重制标记严格一致并硬拦截共享总目录（如 `Rockstar Games`、`Goldberg SocialClub Emu Saves`、`GTA_DEF`）的防误删安全围栏（`GameDataSafetyFence`）与 `TrashDir` 快照，支持一键安全清理及 `RestoreLastCleanupAsync` 完整还原。
 
 ### 1.2 明确排除边界（Out-of-Scope）
 

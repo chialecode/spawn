@@ -10,6 +10,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Spawn.Contracts\Spawn.Contracts.csproj" />
     <ProjectReference Include="..\..\src\Spawn.Core\Spawn.Core.csproj" />
+    <ProjectReference Include="..\..\src\Spawn.Modules.Launcher\Spawn.Modules.Launcher.csproj" />
     <ProjectReference Include="..\..\src\Spawn.Modules.Progress\Spawn.Modules.Progress.csproj" />
   </ItemGroup>
 

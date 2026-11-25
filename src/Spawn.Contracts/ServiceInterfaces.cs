@@ -180,7 +180,7 @@ public interface IGameDataManagementService
         {
             if (!loc.IsSafeToClean
                 || loc.IsRegistryEntry
-                || loc.Category != GameDataCategory.SaveData
+                || (loc.Category != GameDataCategory.SaveData && loc.Category != GameDataCategory.ConfigAndLogs)
                 || string.IsNullOrWhiteSpace(loc.PathOrRegistryKey))
             {
                 continue;

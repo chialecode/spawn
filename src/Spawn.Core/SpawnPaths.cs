@@ -42,6 +42,9 @@ public sealed class SpawnPaths
     public string TrashDirectory => TrashDir;
     public string DevWorkspaceConfigPath => Path.Combine(DataRoot, DevWorkspaceFileName);
     public string AchievementIconsDirectory => Path.Combine(VaultDirectory, "Schemas", "Icons");
+    public string VaultChunksDirectory => Path.Combine(VaultDirectory, "Chunks");
+    public string VaultSavesDirectory => Path.Combine(VaultDirectory, "Saves");
+    public string SaveStagingDirectory => Path.Combine(VaultSavesDirectory, ".staging");
     public string TrainerSandboxDirectory => Path.Combine(VaultDirectory, "Sandbox", "Trainers");
     public string TrainerStagingDirectory => Path.Combine(TrainerSandboxDirectory, ".staging");
     public string PreTrainerSnapshotsDirectory => Path.Combine(VaultDirectory, "Snapshots", "PreTrainer");
@@ -178,9 +181,43 @@ public sealed class SpawnPaths
         Directory.CreateDirectory(TrashDir);
         Directory.CreateDirectory(VaultDirectory);
         Directory.CreateDirectory(AchievementIconsDirectory);
+        Directory.CreateDirectory(VaultChunksDirectory);
+        Directory.CreateDirectory(VaultSavesDirectory);
+        Directory.CreateDirectory(SaveStagingDirectory);
         Directory.CreateDirectory(TrainerSandboxDirectory);
         Directory.CreateDirectory(TrainerStagingDirectory);
         Directory.CreateDirectory(PreTrainerSnapshotsDirectory);
+    }
+
+    /// <summary>
+    /// Resolves the two-level content-addressed shard path (<c>vault\Chunks\aa\bb\&lt;blake3&gt;.zst</c>)
+    /// for a validated 64-character hexadecimal BLAKE3 chunk hash.
+    /// </summary>
+    public string GetCasChunkPath(string chunkBlake3Hex, bool createParentDirectory = false)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(chunkBlake3Hex);
+        string normalized = chunkBlake3Hex.Trim().ToLowerInvariant();
+        if (normalized.Length != 64)
+        {
+            throw new ArgumentException("BLAKE3 chunk hash must be 64 hexadecimal characters.", nameof(chunkBlake3Hex));
+        }
+
+        for (int i = 0; i < normalized.Length; i++)
+        {
+            char c = normalized[i];
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+            {
+                throw new ArgumentException("BLAKE3 chunk hash must contain only lowercase hexadecimal characters.", nameof(chunkBlake3Hex));
+            }
+        }
+
+        string shardDir = Path.Combine(VaultChunksDirectory, normalized[..2], normalized[2..4]);
+        if (createParentDirectory)
+        {
+            Directory.CreateDirectory(shardDir);
+        }
+
+        return Path.Combine(shardDir, normalized + ".zst");
     }
 
     public string GetGameArtworkDirectory(string gameId)

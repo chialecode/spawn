@@ -1533,6 +1533,7 @@ public sealed partial class SpawnDatabase : IDisposable, IAsyncDisposable
 
         await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         await ApplyV4TrainerMigrationsAsync(conn, cancellationToken).ConfigureAwait(false);
+        await ApplyV5SaveTimeMachineMigrationsAsync(conn, cancellationToken).ConfigureAwait(false);
     }
 
     private static GameDataRuleCacheRecord MapGameDataRuleRecord(SqliteDataReader reader) =>

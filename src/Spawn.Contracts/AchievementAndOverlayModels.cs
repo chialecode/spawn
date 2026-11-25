@@ -216,4 +216,15 @@ public static class AppSettingKeys
     public const string TrainerStrictVanguardMode = "trainer.strict_vanguard_mode";
     public const string TrainerIncludeFlingArchive = "trainer.include_fling_archive";
     public const string TrainerDefaultScanCodeMode = "trainer.default_scancode_mode";
+
+    // M4 Save Time Machine & Cloud Sync settings
+    public const string SaveMachineId = "saves.machine_id";
+    public const string SaveMachineDisplayName = "saves.machine_display_name";
+    public const string SaveAutoWatchByDefault = "saves.auto_watch_default";
+    public const string SavePostExitSnapshotByDefault = "saves.post_exit_default";
+    public const string SaveQuiescentDebounceMs = "saves.quiescent_debounce_ms";
+    public const string SaveDefaultMaxRollingSnapshots = "saves.default_max_rolling_snapshots";
+    public const string SaveDefaultMaxSnapshotSizeMb = "saves.default_max_snapshot_size_mb";
+    public const string SaveIncludeConfigFilesByDefault = "saves.include_config_default";
+    public const string SaveGcGracePeriodHours = "saves.gc_grace_period_hours";
 }

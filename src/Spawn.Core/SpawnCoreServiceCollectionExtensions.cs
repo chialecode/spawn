@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Spawn.Contracts;
 using Spawn.Core.AntiCheat;
+using Spawn.Core.Storage;
 using Spawn.Core.Update;
 
 namespace Spawn.Core;
@@ -25,6 +26,10 @@ public static class SpawnCoreServiceCollectionExtensions
         services.TryAddSingleton<DpapiSecretStore>();
         services.TryAddSingleton<ISteamApiKeyProvider, SteamApiKeyProvider>();
         services.TryAddSingleton<SpawnDatabase>();
+        services.TryAddSingleton<CasChunkStore>(sp => new CasChunkStore(
+            paths: sp.GetRequiredService<SpawnPaths>(),
+            database: sp.GetRequiredService<SpawnDatabase>(),
+            timeProvider: sp.GetRequiredService<TimeProvider>()));
 
         services.TryAddSingleton(AreWeAntiCheatYetIndex.Default);
         services.TryAddSingleton<IAntiCheatSystemProbe>(DefaultAntiCheatSystemProbe.Instance);

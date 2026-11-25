@@ -418,6 +418,191 @@ public sealed class TrilogyAndUnrealRecognitionTests
         Assert.Equal("Grand Theft Auto III – The Definitive Edition", importedDe.Title);
     }
 
+    [Fact]
+    public async Task LibraryRootWithMultipleGamesAndAnthology_NeverCreatesFourthParentDuplicate_AndStartupLoadAutoRetiresPersistedStaleParentSafely()
+    {
+        await using var sandbox = new TestSandbox();
+        await sandbox.Database.InitializeAsync();
+
+        string libraryRoot = sandbox.CreateSubDirectory("mixed-library-root");
+
+        // 1. Populate libraryRoot with 3 standalone games + 1 anthology trilogy + 1 deep depth-2 standalone game + non-game _OST folder
+        string gogLimboDir = Directory.CreateDirectory(Path.Combine(libraryRoot, "LIMBO")).FullName;
+        await File.WriteAllTextAsync(
+            Path.Combine(gogLimboDir, "goggame-1724299977.info"),
+            """{"gameId":"1724299977","name":"LIMBO","playTasks":[{"isPrimary":true,"category":"game","type":"FileTask","path":"limbo.exe"}]}""",
+            Encoding.UTF8);
+        await File.WriteAllBytesAsync(Path.Combine(gogLimboDir, "limbo.exe"), new byte[16384]);
+
+        string unityStanleyDir = Directory.CreateDirectory(Path.Combine(libraryRoot, "The Stanley Synthetic Ultra Deluxe")).FullName;
+        string stanleyPlugins = Directory.CreateDirectory(Path.Combine(unityStanleyDir, "Stanley_Data", "Plugins", "x86_64")).FullName;
+        await File.WriteAllBytesAsync(Path.Combine(unityStanleyDir, "The Stanley Synthetic Ultra Deluxe.exe"), new byte[32768]);
+        await File.WriteAllBytesAsync(Path.Combine(stanleyPlugins, "steam_api64.dll"), [0x4D, 0x5A]);
+        await File.WriteAllBytesAsync(Path.Combine(stanleyPlugins, "steam_api64.cdx"), [0x4D, 0x5A]);
+        await File.WriteAllTextAsync(Path.Combine(stanleyPlugins, "steam_emu.ini"), "[Settings]\nAppId=1703340\n", Encoding.UTF8);
+
+        string unityVsDir = Directory.CreateDirectory(Path.Combine(libraryRoot, "Vampire Synthetic")).FullName;
+        string vsPlugins = Directory.CreateDirectory(Path.Combine(unityVsDir, "Vampire_Data", "Plugins", "x86_64")).FullName;
+        await File.WriteAllBytesAsync(Path.Combine(unityVsDir, "VampireSynthetic.exe"), new byte[32768]);
+        await File.WriteAllBytesAsync(Path.Combine(vsPlugins, "steam_api64.dll"), [0x4D, 0x5A]);
+        await File.WriteAllBytesAsync(Path.Combine(vsPlugins, "steam_api64.rne"), [0x4D, 0x5A]);
+        await File.WriteAllTextAsync(Path.Combine(unityVsDir, "steam_appid.txt"), "1794680\n", Encoding.UTF8);
+
+        string deepDoujinDir = Directory.CreateDirectory(Path.Combine(libraryRoot, "DeepStandaloneDoujin")).FullName;
+        Directory.CreateDirectory(Path.Combine(deepDoujinDir, "GameAssets"));
+        string deepBinDir = Directory.CreateDirectory(Path.Combine(deepDoujinDir, "runtime", "win64")).FullName;
+        await File.WriteAllBytesAsync(Path.Combine(deepBinDir, "DeepStandalone.exe"), new byte[24576]);
+
+        string ostNoiseDir = Directory.CreateDirectory(Path.Combine(libraryRoot, "_OST")).FullName;
+        await File.WriteAllBytesAsync(Path.Combine(ostNoiseDir, "BonusPlayer.exe"), new byte[8192]);
+        Directory.CreateDirectory(Path.Combine(libraryRoot, "EmptyNotesFolder"));
+
+        string anthologyDir = await CreateSyntheticUnrealTrilogyAsync(libraryRoot);
+
+        var removedEvents = new List<GameRemovedEvent>();
+        var eventBus = new InMemorySpawnEventBus();
+        using var subRemove = eventBus.Subscribe<GameRemovedEvent>(e => removedEvents.Add(e));
+
+        using var guard = new AntiCheatGuardService();
+        var extractor = new GameArtworkExtractor(sandbox.Paths);
+        var scanner = new GameDirectoryScanner(
+            guard,
+            extractor,
+            options: new GameScanOptions { AllowOnlineMetadataLookup = false });
+        var library = new GameLibraryService(sandbox.Database, sandbox.Paths, scanner, eventBus);
+
+        // Step A: DiscoverCandidateGameDirectories on mixed library root MUST expand the anthology into its 3 children
+        // (total 7 standalone games: 3 trilogy + 3 standard + 1 deep standalone) and NEVER include anthologyDir itself!
+        var candidates = scanner.DiscoverCandidateGameDirectories(libraryRoot);
+        Assert.Equal(7, candidates.Count);
+        Assert.DoesNotContain(
+            candidates,
+            c => string.Equals(
+                Path.TrimEndingDirectorySeparator(c),
+                Path.TrimEndingDirectorySeparator(anthologyDir),
+                StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(
+            candidates,
+            c => string.Equals(
+                Path.TrimEndingDirectorySeparator(c),
+                Path.TrimEndingDirectorySeparator(deepDoujinDir),
+                StringComparison.OrdinalIgnoreCase));
+
+        // Step B: Reproduce user flow — first import anthologyDir (3 games), then scan the mixed libraryRoot
+        await library.ImportGameAsync(anthologyDir);
+        Assert.Equal(3, (await library.GetAllGamesAsync()).Count);
+
+        // Before scanning libraryRoot, FindUnimportedLocalGameFolderNames must NOT flag anthologyDir, _OST, or EmptyNotesFolder!
+        var pendingBeforeFullScan = GameDirectoryScanner.FindUnimportedLocalGameFolderNames(
+            libraryRoot,
+            (await library.GetAllGamesAsync()).Select(static g => g.InstallDir));
+        Assert.DoesNotContain("GTA - The Trilogy - DE", pendingBeforeFullScan, StringComparer.OrdinalIgnoreCase);
+        Assert.DoesNotContain("_OST", pendingBeforeFullScan, StringComparer.OrdinalIgnoreCase);
+        Assert.DoesNotContain("EmptyNotesFolder", pendingBeforeFullScan, StringComparer.OrdinalIgnoreCase);
+        Assert.Equal(4, pendingBeforeFullScan.Count);
+
+        var scannedAll = await library.ScanLibraryDirectoryAsync(libraryRoot);
+        Assert.Equal(7, scannedAll.Count);
+        var persistedAfterScan = await library.GetAllGamesAsync();
+        Assert.Equal(7, persistedAfterScan.Count);
+        Assert.DoesNotContain(
+            persistedAfterScan,
+            g => string.Equals(
+                Path.TrimEndingDirectorySeparator(g.InstallDir),
+                Path.TrimEndingDirectorySeparator(anthologyDir),
+                StringComparison.OrdinalIgnoreCase));
+
+        Assert.Empty(GameDirectoryScanner.FindUnimportedLocalGameFolderNames(
+            libraryRoot,
+            persistedAfterScan.Select(static g => g.InstallDir)));
+
+        // Step C: Exact reproduction of already-persisted 4th duplicate parent row in spawn.db (unpinned, 0 unlocks,
+        // pointing to GTA III child binary). GetAllGamesAsync() on startup/reload MUST automatically retire it!
+        string buggyFourthParentId = SpawnId.NewUlid();
+        string cachedDupArtworkDir = sandbox.Paths.GetGameArtworkDirectory(buggyFourthParentId);
+        Directory.CreateDirectory(cachedDupArtworkDir);
+        await File.WriteAllBytesAsync(Path.Combine(cachedDupArtworkDir, "icon.png"), [0x89, 0x50, 0x4E, 0x47]);
+
+        await sandbox.Database.UpsertGameAsync(new GameRecord
+        {
+            GameId = buggyFourthParentId,
+            Title = "Grand Theft Auto III – The Definitive Edition",
+            SortTitle = "Grand Theft Auto III – The Definitive Edition",
+            InstallDir = anthologyDir,
+            ExecutableRelPath = Path.Combine("GTA Synthetic III - The Definitive Edition", "Gameface", "Binaries", "Win64", "CityThree.exe"),
+            PlatformSource = PlatformSource.Steamrip,
+            SteamAppId = 901001,
+            AchievementCaptureMode = AchievementCaptureMode.SteamEmulator,
+        });
+
+        // Raw DB has 8 rows right now; calling library.GetAllGamesAsync() (used by MainWindowViewModel.InitializeAsync)
+        // must automatically reconcile and retire buggyFourthParentId down to 7 rows without touching user files!
+        Assert.Equal(8, (await sandbox.Database.GetAllGamesAsync()).Count);
+        var afterAutoReconcile = await library.GetAllGamesAsync();
+        Assert.Equal(7, afterAutoReconcile.Count);
+        Assert.Null(await library.GetGameByIdAsync(buggyFourthParentId));
+        Assert.False(Directory.Exists(cachedDupArtworkDir));
+        Assert.Single(removedEvents, e => e.GameId == buggyFourthParentId);
+        Assert.True(File.Exists(Path.Combine(anthologyDir, "Launcher.exe")));
+
+        // Step D: Safety guards — bound trainer or explicit user .exe pin MUST prevent parent retirement!
+        string trainerGuardedParentId = SpawnId.NewUlid();
+        await sandbox.Database.UpsertGameAsync(new GameRecord
+        {
+            GameId = trainerGuardedParentId,
+            Title = "Parent With Bound Trainer",
+            SortTitle = "Parent With Bound Trainer",
+            InstallDir = anthologyDir,
+            ExecutableRelPath = "Launcher.exe",
+            PlatformSource = PlatformSource.Standalone,
+        });
+        await sandbox.Database.UpsertTrainerAsync(new TrainerCatalogRecord
+        {
+            TrainerId = SpawnId.NewUlid(),
+            GameId = trainerGuardedParentId,
+            Provider = TrainerProviderKind.LocalImport,
+            DisplayName = "Synthetic Trainer",
+            SandboxRelativePath = "synthetic/trainer.exe",
+            FileSha256 = new string('a', 64),
+            FileSize = 1024,
+            ImportedAtUtc = DateTimeOffset.UtcNow,
+        });
+
+        var withTrainerParent = await library.GetAllGamesAsync();
+        Assert.Equal(8, withTrainerParent.Count);
+        Assert.NotNull(await library.GetGameByIdAsync(trainerGuardedParentId));
+
+        // Remove trainer-guarded parent and verify GbeForkActivated parent is also preserved
+        await library.RemoveGameAsync(trainerGuardedParentId);
+
+        string gbeGuardedParentId = SpawnId.NewUlid();
+        await sandbox.Database.UpsertGameAsync(new GameRecord
+        {
+            GameId = gbeGuardedParentId,
+            Title = "Parent With GbeFork Activated",
+            SortTitle = "Parent With GbeFork Activated",
+            InstallDir = anthologyDir,
+            ExecutableRelPath = "Launcher.exe",
+            PlatformSource = PlatformSource.Steamrip,
+            AchievementCaptureMode = AchievementCaptureMode.GbeForkActivated,
+        });
+        Assert.Equal(8, (await library.GetAllGamesAsync()).Count);
+        Assert.NotNull(await library.GetGameByIdAsync(gbeGuardedParentId));
+
+        // Step E: Nested publisher collection containing the anthology container expands cleanly to the 3 standalone games
+        string outerPublisherPack = sandbox.CreateSubDirectory("publisher-collection");
+        await CreateSyntheticUnrealTrilogyAsync(outerPublisherPack);
+        string standaloneSibling = Directory.CreateDirectory(Path.Combine(outerPublisherPack, "BonusStandaloneTitle")).FullName;
+        await File.WriteAllBytesAsync(Path.Combine(standaloneSibling, "StandaloneGame.exe"), new byte[16384]);
+        await File.WriteAllTextAsync(Path.Combine(standaloneSibling, "steam_appid.txt"), "909999\n", Encoding.UTF8);
+
+        var nestedExpanded = GameDirectoryScanner.TryExpandMultiGameContainer(outerPublisherPack);
+        Assert.Equal(4, nestedExpanded.Count);
+        Assert.DoesNotContain(
+            nestedExpanded,
+            p => string.Equals(Path.GetFileName(p), "GTA - The Trilogy - DE", StringComparison.OrdinalIgnoreCase));
+    }
+
     private static async Task<string> CreateSyntheticUnrealTrilogyAsync(string libraryRoot)
     {
         string anthologyDir = Directory.CreateDirectory(Path.Combine(libraryRoot, "GTA - The Trilogy - DE")).FullName;

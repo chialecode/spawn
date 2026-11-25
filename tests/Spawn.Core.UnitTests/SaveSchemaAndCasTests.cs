@@ -550,6 +550,172 @@ public sealed class SaveSchemaAndCasTests
         Assert.Null(await sandbox.Database.GetCasChunkByHashAsync(firstChunkHash));
     }
 
+    [Fact]
+    public async Task CasChunkStore_ChunkResurrectionWithConcurrentZeroGraceGc_PreservesLiveChunksAndRollbackSucceeds()
+    {
+        await using var sandbox = new TestSandbox();
+        var clock = new ManualTimeProvider(new DateTimeOffset(2026, 11, 25, 10, 0, 0, TimeSpan.Zero));
+        await sandbox.Database.InitializeAsync();
+        var store = new CasChunkStore(sandbox.Paths, sandbox.Database, clock);
+
+        string gameId = SpawnId.NewUlid(clock.GetUtcNow());
+        await sandbox.Database.UpsertGameAsync(new GameRecord
+        {
+            GameId = gameId,
+            Title = "Resurrection RPG",
+            InstallDir = Path.Combine(sandbox.RootDirectory, "res-game"),
+            ExecutableRelPath = "rpg.exe",
+        });
+        SaveBranchRecord mainBranch = await sandbox.Database.EnsureDefaultSaveBranchAsync(gameId, clock.GetUtcNow());
+
+        byte[] payload = CreateDeterministicRandomBytes(160 * 1024, seed: 4242);
+        CasFileIngestResult ingest1 = await store.StoreBytesAsync(payload);
+
+        // 1. Commit snap1 then delete it so chunks drop to ref_count = 0, then age past 48h grace period.
+        string snap1Id = SpawnId.NewUlid(clock.GetUtcNow());
+        await sandbox.Database.CreateSaveSnapshotWithFilesAsync(
+            new SaveSnapshotRecord
+            {
+                SnapshotId = snap1Id,
+                GameId = gameId,
+                BranchId = mainBranch.BranchId,
+                FileCount = 1,
+                TotalRawBytes = ingest1.RawSizeBytes,
+                TotalStoredBytes = ingest1.StoredCompressedBytes,
+                CreatedMachineId = "pc-gc",
+                CreatedAtUtc = clock.GetUtcNow(),
+            },
+            [
+                new SaveSnapshotFileRecord
+                {
+                    SnapshotId = snap1Id,
+                    LogicalPath = "<base>/slot0.sav",
+                    OriginalPath = Path.Combine(sandbox.RootDirectory, "slot0.sav"),
+                    Category = SaveFileCategory.Save,
+                    FileSize = ingest1.RawSizeBytes,
+                    LastWriteTimeUtc = clock.GetUtcNow(),
+                    FileBlake3 = ingest1.FileBlake3,
+                    ChunkHashes = ingest1.ChunkHashes,
+                },
+            ]);
+        var (deleted, _) = await sandbox.Database.DeleteSaveSnapshotAsync(snap1Id, clock.GetUtcNow());
+        Assert.True(deleted);
+        clock.Advance(TimeSpan.FromHours(48));
+
+        // 2. Resurrect identical payload inside a CAS write scope while concurrent TimeSpan.Zero GC attempts to run!
+        Task<SaveGcReport> concurrentGcTask;
+        string snap2Id = SpawnId.NewUlid(clock.GetUtcNow());
+        await using (await store.BeginChunkWriteScopeAsync())
+        {
+            CasFileIngestResult ingest2 = await store.StoreBytesAsync(payload);
+            Assert.Equal(ingest1.FileBlake3, ingest2.FileBlake3);
+
+            // Kick off immediate zero-grace GC concurrently — it MUST block until write scope finishes!
+            concurrentGcTask = Task.Run(() => store.RunGarbageCollectionAsync(TimeSpan.Zero));
+            await Task.Delay(50);
+            Assert.False(concurrentGcTask.IsCompleted);
+
+            await sandbox.Database.CreateSaveSnapshotWithFilesAsync(
+                new SaveSnapshotRecord
+                {
+                    SnapshotId = snap2Id,
+                    GameId = gameId,
+                    BranchId = mainBranch.BranchId,
+                    FileCount = 1,
+                    TotalRawBytes = ingest2.RawSizeBytes,
+                    TotalStoredBytes = 0,
+                    CreatedMachineId = "pc-gc",
+                    CreatedAtUtc = clock.GetUtcNow(),
+                },
+                [
+                    new SaveSnapshotFileRecord
+                    {
+                        SnapshotId = snap2Id,
+                        LogicalPath = "<base>/slot0.sav",
+                        OriginalPath = Path.Combine(sandbox.RootDirectory, "slot0.sav"),
+                        Category = SaveFileCategory.Save,
+                        FileSize = ingest2.RawSizeBytes,
+                        LastWriteTimeUtc = clock.GetUtcNow(),
+                        FileBlake3 = ingest2.FileBlake3,
+                        ChunkHashes = ingest2.ChunkHashes,
+                    },
+                ]);
+        }
+
+        SaveGcReport gcReport = await concurrentGcTask.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(0, gcReport.DeletedChunkCount);
+
+        // 3. Every resurrected chunk must still exist on disk and reconstruct byte-identically!
+        using var rebuilt = new MemoryStream();
+        await store.ReconstructToStreamAsync(ingest1.ChunkHashes, rebuilt, expectedFileBlake3: ingest1.FileBlake3);
+        Assert.Equal(payload, rebuilt.ToArray());
+
+        // 4. Verify CreateSaveSnapshotWithFilesAsync rolls back loudly if a referenced chunk row is absent.
+        string ghostHash = new string('a', 64);
+        string ghostSnapId = SpawnId.NewUlid(clock.GetUtcNow());
+        await Assert.ThrowsAsync<InvalidOperationException>(() => sandbox.Database.CreateSaveSnapshotWithFilesAsync(
+            new SaveSnapshotRecord
+            {
+                SnapshotId = ghostSnapId,
+                GameId = gameId,
+                BranchId = mainBranch.BranchId,
+                FileCount = 1,
+                TotalRawBytes = 10,
+                TotalStoredBytes = 10,
+                CreatedMachineId = "pc-gc",
+                CreatedAtUtc = clock.GetUtcNow(),
+            },
+            [
+                new SaveSnapshotFileRecord
+                {
+                    SnapshotId = ghostSnapId,
+                    LogicalPath = "<base>/ghost.sav",
+                    OriginalPath = Path.Combine(sandbox.RootDirectory, "ghost.sav"),
+                    Category = SaveFileCategory.Save,
+                    FileSize = 10,
+                    LastWriteTimeUtc = clock.GetUtcNow(),
+                    FileBlake3 = ghostHash,
+                    ChunkHashes = [ghostHash],
+                },
+            ]));
+        Assert.Null(await sandbox.Database.GetSaveSnapshotByIdAsync(ghostSnapId));
+    }
+
+    [Fact]
+    public async Task CasChunkStore_BoundedDecompressionAndEndpointSecretClearing_WorkSafely()
+    {
+        await using var sandbox = new TestSandbox();
+        await sandbox.Database.InitializeAsync();
+
+        // 1. Bounded Zstd decompression rejects payloads exceeding cap (decompression-bomb guard).
+        byte[] largeZeros = new byte[64 * 1024];
+        byte[] compressed;
+        using (var comp = new ZstdSharp.Compressor(3))
+        {
+            compressed = comp.Wrap(largeZeros).ToArray();
+        }
+
+        Assert.Throws<InvalidDataException>(() => CasChunkStore.DecompressBounded(compressed, maxDecompressedBytes: 4096, "bomb-test"));
+        byte[] ok = CasChunkStore.DecompressBounded(compressed, maxDecompressedBytes: 64 * 1024, "ok-test");
+        Assert.Equal(largeZeros.Length, ok.Length);
+
+        // 2. UpsertCloudSyncEndpointAsync allows clearing secret_credential_id back to null.
+        string epId = SpawnId.NewUlid();
+        var epWithSecret = new CloudSyncEndpointRecord
+        {
+            EndpointId = epId,
+            DisplayName = "NAS WebDAV",
+            ProviderType = CloudSyncProviderType.WebDav,
+            EndpointUrl = "https://nas.local/dav/",
+            SecretCredentialId = "cloud-sync-endpoint-" + epId,
+        };
+        await sandbox.Database.UpsertCloudSyncEndpointAsync(epWithSecret);
+        Assert.Equal(epWithSecret.SecretCredentialId, (await sandbox.Database.GetCloudSyncEndpointByIdAsync(epId))!.SecretCredentialId);
+
+        await sandbox.Database.UpsertCloudSyncEndpointAsync(epWithSecret with { SecretCredentialId = null });
+        Assert.Null((await sandbox.Database.GetCloudSyncEndpointByIdAsync(epId))!.SecretCredentialId);
+    }
+
     private static byte[] CreateDeterministicRandomBytes(int length, int seed)
     {
         var rng = new Random(seed);

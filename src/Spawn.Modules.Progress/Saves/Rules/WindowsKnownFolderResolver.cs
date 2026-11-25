@@ -63,8 +63,8 @@ public sealed record StaticKnownFolderProvider : IKnownFolderProvider
 /// </summary>
 public sealed partial class WindowsKnownFolderResolver : IKnownFolderProvider
 {
-    /// <summary>Default Goldberg Steam Emulator 64-bit account ID (<c>6561197960265728</c>).</summary>
-    public const string DefaultGoldbergUserId = "6561197960265728";
+    /// <summary>Default Goldberg Steam Emulator 64-bit account ID (<c>76561197960265728</c>).</summary>
+    public const string DefaultGoldbergUserId = "76561197960265728";
 
     /// <summary>Standard Steam64 base offset (<c>76561197960265728</c>) used to convert Steam64 to Steam32 account IDs.</summary>
     public const long Steam64BaseOffset = 76561197960265728L;

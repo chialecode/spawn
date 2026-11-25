@@ -488,11 +488,12 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
 
         if (relation == CloudSyncRelation.FastForwardPush && localHead is not null)
         {
-            (IReadOnlyList<SppkChunkInput> missingToUpload, _, _) = await ComputeMissingRemoteChunksAsync(
+            (IReadOnlyList<SppkChunkInput> missingToUpload, _, _, int syncableCount) = await ComputeMissingRemoteChunksAsync(
                 gameId,
                 localHead,
                 transport,
                 ct).ConfigureAwait(false);
+            saveFileCount = syncableCount;
             missingRemoteChunkCount = missingToUpload.Count;
             estimatedUploadBytes = missingToUpload.Sum(static c => (long)c.CompressedBytes.Length);
         }
@@ -506,9 +507,12 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
                 ct).ConfigureAwait(false);
             if (remoteManifest is not null)
             {
-                saveFileCount = remoteManifest.Files.Length;
+                RemoteSnapshotFileEntry[] syncableRemoteFiles = remoteManifest.Files
+                    .Where(static f => IsCloudSyncableFile(f.Category))
+                    .ToArray();
+                saveFileCount = syncableRemoteFiles.Length;
                 var uniqueMissing = new HashSet<string>(StringComparer.Ordinal);
-                foreach (RemoteSnapshotFileEntry f in remoteManifest.Files)
+                foreach (RemoteSnapshotFileEntry f in syncableRemoteFiles)
                 {
                     foreach (string hash in f.ChunkHashes)
                     {
@@ -775,9 +779,13 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
 
         foreach (SaveSnapshotRecord snap in snapshotsToUpload)
         {
-            IReadOnlyList<SaveSnapshotFileRecord> files = await _database
+            IReadOnlyList<SaveSnapshotFileRecord> allFiles = await _database
                 .GetSnapshotFilesAsync(snap.SnapshotId, ct)
                 .ConfigureAwait(false);
+            // Cloud sync strictly transmits [save] + HKCU registry exports and NEVER uploads [config] files.
+            SaveSnapshotFileRecord[] files = allFiles
+                .Where(static f => IsCloudSyncableFile(f.Category))
+                .ToArray();
             filesBySnapshot[snap.SnapshotId] = files;
 
             var allHashes = files
@@ -875,6 +883,9 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
             }
 
             SaveBranchRecord? snapBranch = await _database.GetSaveBranchByIdAsync(snap.BranchId, ct).ConfigureAwait(false);
+            int syncFileCount = files.Count(static f => f.Category == SaveFileCategory.Save);
+            int syncRegCount = files.Count(static f => f.Category == SaveFileCategory.RegistryExport);
+            long syncRawBytes = files.Sum(static f => Math.Max(0, f.FileSize));
             var manifest = new RemoteSnapshotManifest
             {
                 FormatVersion = 1,
@@ -887,9 +898,9 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
                 ModProfileHash = snap.ModProfileHash,
                 TriggerKind = snap.TriggerKind,
                 Note = snap.Note,
-                FileCount = snap.FileCount,
-                RegistryKeyCount = snap.RegistryKeyCount,
-                TotalRawBytes = snap.TotalRawBytes,
+                FileCount = syncFileCount,
+                RegistryKeyCount = syncRegCount > 0 ? Math.Max(syncRegCount, snap.RegistryKeyCount) : 0,
+                TotalRawBytes = syncRawBytes,
                 TotalStoredBytes = snap.TotalStoredBytes,
                 CreatedMachineId = snap.CreatedMachineId,
                 CreatedMachineName = ctx.Settings.MachineDisplayName,
@@ -967,13 +978,18 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
         CloudRemoteHeadSummary remoteHead = ctx.SelectedRemoteHead
             ?? throw new InvalidOperationException("No remote head available for pull.");
 
+        // When restoring to disk via ISaveTimeMachineService, defer advancing branch & active HEAD until
+        // RollbackToSnapshotAsync succeeds so: (a) a blocked restore (e.g. game running) leaves HEAD untouched
+        // and re-plannable as FastForwardPull, (b) PreRollbackSafety attaches to old local HEAD, and
+        // (c) AdoptRemoteAndBackupLocal diffs outgoing files against old local HEAD to prune stale [save] files.
+        bool deferHeadAdvance = _timeMachineService is not null;
         (int downloadedChunks, long downloadedBytes, SaveSnapshotRecord importedTip) =
             await PullRemoteChainIntoBranchAsync(
                 ctx.GameId,
                 remoteHead.HeadSnapshotId,
                 targetBranchId,
-                advanceBranchHead: true,
-                updateGameActiveHead: true,
+                advanceBranchHead: !deferHeadAdvance,
+                updateGameActiveHead: !deferHeadAdvance,
                 pinTip: false,
                 transport,
                 progress,
@@ -987,7 +1003,8 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
                 new RollbackSaveRequest
                 {
                     SnapshotId = importedTip.SnapshotId,
-                    IncludeConfigFiles = ctx.GameState.IncludeConfigFiles,
+                    // Cloud sync strictly restores [save] only and never overwrites machine-local [config] files.
+                    IncludeConfigFiles = false,
                     ModMismatchPolicy = SaveModMismatchPolicy.ProceedAnyway,
                     CreateSafetySnapshot = createSafetySnapshot,
                 },
@@ -1335,13 +1352,18 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
 
         manifestsToImport.Reverse(); // oldest -> newest
 
-        // Identify all missing chunks across the manifests and group by remote SPPK packId.
+        // Hold shared CAS write scope across download + SQLite snapshot commit so concurrent GC cannot delete newly fetched chunks.
+        await using IAsyncDisposable casWriteScope = await _casChunkStore
+            .BeginChunkWriteScopeAsync(ct)
+            .ConfigureAwait(false);
+
+        // Identify all missing chunks across the manifests (strictly excluding [config]) and group by remote SPPK packId.
         var missingChunksByPack = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
         var unmappedMissingChunks = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (RemoteSnapshotManifest m in manifestsToImport)
         {
-            foreach (RemoteSnapshotFileEntry file in m.Files)
+            foreach (RemoteSnapshotFileEntry file in m.Files.Where(static f => IsCloudSyncableFile(f.Category)))
             {
                 foreach (string rawHash in file.ChunkHashes)
                 {
@@ -1476,6 +1498,20 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
                     ? m.MergeParentSnapshotId
                     : null;
 
+            SaveSnapshotFileRecord[] fileRecords = m.Files
+                .Where(static f => IsCloudSyncableFile(f.Category))
+                .Select(f => new SaveSnapshotFileRecord
+                {
+                    SnapshotId = m.SnapshotId,
+                    LogicalPath = f.LogicalPath,
+                    OriginalPath = f.OriginalPath,
+                    Category = f.Category,
+                    FileSize = f.FileSize,
+                    LastWriteTimeUtc = f.LastWriteTimeUtc,
+                    FileBlake3 = f.FileBlake3,
+                    ChunkHashes = f.ChunkHashes,
+                }).ToArray();
+
             var snapRecord = new SaveSnapshotRecord
             {
                 SnapshotId = m.SnapshotId,
@@ -1489,27 +1525,17 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
                 Note = string.IsNullOrWhiteSpace(m.Note)
                     ? $"来自远端设备 '{m.CreatedMachineName ?? m.CreatedMachineId}'"
                     : m.Note,
-                FileCount = m.FileCount,
-                RegistryKeyCount = m.RegistryKeyCount,
-                TotalRawBytes = m.TotalRawBytes,
+                FileCount = fileRecords.Count(static f => f.Category == SaveFileCategory.Save),
+                RegistryKeyCount = fileRecords.Any(static f => f.Category == SaveFileCategory.RegistryExport)
+                    ? Math.Max(1, m.RegistryKeyCount)
+                    : 0,
+                TotalRawBytes = fileRecords.Sum(static f => Math.Max(0, f.FileSize)),
                 TotalStoredBytes = m.TotalStoredBytes,
                 CreatedMachineId = m.CreatedMachineId,
                 PlaytimeActiveSeconds = m.PlaytimeActiveSeconds,
                 CreatedAtUtc = m.CreatedAtUtc,
                 IsPinned = (isTip && pinTip) || m.IsPinned,
             };
-
-            SaveSnapshotFileRecord[] fileRecords = m.Files.Select(f => new SaveSnapshotFileRecord
-            {
-                SnapshotId = m.SnapshotId,
-                LogicalPath = f.LogicalPath,
-                OriginalPath = f.OriginalPath,
-                Category = f.Category,
-                FileSize = f.FileSize,
-                LastWriteTimeUtc = f.LastWriteTimeUtc,
-                FileBlake3 = f.FileBlake3,
-                ChunkHashes = f.ChunkHashes,
-            }).ToArray();
 
             await _database.CreateSaveSnapshotWithFilesAsync(
                 snapRecord,
@@ -1559,7 +1585,10 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
         return SppkPackfileFormat.ParseTailFooter(fullTail.Data, fullTail.TotalLength);
     }
 
-    private async Task<(IReadOnlyList<SppkChunkInput> MissingChunks, Dictionary<string, string> ExistingPackMap, HashSet<string> RemotePackIds)>
+    private static bool IsCloudSyncableFile(SaveFileCategory category) =>
+        category != SaveFileCategory.Config;
+
+    private async Task<(IReadOnlyList<SppkChunkInput> MissingChunks, Dictionary<string, string> ExistingPackMap, HashSet<string> RemotePackIds, int SyncableFileCount)>
         ComputeMissingRemoteChunksAsync(
             string gameId,
             SaveSnapshotRecord localHead,
@@ -1573,9 +1602,12 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
                 .Where(static id => !string.IsNullOrWhiteSpace(id))!,
             StringComparer.Ordinal);
 
-        IReadOnlyList<SaveSnapshotFileRecord> files = await _database
+        IReadOnlyList<SaveSnapshotFileRecord> allFiles = await _database
             .GetSnapshotFilesAsync(localHead.SnapshotId, ct)
             .ConfigureAwait(false);
+        SaveSnapshotFileRecord[] files = allFiles
+            .Where(static f => IsCloudSyncableFile(f.Category))
+            .ToArray();
         string[] allHashes = files
             .SelectMany(static f => f.ChunkHashes)
             .Select(static h => h.Trim().ToLowerInvariant())
@@ -1609,7 +1641,7 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
             }
         }
 
-        return (missing, existingPackMap, remotePackIds);
+        return (missing, existingPackMap, remotePackIds, files.Length);
     }
 
     private async Task<byte[]> PublishMachineHeadAsync(

@@ -88,6 +88,13 @@ public sealed class SaveWorkbenchUiTests
         Assert.Equal(5, vm.TotalBranchCount);
         Assert.Equal("rl1-challenge", vm.ActiveBranchNameText);
 
+        // 3b. DeleteActiveBranchCommand on non-default active branch switches back to main & deletes it cleanly!
+        Assert.True(vm.CanDeleteActiveBranch);
+        await vm.DeleteActiveBranchAsync();
+        Assert.Equal(4, vm.TotalBranchCount);
+        Assert.Equal("main", vm.ActiveBranchNameText);
+        Assert.False(vm.CanDeleteActiveBranch); // Default main branch cannot be deleted
+
         // 4. Running game MUST block rollback
         vm.UpdateSelectedGameRunningState(true);
         Assert.False(vm.CanRollbackSelected);
@@ -232,6 +239,10 @@ public sealed class SaveWorkbenchUiTests
                 }
 
                 Assert.True(coloredPixels > 80, $"Expected > 80 drawn vector pixels on SaveGraphCellControl, got {coloredPixels}");
+
+                // Also verify SavesSettingsControl (using shared SaveThemeComboBoxStyle) renders cleanly in Light & Dark themes.
+                RenderSavesSettingsTheme("LightTheme.xaml");
+                RenderSavesSettingsTheme("DarkTheme.xaml");
             }
             catch (Exception ex)
             {
@@ -309,6 +320,32 @@ public sealed class SaveWorkbenchUiTests
                 // Best-effort temp cleanup.
             }
         }
+    }
+
+    private static void RenderSavesSettingsTheme(string themeFile)
+    {
+        string hostAsm = typeof(SaveWorkbenchControl).Assembly.GetName().Name ?? "Spawn.Host";
+        var settingsRes = new ResourceDictionary();
+        settingsRes.MergedDictionaries.Add(new ResourceDictionary
+        {
+            Source = new Uri($"pack://application:,,,/{hostAsm};component/Themes/{themeFile}", UriKind.Absolute),
+        });
+        settingsRes.MergedDictionaries.Add(new ResourceDictionary
+        {
+            Source = new Uri($"pack://application:,,,/{hostAsm};component/Themes/Controls.xaml", UriKind.Absolute),
+        });
+        var hostBorder = new System.Windows.Controls.Border
+        {
+            Width = 860,
+            Height = 640,
+            Resources = settingsRes,
+            Child = new SavesSettingsControl(),
+        };
+        hostBorder.Measure(new Size(860, 640));
+        hostBorder.Arrange(new Rect(0, 0, 860, 640));
+        hostBorder.UpdateLayout();
+        var settingsRtb = new RenderTargetBitmap(860, 640, 96.0, 96.0, PixelFormats.Pbgra32);
+        settingsRtb.Render(hostBorder);
     }
 
     private static double RenderAndVerifyWorkbench(
@@ -866,6 +903,16 @@ public sealed class SaveWorkbenchUiTests
 
         public Task<DeleteBranchResult> DeleteBranchAsync(string branchId, bool deleteSnapshots = false, CancellationToken ct = default)
         {
+            if (string.Equals(_state.ActiveBranchId, branchId, StringComparison.Ordinal))
+            {
+                return Task.FromResult(new DeleteBranchResult(false, "分支当前处于激活状态，请先切换到其他分支后再删除。"));
+            }
+
+            if (deleteSnapshots)
+            {
+                _snapshots.RemoveAll(s => string.Equals(s.BranchId, branchId, StringComparison.Ordinal));
+            }
+
             _branches.RemoveAll(b => b.BranchId == branchId);
             return Task.FromResult(new DeleteBranchResult(true, "已删除分支"));
         }

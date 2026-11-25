@@ -551,6 +551,18 @@ public sealed class SaveTimeMachineService : ISaveTimeMachineService
             DateTimeOffset now = _timeProvider.GetUtcNow();
             SaveGameStateRecord state = await _database.GetOrCreateSaveGameStateAsync(game.GameId, now, ct).ConfigureAwait(false);
 
+            // Validate ModProfileHash mismatch policy BEFORE creating any forked branch so retrying after
+            // user confirmation never collides with an orphaned duplicate branch name.
+            SaveRestoreOutcome? modMismatchFailure = await CheckModProfileMismatchAsync(
+                state,
+                snapshot,
+                request.ModMismatchPolicy,
+                ct).ConfigureAwait(false);
+            if (modMismatchFailure is not null)
+            {
+                return modMismatchFailure;
+            }
+
             string targetBranchId = snapshot.BranchId;
             if (!string.IsNullOrWhiteSpace(request.ForkNewBranchName))
             {
@@ -683,8 +695,32 @@ public sealed class SaveTimeMachineService : ISaveTimeMachineService
                 return new DeleteBranchResult(false, $"分支「{branch.Name}」内存在已固定的重要快照（★），请先取消固定后再删除。");
             }
 
-            // Refuse if another branch forks directly off a snapshot owned by this branch.
+            // Refuse if another branch forks off or points its Base/Head at a snapshot owned by this branch,
+            // or if the game's current active HEAD snapshot belongs to this branch.
             var branchSnapIds = branchSnaps.Select(s => s.SnapshotId).ToHashSet(StringComparer.Ordinal);
+            if (!string.IsNullOrWhiteSpace(state?.CurrentHeadSnapshotId)
+                && branchSnapIds.Contains(state.CurrentHeadSnapshotId))
+            {
+                return new DeleteBranchResult(false, $"分支「{branch.Name}」包含当前激活 HEAD 快照，请先切换节点后再删除。");
+            }
+
+            IReadOnlyList<SaveBranchRecord> allBranches = await _database
+                .GetSaveBranchesByGameAsync(branch.GameId, ct)
+                .ConfigureAwait(false);
+            foreach (SaveBranchRecord other in allBranches)
+            {
+                if (string.Equals(other.BranchId, branch.BranchId, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                if ((!string.IsNullOrWhiteSpace(other.BaseSnapshotId) && branchSnapIds.Contains(other.BaseSnapshotId))
+                    || (!string.IsNullOrWhiteSpace(other.HeadSnapshotId) && branchSnapIds.Contains(other.HeadSnapshotId)))
+                {
+                    return new DeleteBranchResult(false, $"分支「{branch.Name}」的节点正被分支「{other.Name}」引用，无法直接删除。");
+                }
+            }
+
             foreach (SaveSnapshotRecord snap in branchSnaps)
             {
                 IReadOnlyList<SaveSnapshotRecord> children = await _database.GetChildSaveSnapshotsAsync(snap.SnapshotId, ct)
@@ -784,15 +820,38 @@ public sealed class SaveTimeMachineService : ISaveTimeMachineService
                 return new DeleteSnapshotResult(false, $"该快照存在 {children.Count} 个子节点依赖，禁止直接删除以保持存档树完整。");
             }
 
-            // If this leaf snapshot is a branch's HEAD (for an inactive branch), roll that branch's tip back to its parent.
+            // Protect any other branch whose BaseSnapshotId or HeadSnapshotId points at this snapshot
+            // (e.g., a freshly forked empty branch) so deleting a snapshot never leaves dangling IDs.
             IReadOnlyList<SaveBranchRecord> branches = await _database.GetSaveBranchesByGameAsync(snap.GameId, ct)
                 .ConfigureAwait(false);
+            foreach (SaveBranchRecord other in branches)
+            {
+                if (string.Equals(other.BranchId, snap.BranchId, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                if (string.Equals(other.HeadSnapshotId, snap.SnapshotId, StringComparison.Ordinal)
+                    || string.Equals(other.BaseSnapshotId, snap.SnapshotId, StringComparison.Ordinal))
+                {
+                    return new DeleteSnapshotResult(
+                        false,
+                        $"该快照正被分支「{other.Name}」作为起点或最新节点引用，无法直接删除。");
+                }
+            }
+
+            // If this leaf snapshot is its own branch's HEAD or Base, roll that pointer back to its parent.
             DateTimeOffset now = _timeProvider.GetUtcNow();
             foreach (SaveBranchRecord b in branches)
             {
                 if (string.Equals(b.HeadSnapshotId, snap.SnapshotId, StringComparison.Ordinal))
                 {
                     await _database.UpdateSaveBranchHeadAsync(b.BranchId, snap.ParentSnapshotId, now, ct).ConfigureAwait(false);
+                }
+
+                if (string.Equals(b.BaseSnapshotId, snap.SnapshotId, StringComparison.Ordinal))
+                {
+                    await _database.UpdateSaveBranchBaseAsync(b.BranchId, snap.ParentSnapshotId, now, ct).ConfigureAwait(false);
                 }
             }
 
@@ -919,6 +978,12 @@ public sealed class SaveTimeMachineService : ISaveTimeMachineService
             .ResolveGameSaveLayoutAsync(game.GameId, refreshOnlineRules: false, ct)
             .ConfigureAwait(false);
 
+        // Hold shared CAS write scope across file capture + SQLite ref_count increment so concurrent GC
+        // (including Settings' TimeSpan.Zero manual GC) can never delete chunks before commit.
+        await using IAsyncDisposable casWriteScope = await _casStore
+            .BeginChunkWriteScopeAsync(ct)
+            .ConfigureAwait(false);
+
         string snapshotId = SpawnId.NewUlid(now);
         AntiTearCaptureOutcome capture = await _fileCapture
             .CaptureAsync(snapshotId, game, layout, includeConfig, maxBytes, ct)
@@ -956,12 +1021,60 @@ public sealed class SaveTimeMachineService : ISaveTimeMachineService
             }
         }
 
-        // If user is on a detached HEAD (rolled back to an interior node) and creates a new manual/auto snapshot
-        // on that branch, advance branch head to the new child unless this is an out-of-band safety snapshot.
-        bool isDetached = !string.IsNullOrWhiteSpace(state.CurrentHeadSnapshotId)
+        // Handle Detached HEAD safely: NEVER overwrite targetBranch.HeadSnapshotId!
+        // - For safety snapshots: keep advanceBranchHead = false so original branch tip is untouched.
+        // - For normal user/auto snapshots while detached: auto-fork a visible branch rooted at CurrentHeadSnapshotId
+        //   so new progress becomes its own branch while preserving the original branch's newer tip intact.
+        bool isTargetingActiveBranch = string.Equals(targetBranchId, state.ActiveBranchId, StringComparison.Ordinal);
+        bool isDetached = isTargetingActiveBranch
+                          && !string.IsNullOrWhiteSpace(state.CurrentHeadSnapshotId)
+                          && !string.IsNullOrWhiteSpace(targetBranch.HeadSnapshotId)
                           && !string.Equals(targetBranch.HeadSnapshotId, state.CurrentHeadSnapshotId, StringComparison.Ordinal);
-        bool advanceBranchHead = !(isSafetySnapshot && isDetached);
-        bool updateGameActiveHead = !isSafetySnapshot;
+
+        bool advanceBranchHead;
+        bool updateGameActiveHead;
+        if (isSafetySnapshot)
+        {
+            advanceBranchHead = false;
+            updateGameActiveHead = false;
+        }
+        else if (isDetached)
+        {
+            IReadOnlyList<SaveBranchRecord> existingBranches = await _database
+                .GetSaveBranchesByGameAsync(game.GameId, ct)
+                .ConfigureAwait(false);
+            string baseForkName = $"fork-{now.ToString("yyyyMMdd-HHmmss", System.Globalization.CultureInfo.InvariantCulture)}";
+            string uniqueForkName = baseForkName;
+            var existingNames = existingBranches.Select(static b => b.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            int suffix = 2;
+            while (existingNames.Contains(uniqueForkName))
+            {
+                uniqueForkName = $"{baseForkName}-{suffix++}";
+            }
+
+            var autoForkBranch = new SaveBranchRecord
+            {
+                BranchId = SpawnId.NewUlid(now),
+                GameId = game.GameId,
+                Name = uniqueForkName,
+                Description = $"从历史节点自动分叉（原分支：{targetBranch.Name}）",
+                ColorHex = PickUnusedBranchColor(existingBranches),
+                BaseSnapshotId = parentSnapshotId,
+                HeadSnapshotId = null,
+                IsDefault = false,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now,
+            };
+            await _database.UpsertSaveBranchAsync(autoForkBranch, ct).ConfigureAwait(false);
+            targetBranchId = autoForkBranch.BranchId;
+            advanceBranchHead = true;
+            updateGameActiveHead = true;
+        }
+        else
+        {
+            advanceBranchHead = true;
+            updateGameActiveHead = true;
+        }
 
         var record = new SaveSnapshotRecord
         {
@@ -1027,24 +1140,11 @@ public sealed class SaveTimeMachineService : ISaveTimeMachineService
             return new SaveRestoreOutcome { Succeeded = false, Message = $"未找到目标快照：{targetSnapshotId}" };
         }
 
-        // Check ModProfileHash mismatch policy when current active snapshot specifies a different non-empty ModProfileHash.
-        SaveSnapshotRecord? currentHead = !string.IsNullOrWhiteSpace(state.CurrentHeadSnapshotId)
-            ? await _database.GetSaveSnapshotByIdAsync(state.CurrentHeadSnapshotId, ct).ConfigureAwait(false)
-            : null;
-        if (modMismatchPolicy == SaveModMismatchPolicy.AbortAndPrompt
-            && !string.IsNullOrWhiteSpace(targetSnapshot.ModProfileHash)
-            && !string.IsNullOrWhiteSpace(currentHead?.ModProfileHash)
-            && !string.Equals(targetSnapshot.ModProfileHash, currentHead.ModProfileHash, StringComparison.OrdinalIgnoreCase))
+        SaveRestoreOutcome? modMismatch = await CheckModProfileMismatchAsync(state, targetSnapshot, modMismatchPolicy, ct)
+            .ConfigureAwait(false);
+        if (modMismatch is not null)
         {
-            return new SaveRestoreOutcome
-            {
-                Succeeded = false,
-                RequiresModMismatchConfirmation = true,
-                ExpectedModProfileHash = targetSnapshot.ModProfileHash,
-                CurrentModProfileHash = currentHead.ModProfileHash,
-                TargetSnapshot = targetSnapshot,
-                Message = "目标快照关联的 Mod 配置指纹与当前不一致，请确认是否继续回滚。",
-            };
+            return modMismatch;
         }
 
         SaveSnapshotRecord? safetySnapshot = null;
@@ -1108,6 +1208,39 @@ public sealed class SaveTimeMachineService : ISaveTimeMachineService
             .ConfigureAwait(false);
 
         return restoreOutcome with { ActiveBranchId = targetBranchId };
+    }
+
+    private async Task<SaveRestoreOutcome?> CheckModProfileMismatchAsync(
+        SaveGameStateRecord state,
+        SaveSnapshotRecord targetSnapshot,
+        SaveModMismatchPolicy modMismatchPolicy,
+        CancellationToken ct)
+    {
+        if (modMismatchPolicy != SaveModMismatchPolicy.AbortAndPrompt
+            || string.IsNullOrWhiteSpace(targetSnapshot.ModProfileHash)
+            || string.IsNullOrWhiteSpace(state.CurrentHeadSnapshotId))
+        {
+            return null;
+        }
+
+        SaveSnapshotRecord? currentHead = await _database
+            .GetSaveSnapshotByIdAsync(state.CurrentHeadSnapshotId, ct)
+            .ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(currentHead?.ModProfileHash)
+            || string.Equals(targetSnapshot.ModProfileHash, currentHead.ModProfileHash, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return new SaveRestoreOutcome
+        {
+            Succeeded = false,
+            RequiresModMismatchConfirmation = true,
+            ExpectedModProfileHash = targetSnapshot.ModProfileHash,
+            CurrentModProfileHash = currentHead.ModProfileHash,
+            TargetSnapshot = targetSnapshot,
+            Message = "目标快照关联的 Mod 配置指纹与当前不一致，请确认是否继续回滚。",
+        };
     }
 
     private async Task EnforceRollingRetentionCoreAsync(

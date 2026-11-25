@@ -182,6 +182,173 @@ public sealed class SaveSystemEndToEndIntegrationTests
         }
     }
 
+    [Fact]
+    public async Task CloudSync_BlockedPullPreservesHead_PreRollbackAttachesToOldHead_AdoptRemotePrunesStale_AndConfigNeverSynced()
+    {
+        string tempRoot = Path.Combine(Path.GetTempPath(), "spawn-e2e-cloud-guards-" + Guid.NewGuid().ToString("N"));
+        string remoteSyncRoot = Path.Combine(tempRoot, "remote-sppk-repo");
+        Directory.CreateDirectory(remoteSyncRoot);
+
+        try
+        {
+            await using var machineA = await MachineNode.CreateAsync(tempRoot, "machine-a");
+            await using var machineB = await MachineNode.CreateAsync(tempRoot, "machine-b");
+
+            string sharedGameId = SpawnId.NewUlid();
+            await machineA.SeedGameAsync(sharedGameId, "Elden Ring", steamAppId: 1245620);
+            await machineB.SeedGameAsync(sharedGameId, "Elden Ring", steamAppId: 1245620);
+            await machineA.RuleResolver.EnsureBuiltInRulesSeededAsync();
+            await machineB.RuleResolver.EnsureBuiltInRulesSeededAsync();
+
+            // Enable local [config] capture on BOTH machines to prove cloud sync STILL strictly excludes [config]!
+            SaveGameStateRecord stateA = await machineA.TimeMachine.GetGameStateAsync(sharedGameId);
+            await machineA.TimeMachine.UpdateGameStateAsync(stateA with { IncludeConfigFiles = true });
+            SaveGameStateRecord stateB = await machineB.TimeMachine.GetGameStateAsync(sharedGameId);
+            await machineB.TimeMachine.UpdateGameStateAsync(stateB with { IncludeConfigFiles = true });
+
+            string saveDirA = Path.Combine(machineA.AppDataRoaming, "EldenRing", "76561198000000001");
+            string saveDirB = Path.Combine(machineB.AppDataRoaming, "EldenRing", "76561198000000001");
+            Directory.CreateDirectory(saveDirA);
+            Directory.CreateDirectory(saveDirB);
+
+            string saveFileA = Path.Combine(saveDirA, "ER0000.sl2");
+            string cfgFileA = Path.Combine(machineA.AppDataRoaming, "EldenRing", "GraphicsConfig.xml");
+            await File.WriteAllTextAsync(saveFileA, "SHARED-V1", Encoding.UTF8);
+            await File.WriteAllTextAsync(cfgFileA, "<Graphics>Desktop-4K-RT</Graphics>", Encoding.UTF8);
+
+            CreateSaveSnapshotResult s1A = await machineA.TimeMachine.CreateSnapshotAsync(new CreateSaveSnapshotRequest
+            {
+                GameId = sharedGameId,
+                IncludeConfigFiles = true,
+                Note = "Desktop V1 with Config",
+            });
+            Assert.True(s1A.Succeeded, s1A.Message);
+            IReadOnlyList<SaveSnapshotFileRecord> localFilesA = await machineA.TimeMachine.GetSnapshotFilesAsync(s1A.Snapshot!.SnapshotId);
+            Assert.Contains(localFilesA, f => f.Category == SaveFileCategory.Config);
+
+            CloudSyncEndpointRecord epA = await machineA.CloudSync.SaveEndpointAsync(new CloudSyncEndpointRecord
+            {
+                EndpointId = SpawnId.NewUlid(),
+                DisplayName = "Shared SPPK",
+                ProviderType = CloudSyncProviderType.LocalFolder,
+                EndpointUrl = remoteSyncRoot,
+                IsDefault = true,
+            });
+            CloudSyncEndpointRecord epB = await machineB.CloudSync.SaveEndpointAsync(new CloudSyncEndpointRecord
+            {
+                EndpointId = SpawnId.NewUlid(),
+                DisplayName = "Shared SPPK",
+                ProviderType = CloudSyncProviderType.LocalFolder,
+                EndpointUrl = remoteSyncRoot,
+                IsDefault = true,
+            });
+
+            // 1. Push V1 from A -> remote snapshot manifest must NOT contain any [config] file!
+            CloudSyncExecutionReport pushV1 = await machineA.CloudSync.ExecuteSyncAsync(sharedGameId, epA.EndpointId);
+            Assert.True(pushV1.Succeeded, pushV1.Message);
+
+            string remoteManifestPath = Directory.EnumerateFiles(
+                remoteSyncRoot,
+                $"{s1A.Snapshot.SnapshotId}.json",
+                SearchOption.AllDirectories).Single();
+            string manifestJson = await File.ReadAllTextAsync(remoteManifestPath, Encoding.UTF8);
+            Assert.DoesNotContain("GraphicsConfig.xml", manifestJson, StringComparison.OrdinalIgnoreCase);
+
+            // 2. Machine B creates its own local GraphicsConfig.xml and pulls V1 -> GraphicsConfig.xml MUST stay intact!
+            string saveFileB = Path.Combine(saveDirB, "ER0000.sl2");
+            string cfgFileB = Path.Combine(machineB.AppDataRoaming, "EldenRing", "GraphicsConfig.xml");
+            await File.WriteAllTextAsync(cfgFileB, "<Graphics>Handheld-800p</Graphics>", Encoding.UTF8);
+
+            CloudSyncExecutionReport pullV1 = await machineB.CloudSync.ExecuteSyncAsync(sharedGameId, epB.EndpointId);
+            Assert.True(pullV1.Succeeded, pullV1.Message);
+            Assert.Equal("SHARED-V1", await File.ReadAllTextAsync(saveFileB, Encoding.UTF8));
+            Assert.Equal("<Graphics>Handheld-800p</Graphics>", await File.ReadAllTextAsync(cfgFileB, Encoding.UTF8));
+
+            // 3. Machine A advances to V2 and pushes; Machine B edits disk locally and STARTS the game!
+            await File.WriteAllTextAsync(saveFileA, "DESKTOP-V2", Encoding.UTF8);
+            CreateSaveSnapshotResult s2A = await machineA.TimeMachine.CreateSnapshotAsync(new CreateSaveSnapshotRequest
+            {
+                GameId = sharedGameId,
+                IncludeConfigFiles = true,
+                Note = "Desktop V2",
+            });
+            Assert.True(s2A.Succeeded, s2A.Message);
+            Assert.True((await machineA.CloudSync.ExecuteSyncAsync(sharedGameId, epA.EndpointId)).Succeeded);
+
+            await File.WriteAllTextAsync(saveFileB, "UNSAVED-LOCAL-B-EDIT", Encoding.UTF8);
+            string oldHeadB = (await machineB.TimeMachine.GetGameStateAsync(sharedGameId)).CurrentHeadSnapshotId!;
+
+            // (a) Blocked pull while game running MUST NOT advance DB HEAD and MUST remain FastForwardPull!
+            machineB.LaunchService.SetRunning(sharedGameId, true);
+            CloudSyncExecutionReport blockedPull = await machineB.CloudSync.ExecuteSyncAsync(sharedGameId, epB.EndpointId);
+            Assert.False(blockedPull.Succeeded);
+            Assert.Equal(oldHeadB, (await machineB.TimeMachine.GetGameStateAsync(sharedGameId)).CurrentHeadSnapshotId);
+            Assert.Equal("UNSAVED-LOCAL-B-EDIT", await File.ReadAllTextAsync(saveFileB, Encoding.UTF8));
+
+            CloudSyncPlanPreview rePlan = await machineB.CloudSync.PlanSyncAsync(sharedGameId, epB.EndpointId);
+            Assert.Equal(CloudSyncRelation.FastForwardPull, rePlan.Relation);
+
+            // (b) Stop game and pull -> succeeds, PreRollbackSafety attaches to oldHeadB (NOT s2A), config untouched!
+            machineB.LaunchService.SetRunning(sharedGameId, false);
+            CloudSyncExecutionReport pullV2 = await machineB.CloudSync.ExecuteSyncAsync(sharedGameId, epB.EndpointId);
+            Assert.True(pullV2.Succeeded, pullV2.Message);
+            Assert.Equal("DESKTOP-V2", await File.ReadAllTextAsync(saveFileB, Encoding.UTF8));
+            Assert.Equal("<Graphics>Handheld-800p</Graphics>", await File.ReadAllTextAsync(cfgFileB, Encoding.UTF8));
+
+            SaveTreeGraphDto graphBAfterPull = await machineB.TimeMachine.GetSaveTreeGraphAsync(sharedGameId);
+            SaveTreeNodeDto safetyNode = Assert.Single(
+                graphBAfterPull.Nodes,
+                n => n.Snapshot.TriggerKind == SaveSnapshotTriggerKind.PreRollbackSafety);
+            Assert.Equal(oldHeadB, safetyNode.ParentSnapshotId);
+            Assert.Equal(s2A.Snapshot!.SnapshotId, graphBAfterPull.CurrentHeadSnapshotId);
+
+            // (c) Diverge: Machine B creates extra [save] file ER0000.sl2.bak + snapshot; Machine A advances to V3 without .bak.
+            // AdoptRemoteAndBackupLocal MUST remove Machine B's extraneous local [save] file ER0000.sl2.bak!
+            string staleBakB = Path.Combine(saveDirB, "ER0000.sl2.bak");
+            await File.WriteAllTextAsync(saveFileB, "B-DIVERGED", Encoding.UTF8);
+            await File.WriteAllTextAsync(staleBakB, "STALE-LOCAL-ONLY-SAVE", Encoding.UTF8);
+            Assert.True((await machineB.TimeMachine.CreateSnapshotAsync(new CreateSaveSnapshotRequest
+            {
+                GameId = sharedGameId,
+                Note = "B Diverged with extra .bak",
+            })).Succeeded);
+
+            await File.WriteAllTextAsync(saveFileA, "DESKTOP-V3-CLEAN", Encoding.UTF8);
+            Assert.True((await machineA.TimeMachine.CreateSnapshotAsync(new CreateSaveSnapshotRequest
+            {
+                GameId = sharedGameId,
+                Note = "Desktop V3 Clean",
+            })).Succeeded);
+            Assert.True((await machineA.CloudSync.ExecuteSyncAsync(sharedGameId, epA.EndpointId)).Succeeded);
+
+            CloudSyncPlanPreview divPlan = await machineB.CloudSync.PlanSyncAsync(sharedGameId, epB.EndpointId);
+            Assert.Equal(CloudSyncRelation.Diverged, divPlan.Relation);
+
+            CloudSyncExecutionReport adoptRes = await machineB.CloudSync.ExecuteSyncAsync(
+                sharedGameId,
+                epB.EndpointId,
+                CloudDivergenceResolution.AdoptRemoteAndBackupLocal);
+            Assert.True(adoptRes.Succeeded, adoptRes.Message);
+            Assert.Equal("DESKTOP-V3-CLEAN", await File.ReadAllTextAsync(saveFileB, Encoding.UTF8));
+            Assert.False(File.Exists(staleBakB), "Extraneous local [save] file should be removed when adopting remote snapshot.");
+            Assert.Equal("<Graphics>Handheld-800p</Graphics>", await File.ReadAllTextAsync(cfgFileB, Encoding.UTF8));
+        }
+        finally
+        {
+            try
+            {
+                if (Directory.Exists(tempRoot))
+                {
+                    Directory.Delete(tempRoot, recursive: true);
+                }
+            }
+            catch
+            {
+                // Best-effort temp cleanup.
+            }
+        }
+    }
+
     private sealed class MachineNode : IAsyncDisposable
     {
         public string MachineRoot { get; }
@@ -192,6 +359,7 @@ public sealed class SaveSystemEndToEndIntegrationTests
         public ISaveTimeMachineService TimeMachine => Services.GetRequiredService<ISaveTimeMachineService>();
         public ISaveWatcherService Watcher => Services.GetRequiredService<ISaveWatcherService>();
         public ICloudSaveSyncService CloudSync => Services.GetRequiredService<ICloudSaveSyncService>();
+        public FakeGameLaunchService LaunchService => (FakeGameLaunchService)Services.GetRequiredService<IGameLaunchService>();
 
         private MachineNode(string machineRoot, string appDataRoaming, ServiceProvider services)
         {

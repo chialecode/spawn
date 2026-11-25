@@ -252,7 +252,7 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
     public bool CanMutateDiskSaves => HasSelectedGame && IsServiceAvailable && !IsBusy && !IsSelectedGameRunning;
     public bool CanRollbackSelected => CanMutateDiskSaves && SelectedNode is not null;
     public bool CanForkFromSelected => HasSelectedGame && IsServiceAvailable && !IsBusy && SelectedNode is not null;
-    public bool CanDeleteActiveBranch => HasSelectedGame && IsServiceAvailable && !IsBusy && ActiveBranch is { IsDefault: false } && Branches.Count > 1;
+    public bool CanDeleteActiveBranch => HasSelectedGame && IsServiceAvailable && !IsBusy && !IsSelectedGameRunning && ActiveBranch is { IsDefault: false } && Branches.Count > 1;
     public bool CanDeleteSelectedSnapshot => HasSelectedGame && IsServiceAvailable && !IsBusy && SelectedNode is { IsHead: false, IsPinned: false };
 
     public string ActiveBranchNameText => ActiveBranch?.Name ?? _rawGraph?.ActiveBranchName ?? "main";
@@ -932,19 +932,45 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
             return;
         }
 
+        if (IsSelectedGameRunning)
+        {
+            StatusFeedbackRequested?.Invoke("游戏运行中已禁止切换并删除分支，请先退出游戏后再试", true);
+            return;
+        }
+
+        SaveBranchItemViewModel branchToDelete = ActiveBranch;
+        SaveBranchItemViewModel? fallbackBranch = Branches.FirstOrDefault(
+            b => b.IsDefault && !string.Equals(b.BranchId, branchToDelete.BranchId, StringComparison.OrdinalIgnoreCase))
+            ?? Branches.FirstOrDefault(
+                b => !string.Equals(b.BranchId, branchToDelete.BranchId, StringComparison.OrdinalIgnoreCase));
+        if (fallbackBranch is null)
+        {
+            StatusFeedbackRequested?.Invoke("找不到可切回的目标分支，无法删除当前分支", true);
+            return;
+        }
+
         IsBusy = true;
         NotifyAllDerivedStates();
         try
         {
-            DeleteBranchResult result = await _saveService.DeleteBranchAsync(ActiveBranch.BranchId, deleteSnapshots: false).ConfigureAwait(true);
-            if (!result.Succeeded)
+            // Switch back to the default (or fallback) branch first so the branch being deleted is no longer active.
+            SaveRestoreOutcome switchOutcome = await _saveService.SwitchBranchAsync(new SwitchBranchRequest
             {
-                StatusFeedbackRequested?.Invoke(result.Message, true);
+                GameId = _currentGame.GameId,
+                TargetBranchId = fallbackBranch.BranchId,
+                CreateSafetySnapshot = false,
+                ModMismatchPolicy = SaveModMismatchPolicy.ProceedAnyway,
+            }).ConfigureAwait(true);
+
+            if (!switchOutcome.Succeeded)
+            {
+                StatusFeedbackRequested?.Invoke($"切回「{fallbackBranch.Name}」失败，已取消删除：{switchOutcome.Message}", true);
                 return;
             }
 
+            DeleteBranchResult result = await _saveService.DeleteBranchAsync(branchToDelete.BranchId, deleteSnapshots: true).ConfigureAwait(true);
             await ReloadCurrentGameAndNotifyParentAsync(_currentGame.GameId, preserveSelectionId: null).ConfigureAwait(true);
-            StatusFeedbackRequested?.Invoke(result.Message, false);
+            StatusFeedbackRequested?.Invoke(result.Message, !result.Succeeded);
         }
         catch (Exception ex)
         {

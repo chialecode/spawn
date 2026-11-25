@@ -130,45 +130,89 @@ namespace Spawn.Contracts;
 
 public interface ILudusaviRuleResolver
 {
+    Task<ResolvedSaveLayout> ResolveGameSaveLayoutAsync(
+        string gameId,
+        bool refreshOnlineRules = false,
+        CancellationToken ct = default);
+    string CanonicalizeToLogicalPath(string fullPathOrRegistryKey, GameRecord game);
+    string ExpandLogicalPath(string logicalPath, GameRecord game);
     Task<int> EnsureBuiltInRulesSeededAsync(CancellationToken ct = default);
-    Task<int> ImportRulesJsonAsync(string jsonContent, CancellationToken ct = default);
-    Task<ResolvedSaveLayout> ResolveGameSaveLayoutAsync(string gameId, CancellationToken ct = default);
+    Task<int> ImportRulesJsonAsync(string rulesJson, CancellationToken ct = default);
+    Task<int> GetRuleCountAsync(CancellationToken ct = default);
 }
 
 public interface ISaveTimeMachineService
 {
-    Task<SaveBranchRecord> EnsureDefaultBranchAsync(string gameId, CancellationToken ct = default);
-    Task<SaveTreeGraphDto> GetSaveTreeGraphAsync(string gameId, bool includeArchivedBranches = false, CancellationToken ct = default);
-    Task<IReadOnlyList<SaveGameSummaryDto>> ListGameSaveSummariesAsync(CancellationToken ct = default);
+    event EventHandler<SaveTreeChangedEvent>? SaveTreeChanged;
+
+    Task<SaveGameStateRecord> GetGameStateAsync(string gameId, CancellationToken ct = default);
+    Task<SaveGameStateRecord> UpdateGameStateAsync(SaveGameStateRecord state, CancellationToken ct = default);
+
+    Task<SaveSettingsDto> GetSettingsAsync(CancellationToken ct = default);
+    Task SaveSettingsAsync(SaveSettingsDto settings, CancellationToken ct = default);
+
+    Task<SaveTreeGraphDto> GetSaveTreeGraphAsync(string gameId, CancellationToken ct = default);
+    Task<IReadOnlyList<SaveLibraryGameOverviewDto>> GetLibraryOverviewAsync(CancellationToken ct = default);
+    Task<IReadOnlyList<SaveSnapshotFileRecord>> GetSnapshotFilesAsync(string snapshotId, CancellationToken ct = default);
+    Task<CasVaultStatsDto> GetVaultStatsAsync(CancellationToken ct = default);
+
+    Task<SaveSnapshotDiffDto> DiffSnapshotsAsync(string leftSnapshotId, string rightSnapshotId, CancellationToken ct = default);
+    Task<SaveSnapshotDiffDto> DiffSnapshotWithDiskAsync(string snapshotId, CancellationToken ct = default);
+
     Task<CreateSaveSnapshotResult> CreateSnapshotAsync(CreateSaveSnapshotRequest request, CancellationToken ct = default);
+    Task<SaveRestoreOutcome> RollbackToSnapshotAsync(RollbackSaveRequest request, CancellationToken ct = default);
+
     Task<ForkBranchResult> CreateBranchAsync(ForkBranchRequest request, CancellationToken ct = default);
     Task<SaveRestoreOutcome> SwitchBranchAsync(SwitchBranchRequest request, CancellationToken ct = default);
-    Task<SaveBranchRecord> RenameBranchAsync(string branchId, string newName, string? description = null, string? colorHex = null, CancellationToken ct = default);
-    Task ArchiveBranchAsync(string branchId, bool archived = true, CancellationToken ct = default);
-    Task<SaveRestoreOutcome> RestoreSnapshotAsync(RestoreSaveSnapshotRequest request, CancellationToken ct = default);
-    Task<SaveSnapshotRecord> UpdateSnapshotMetadataAsync(string snapshotId, string? note, bool? isPinned, CancellationToken ct = default);
-    Task DeleteSnapshotAsync(string snapshotId, CancellationToken ct = default);
-    Task<int> ImportLegacyPreTrainerSnapshotsAsync(string gameId, CancellationToken ct = default);
-    Task<SaveGameStateRecord> GetOrCreateGameStateAsync(string gameId, CancellationToken ct = default);
-    Task<SaveGameStateRecord> UpdateGameStateAsync(SaveGameStateRecord state, CancellationToken ct = default);
-    Task<SaveCasGcReport> RunCasGarbageCollectionAsync(TimeSpan gracePeriod, CancellationToken ct = default);
+    Task<SaveBranchRecord?> RenameBranchAsync(
+        string branchId,
+        string newName,
+        string? description = null,
+        string? colorHex = null,
+        CancellationToken ct = default);
+    Task<DeleteBranchResult> DeleteBranchAsync(string branchId, bool deleteSnapshots = false, CancellationToken ct = default);
+
+    Task<bool> SetSnapshotPinnedAsync(string snapshotId, bool isPinned, CancellationToken ct = default);
+    Task<bool> UpdateSnapshotNoteAsync(string snapshotId, string? note, CancellationToken ct = default);
+    Task<DeleteSnapshotResult> DeleteSnapshotAsync(string snapshotId, CancellationToken ct = default);
+
+    Task<ExportSnapshotResult> ExportSnapshotToFolderAsync(string snapshotId, string targetDirectory, CancellationToken ct = default);
+    Task<LegacyPreTrainerImportReport> ImportLegacyPreTrainerSnapshotsAsync(string gameId, CancellationToken ct = default);
+    Task<SaveGcReport> RunCasGarbageCollectionAsync(TimeSpan? gracePeriodOverride = null, CancellationToken ct = default);
 }
 
 public interface ISaveWatcherService : IAsyncDisposable
 {
+    event EventHandler<SaveWatcherStatusDto>? WatcherStatusChanged;
+
+    Task StartAsync(CancellationToken ct = default);
+    Task StopAsync(CancellationToken ct = default);
     Task StartWatchingGameAsync(string gameId, CancellationToken ct = default);
-    Task StopWatchingGameAsync(string gameId, bool capturePostExitSnapshot = true, CancellationToken ct = default);
-    bool IsWatchingGame(string gameId);
+    Task StopWatchingGameAsync(string gameId, CancellationToken ct = default);
+    SaveWatcherStatusDto GetStatus(string gameId);
+    IReadOnlyList<SaveWatcherStatusDto> GetAllStatuses();
 }
 
 public interface ICloudSaveSyncService
 {
     Task<IReadOnlyList<CloudSyncEndpointRecord>> ListEndpointsAsync(CancellationToken ct = default);
-    Task<CloudSyncEndpointRecord> SaveEndpointAsync(CloudSyncEndpointRecord endpoint, CloudEndpointCredentials? credentials = null, CancellationToken ct = default);
-    Task DeleteEndpointAsync(string endpointId, CancellationToken ct = default);
-    Task<CloudEndpointTestResult> TestEndpointAsync(string endpointId, CancellationToken ct = default);
+    Task<CloudSyncEndpointRecord> SaveEndpointAsync(
+        CloudSyncEndpointRecord endpoint,
+        CloudSyncEndpointSecrets? secrets = null,
+        CancellationToken ct = default);
+    Task<bool> DeleteEndpointAsync(string endpointId, CancellationToken ct = default);
+    Task<CloudSyncEndpointTestResult> TestEndpointConnectionAsync(string endpointId, CancellationToken ct = default);
+
     Task<CloudSyncPlanPreview> PlanSyncAsync(string gameId, string? endpointId = null, CancellationToken ct = default);
-    Task<CloudSyncExecutionReport> ExecuteSyncAsync(string gameId, string? endpointId = null, CloudDivergenceResolution? resolution = null, IProgress<CloudSyncProgressTick>? progress = null, CancellationToken ct = default);
+    Task<CloudSyncExecutionReport> ExecuteSyncAsync(
+        string gameId,
+        string? endpointId = null,
+        CloudDivergenceResolution? divergenceResolution = null,
+        IProgress<CloudSyncProgressTick>? progress = null,
+        CancellationToken ct = default);
+    Task<IReadOnlyList<CloudSyncExecutionReport>> SyncAllConfiguredGamesAsync(
+        IProgress<CloudSyncProgressTick>? progress = null,
+        CancellationToken ct = default);
 }
 ```
 

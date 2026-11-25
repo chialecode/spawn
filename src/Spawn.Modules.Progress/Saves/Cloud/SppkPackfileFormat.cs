@@ -417,18 +417,16 @@ public static class SppkPackfileFormat
         uint? expectedRawLength = null)
     {
         string normalizedExpected = NormalizeBlake3Hex(expectedChunkBlake3Hex);
-        byte[] raw;
-        try
-        {
-            using var decompressor = new Decompressor();
-            raw = decompressor.Unwrap(compressedBytes).ToArray();
-        }
-        catch (Exception ex) when (ex is not InvalidDataException)
+        if (expectedRawLength.HasValue && expectedRawLength.Value > (uint)Spawn.Core.Storage.CasChunkStore.MaxDecompressedChunkBytes)
         {
             throw new InvalidDataException(
-                $"Failed to Zstd-decompress SPPK chunk '{normalizedExpected}': {ex.Message}",
-                ex);
+                $"SPPK chunk '{normalizedExpected}' declared raw length ({expectedRawLength.Value} bytes) exceeds maximum allowed ({Spawn.Core.Storage.CasChunkStore.MaxDecompressedChunkBytes} bytes).");
         }
+
+        int maxDecompressedBytes = expectedRawLength.HasValue
+            ? (int)expectedRawLength.Value
+            : Spawn.Core.Storage.CasChunkStore.MaxDecompressedChunkBytes;
+        byte[] raw = Spawn.Core.Storage.CasChunkStore.DecompressBounded(compressedBytes, maxDecompressedBytes, normalizedExpected);
 
         if (expectedRawLength.HasValue && (uint)raw.Length != expectedRawLength.Value)
         {

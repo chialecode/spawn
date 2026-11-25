@@ -305,7 +305,11 @@ public sealed class SaveWatcherService : ISaveWatcherService
             return;
         }
 
-        CancellationTokenSource nextCts = ctx.ResetDebounceTimer();
+        CancellationToken debounceToken = ctx.ResetDebounceTimer();
+        if (debounceToken.IsCancellationRequested)
+        {
+            return;
+        }
 
         UpdateStatus(new SaveWatcherStatusDto
         {
@@ -316,7 +320,7 @@ public sealed class SaveWatcherService : ISaveWatcherService
             LastMessage = "检测到存档变动，等待写入静默窗口…",
         });
 
-        _ = Task.Run(() => RunQuiescentCaptureAfterDelayAsync(ctx, nextCts.Token), CancellationToken.None);
+        _ = Task.Run(() => RunQuiescentCaptureAfterDelayAsync(ctx, debounceToken), CancellationToken.None);
     }
 
     private async Task RunQuiescentCaptureAfterDelayAsync(GameWatchContext ctx, CancellationToken debounceToken)
@@ -445,10 +449,15 @@ public sealed class SaveWatcherService : ISaveWatcherService
             WatchedDirectories = dirs;
         }
 
-        public CancellationTokenSource ResetDebounceTimer()
+        public CancellationToken ResetDebounceTimer()
         {
             lock (_lock)
             {
+                if (_disposed)
+                {
+                    return new CancellationToken(canceled: true);
+                }
+
                 if (_debounceCts is not null)
                 {
                     try
@@ -463,7 +472,7 @@ public sealed class SaveWatcherService : ISaveWatcherService
                 }
 
                 _debounceCts = new CancellationTokenSource();
-                return _debounceCts;
+                return _debounceCts.Token;
             }
         }
 

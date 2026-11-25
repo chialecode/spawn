@@ -8,10 +8,15 @@
              Foreground="{DynamicResource PrimaryTextBrush}"
              Typography.NumeralAlignment="Tabular">
     <UserControl.Resources>
-        <BooleanToVisibilityConverter x:Key="BoolToVis" />
-        <conv:InverseBooleanToVisibilityConverter x:Key="InvBoolToVis" />
-        <conv:StringNotEmptyToVisibilityConverter x:Key="StrNotEmptyToVis" />
-        <conv:EqualityToVisibilityConverter x:Key="EqToVis" />
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="/Spawn.Host;component/Themes/Controls.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+            <BooleanToVisibilityConverter x:Key="BoolToVis" />
+            <conv:InverseBooleanToVisibilityConverter x:Key="InvBoolToVis" />
+            <conv:StringNotEmptyToVisibilityConverter x:Key="StrNotEmptyToVis" />
+            <conv:EqualityToVisibilityConverter x:Key="EqToVis" />
+        </ResourceDictionary>
     </UserControl.Resources>
 
     <StackPanel>
@@ -72,7 +77,11 @@
                                    FontSize="12.5"
                                    Foreground="{DynamicResource SecondaryTextBrush}"
                                    VerticalAlignment="Center" />
-                        <ComboBox Width="136"
+                        <ComboBox Style="{StaticResource SaveThemeComboBoxStyle}"
+                                  Background="{DynamicResource CapsuleInputBackgroundBrush}"
+                                  BorderBrush="{DynamicResource ControlBorderBrush}"
+                                  BorderThickness="1"
+                                  Width="136"
                                   Height="30"
                                   Margin="6,0,0,0"
                                   ItemsSource="{Binding SaveRollingRetentionOptions}"
@@ -85,7 +94,11 @@
                                    FontSize="12.5"
                                    Foreground="{DynamicResource SecondaryTextBrush}"
                                    VerticalAlignment="Center" />
-                        <ComboBox Width="136"
+                        <ComboBox Style="{StaticResource SaveThemeComboBoxStyle}"
+                                  Background="{DynamicResource CapsuleInputBackgroundBrush}"
+                                  BorderBrush="{DynamicResource ControlBorderBrush}"
+                                  BorderThickness="1"
+                                  Width="136"
                                   Height="30"
                                   Margin="6,0,0,0"
                                   ItemsSource="{Binding SaveMaxSnapshotSizeMbOptions}"
@@ -244,7 +257,11 @@
 
                             <StackPanel Margin="0,0,12,6">
                                 <TextBlock Text="同步协议" FontSize="12" Foreground="{DynamicResource SecondaryTextBrush}" Margin="0,0,0,4" />
-                                <ComboBox Width="188"
+                                <ComboBox Style="{StaticResource SaveThemeComboBoxStyle}"
+                                          Background="{DynamicResource CapsuleInputBackgroundBrush}"
+                                          BorderBrush="{DynamicResource ControlBorderBrush}"
+                                          BorderThickness="1"
+                                          Width="188"
                                           Height="30"
                                           ItemsSource="{Binding CloudProviderTypeOptions}"
                                           DisplayMemberPath="Label"

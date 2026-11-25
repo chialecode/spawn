@@ -216,4 +216,60 @@ public sealed class SaveWatcherAndRollbackTests
         Assert.Equal(SaveSnapshotTriggerKind.PostExit, exitSnap!.TriggerKind);
         Assert.Equal(SaveWatcherStatusKind.Stopped, watcher.GetStatus(env.Game.GameId).Status);
     }
+
+    [Fact]
+    public async Task SaveWatcherService_RapidBurstFileChanges_NeverThrowsObjectDisposedException()
+    {
+        await using var env = await SaveEngineTestFixture.CreateAsync(explicitTimeProvider: TimeProvider.System);
+        await env.WriteSaveFileAsync("burst.sav", "INIT");
+
+        await using var watcher = new SaveWatcherService(
+            env.Service,
+            env.RuleResolver,
+            env.EventBus,
+            env.Database,
+            TimeProvider.System,
+            new SaveWatcherOptions
+            {
+                QuiescentDebounceOverride = TimeSpan.FromMilliseconds(50),
+                PostExitSettleDelay = TimeSpan.FromMilliseconds(20),
+            });
+
+        var errorStatuses = new System.Collections.Concurrent.ConcurrentBag<SaveWatcherStatusDto>();
+        watcher.WatcherStatusChanged += (_, s) =>
+        {
+            if (s.Status == SaveWatcherStatusKind.Error)
+            {
+                errorStatuses.Add(s);
+            }
+        };
+
+        var captured = new TaskCompletionSource<SaveTreeChangedEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
+        env.Service.SaveTreeChanged += (_, ev) =>
+        {
+            if (ev.Reason == "SnapshotCreated")
+            {
+                captured.TrySetResult(ev);
+            }
+        };
+
+        await watcher.StartWatchingGameAsync(env.Game.GameId);
+
+        // Fire rapid concurrent burst writes from 4 parallel tasks to stress ResetDebounceTimer() CTS cancellation/disposal.
+        Task[] writers = Enumerable.Range(0, 4)
+            .Select(worker => Task.Run(async () =>
+            {
+                for (int i = 0; i < 15; i++)
+                {
+                    await env.WriteSaveFileAsync($"burst_{worker}.sav", $"W{worker}-ITER-{i}");
+                }
+            }))
+            .ToArray();
+        await Task.WhenAll(writers);
+
+        SaveTreeChangedEvent ev = await captured.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.NotNull(ev.SnapshotId);
+        Assert.Empty(errorStatuses);
+        await watcher.StopWatchingGameAsync(env.Game.GameId);
+    }
 }

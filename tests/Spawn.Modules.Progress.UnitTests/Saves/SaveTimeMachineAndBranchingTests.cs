@@ -355,6 +355,152 @@ public sealed class SaveTimeMachineAndBranchingTests
         Assert.True(forced.Succeeded, forced.Message);
         Assert.Equal("MOD-A-SAVE", await env.ReadSaveFileAsync("slot.sav"));
     }
+
+    [Fact]
+    public async Task RollbackModMismatchWithForkNewBranchName_DoesNotOrphanBranchOnAbortAndRetrySucceeds()
+    {
+        await using var env = await SaveEngineTestFixture.CreateAsync();
+
+        await env.WriteSaveFileAsync("slot.sav", "MOD-OLD");
+        CreateSaveSnapshotResult sOld = await env.Service.CreateSnapshotAsync(new CreateSaveSnapshotRequest
+        {
+            GameId = env.Game.GameId,
+            ModProfileHash = "hash-mods-v1",
+        });
+
+        env.AdvanceMinutes(5);
+        await env.WriteSaveFileAsync("slot.sav", "MOD-NEW");
+        await env.Service.CreateSnapshotAsync(new CreateSaveSnapshotRequest
+        {
+            GameId = env.Game.GameId,
+            ModProfileHash = "hash-mods-v2",
+        });
+
+        // First attempt with AbortAndPrompt + ForkNewBranchName MUST abort BEFORE inserting the branch!
+        SaveRestoreOutcome aborted = await env.Service.RollbackToSnapshotAsync(new RollbackSaveRequest
+        {
+            SnapshotId = sOld.Snapshot!.SnapshotId,
+            ModMismatchPolicy = SaveModMismatchPolicy.AbortAndPrompt,
+            ForkNewBranchName = "mod-retry-branch",
+            CreateSafetySnapshot = false,
+        });
+        Assert.False(aborted.Succeeded);
+        Assert.True(aborted.RequiresModMismatchConfirmation);
+
+        SaveTreeGraphDto graphBeforeRetry = await env.Service.GetSaveTreeGraphAsync(env.Game.GameId);
+        Assert.DoesNotContain(graphBeforeRetry.Branches, b => b.Name == "mod-retry-branch");
+
+        // Retry after user confirms with the exact same ForkNewBranchName MUST succeed!
+        SaveRestoreOutcome retried = await env.Service.RollbackToSnapshotAsync(new RollbackSaveRequest
+        {
+            SnapshotId = sOld.Snapshot.SnapshotId,
+            ModMismatchPolicy = SaveModMismatchPolicy.ProceedAnyway,
+            ForkNewBranchName = "mod-retry-branch",
+            CreateSafetySnapshot = false,
+        });
+        Assert.True(retried.Succeeded, retried.Message);
+        SaveTreeGraphDto graphAfterRetry = await env.Service.GetSaveTreeGraphAsync(env.Game.GameId);
+        Assert.Equal("mod-retry-branch", graphAfterRetry.ActiveBranchName);
+    }
+
+    [Fact]
+    public async Task BranchAndSnapshotDeletion_ProtectsEmptyForkReferencesLeavingZeroDanglingPointers()
+    {
+        await using var env = await SaveEngineTestFixture.CreateAsync();
+
+        await env.WriteSaveFileAsync("slot.sav", "S1");
+        CreateSaveSnapshotResult s1 = await env.Service.CreateSnapshotAsync(new CreateSaveSnapshotRequest { GameId = env.Game.GameId });
+        env.AdvanceMinutes(2);
+
+        // Fork "feature" from s1, switch to it, create s2, then fork empty "sub-empty" from s2 (0 commits on sub-empty).
+        ForkBranchResult feature = await env.Service.CreateBranchAsync(new ForkBranchRequest
+        {
+            GameId = env.Game.GameId,
+            FromSnapshotId = s1.Snapshot!.SnapshotId,
+            BranchName = "feature",
+            SwitchToNewBranch = true,
+        });
+        Assert.True(feature.Succeeded, feature.Message);
+
+        await env.WriteSaveFileAsync("slot.sav", "S2-FEATURE");
+        CreateSaveSnapshotResult s2 = await env.Service.CreateSnapshotAsync(new CreateSaveSnapshotRequest { GameId = env.Game.GameId });
+        Assert.True(s2.Succeeded, s2.Message);
+
+        ForkBranchResult subEmpty = await env.Service.CreateBranchAsync(new ForkBranchRequest
+        {
+            GameId = env.Game.GameId,
+            FromSnapshotId = s2.Snapshot!.SnapshotId,
+            BranchName = "sub-empty",
+            SwitchToNewBranch = false,
+        });
+        Assert.True(subEmpty.Succeeded, subEmpty.Message);
+
+        // Switch back to main so neither feature nor s2 is active.
+        SaveBranchRecord mainBranch = (await env.Service.GetSaveTreeGraphAsync(env.Game.GameId)).Branches.Single(b => b.IsDefault);
+        Assert.True((await env.Service.SwitchBranchAsync(new SwitchBranchRequest
+        {
+            GameId = env.Game.GameId,
+            TargetBranchId = mainBranch.BranchId,
+            CreateSafetySnapshot = false,
+        })).Succeeded);
+
+        // Deleting s2 directly OR deleting feature branch MUST be refused while sub-empty points at s2!
+        DeleteSnapshotResult delSnapBlocked = await env.Service.DeleteSnapshotAsync(s2.Snapshot.SnapshotId);
+        Assert.False(delSnapBlocked.Succeeded);
+
+        DeleteBranchResult delBranchBlocked = await env.Service.DeleteBranchAsync(feature.Branch!.BranchId, deleteSnapshots: true);
+        Assert.False(delBranchBlocked.Succeeded);
+
+        // Once sub-empty is deleted, deleting feature branch succeeds cleanly with zero dangling pointers!
+        Assert.True((await env.Service.DeleteBranchAsync(subEmpty.Branch!.BranchId, deleteSnapshots: true)).Succeeded);
+        DeleteBranchResult delFeatureOk = await env.Service.DeleteBranchAsync(feature.Branch.BranchId, deleteSnapshots: true);
+        Assert.True(delFeatureOk.Succeeded, delFeatureOk.Message);
+    }
+
+    [Fact]
+    public async Task DetachedHead_NormalSnapshotAutoForksBranchWhilePreservingOriginalBranchTip()
+    {
+        await using var env = await SaveEngineTestFixture.CreateAsync();
+
+        await env.WriteSaveFileAsync("slot.sav", "V1");
+        CreateSaveSnapshotResult s1 = await env.Service.CreateSnapshotAsync(new CreateSaveSnapshotRequest { GameId = env.Game.GameId, Note = "V1" });
+        env.AdvanceMinutes(5);
+
+        await env.WriteSaveFileAsync("slot.sav", "V2");
+        CreateSaveSnapshotResult s2 = await env.Service.CreateSnapshotAsync(new CreateSaveSnapshotRequest { GameId = env.Game.GameId, Note = "V2" });
+        env.AdvanceMinutes(5);
+
+        // Roll back to historical node s1 -> Detached HEAD on main (main.HeadSnapshotId == s2, CurrentHead == s1).
+        SaveRestoreOutcome rb = await env.Service.RollbackToSnapshotAsync(new RollbackSaveRequest
+        {
+            SnapshotId = s1.Snapshot!.SnapshotId,
+            CreateSafetySnapshot = false,
+        });
+        Assert.True(rb.Succeeded, rb.Message);
+        Assert.True((await env.Service.GetSaveTreeGraphAsync(env.Game.GameId)).IsDetachedHead);
+
+        // Create a normal snapshot while detached -> MUST auto-create fork-* branch and NEVER overwrite main's tip s2!
+        env.AdvanceMinutes(1);
+        await env.WriteSaveFileAsync("slot.sav", "ALT-BRANCH-V2");
+        CreateSaveSnapshotResult altSnap = await env.Service.CreateSnapshotAsync(new CreateSaveSnapshotRequest
+        {
+            GameId = env.Game.GameId,
+            Note = "Alternate Timeline",
+        });
+        Assert.True(altSnap.Succeeded, altSnap.Message);
+
+        SaveTreeGraphDto graph = await env.Service.GetSaveTreeGraphAsync(env.Game.GameId);
+        SaveBranchRecord mainBranch = Assert.Single(graph.Branches, b => b.IsDefault);
+        SaveBranchRecord autoFork = Assert.Single(graph.Branches, b => !b.IsDefault);
+
+        Assert.Equal(s2.Snapshot!.SnapshotId, mainBranch.HeadSnapshotId);
+        Assert.StartsWith("fork-", autoFork.Name, StringComparison.Ordinal);
+        Assert.Equal(s1.Snapshot.SnapshotId, autoFork.BaseSnapshotId);
+        Assert.Equal(altSnap.Snapshot!.SnapshotId, autoFork.HeadSnapshotId);
+        Assert.Equal(autoFork.BranchId, graph.ActiveBranchId);
+        Assert.Equal(altSnap.Snapshot.SnapshotId, graph.CurrentHeadSnapshotId);
+        Assert.False(graph.IsDetachedHead);
+    }
 }
 
 /// <summary>

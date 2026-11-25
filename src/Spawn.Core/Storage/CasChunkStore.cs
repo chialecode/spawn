@@ -33,12 +33,25 @@ public sealed class CasChunkStore
 {
     public const int DefaultZstdCompressionLevel = 3;
 
+    /// <summary>
+    /// Hard safety ceiling on a single decompressed CAS chunk (16 MiB) to defeat Zstd decompression bombs.
+    /// </summary>
+    public const int MaxDecompressedChunkBytes = 16 * 1024 * 1024;
+
     private static readonly Regex ValidBlake3HexRegex = new("^[0-9a-f]{64}$", RegexOptions.Compiled);
 
     private readonly SpawnPaths _paths;
     private readonly SpawnDatabase _database;
     private readonly TimeProvider _timeProvider;
     private readonly int _compressionLevel;
+
+    // Async reader-writer serialization between chunk writers/snapshot commits (shared) and GC (exclusive).
+    // Uses AsyncLocal nesting depth so nested StoreChunkAsync calls inside an outer BeginChunkWriteScopeAsync
+    // never deadlock even if GC starts waiting concurrently.
+    private readonly SemaphoreSlim _writeCountLock = new(1, 1);
+    private readonly SemaphoreSlim _gcGate = new(1, 1);
+    private readonly AsyncLocal<int> _writeScopeDepth = new();
+    private int _activeWriteScopes;
 
     public CasChunkStore(
         SpawnPaths paths,
@@ -52,6 +65,82 @@ public sealed class CasChunkStore
         _database = database;
         _timeProvider = timeProvider ?? TimeProvider.System;
         _compressionLevel = Math.Clamp(compressionLevel, 1, 22);
+    }
+
+    /// <summary>
+    /// Acquires a shared chunk-write / snapshot-commit scope that blocks <see cref="RunGarbageCollectionAsync"/>
+    /// until all ingested chunks have been committed with <c>ref_count &gt;= 1</c>. Reentrant within the same
+    /// asynchronous execution flow.
+    /// </summary>
+    public async ValueTask<IAsyncDisposable> BeginChunkWriteScopeAsync(CancellationToken cancellationToken = default)
+    {
+        int previousDepth = _writeScopeDepth.Value;
+        if (previousDepth > 0)
+        {
+            _writeScopeDepth.Value = previousDepth + 1;
+            return new ChunkWriteScopeLease(this, acquiredOuterGate: false);
+        }
+
+        await _writeCountLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_activeWriteScopes == 0)
+            {
+                await _gcGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            _activeWriteScopes++;
+            _writeScopeDepth.Value = 1;
+        }
+        finally
+        {
+            _writeCountLock.Release();
+        }
+
+        return new ChunkWriteScopeLease(this, acquiredOuterGate: true);
+    }
+
+    private async ValueTask ReleaseChunkWriteScopeAsync(bool acquiredOuterGate)
+    {
+        int currentDepth = _writeScopeDepth.Value;
+        if (currentDepth > 0)
+        {
+            _writeScopeDepth.Value = currentDepth - 1;
+        }
+
+        if (!acquiredOuterGate)
+        {
+            return;
+        }
+
+        await _writeCountLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            _activeWriteScopes--;
+            if (_activeWriteScopes == 0)
+            {
+                _gcGate.Release();
+            }
+        }
+        finally
+        {
+            _writeCountLock.Release();
+        }
+    }
+
+    private sealed class ChunkWriteScopeLease(CasChunkStore owner, bool acquiredOuterGate) : IAsyncDisposable
+    {
+        private int _released;
+
+        public ValueTask DisposeAsync()
+        {
+            if (Interlocked.Exchange(ref _released, 1) != 0)
+            {
+                return ValueTask.CompletedTask;
+            }
+
+            return owner.ReleaseChunkWriteScopeAsync(acquiredOuterGate);
+        }
     }
 
     public static string ComputeBlake3Hex(ReadOnlySpan<byte> data) =>
@@ -79,6 +168,8 @@ public sealed class CasChunkStore
         ReadOnlyMemory<byte> rawData,
         CancellationToken cancellationToken = default)
     {
+        await using IAsyncDisposable _ = await BeginChunkWriteScopeAsync(cancellationToken).ConfigureAwait(false);
+
         string hashHex = ComputeBlake3Hex(rawData.Span);
         string chunkPath = _paths.GetCasChunkPath(hashHex);
 
@@ -133,13 +224,10 @@ public sealed class CasChunkStore
         string? packId = null,
         CancellationToken cancellationToken = default)
     {
-        string expected = ValidateAndNormalizeHash(expectedChunkBlake3);
+        await using IAsyncDisposable _ = await BeginChunkWriteScopeAsync(cancellationToken).ConfigureAwait(false);
 
-        byte[] raw;
-        using (var decompressor = new Decompressor())
-        {
-            raw = decompressor.Unwrap(compressedZstdBytes.Span).ToArray();
-        }
+        string expected = ValidateAndNormalizeHash(expectedChunkBlake3);
+        byte[] raw = DecompressBounded(compressedZstdBytes.Span, MaxDecompressedChunkBytes, expected);
 
         string actual = ComputeBlake3Hex(raw);
         if (!string.Equals(actual, expected, StringComparison.Ordinal))
@@ -262,11 +350,7 @@ public sealed class CasChunkStore
         }
 
         byte[] compressed = await File.ReadAllBytesAsync(chunkPath, cancellationToken).ConfigureAwait(false);
-        byte[] raw;
-        using (var decompressor = new Decompressor())
-        {
-            raw = decompressor.Unwrap(compressed).ToArray();
-        }
+        byte[] raw = DecompressBounded(compressed, MaxDecompressedChunkBytes, normalized);
 
         if (verifyHash)
         {
@@ -344,59 +428,105 @@ public sealed class CasChunkStore
         TimeSpan gracePeriod,
         CancellationToken cancellationToken = default)
     {
-        DateTimeOffset cutoff = _timeProvider.GetUtcNow() - (gracePeriod < TimeSpan.Zero ? TimeSpan.Zero : gracePeriod);
-        IReadOnlyList<CasChunkRecord> candidates = await _database
-            .GetUnreferencedCasChunksBeforeAsync(cutoff, cancellationToken)
-            .ConfigureAwait(false);
-
-        int deletedCount = 0;
-        long reclaimedBytes = 0;
-        var deletedHashes = new List<string>(candidates.Count);
-
-        foreach (CasChunkRecord chunk in candidates)
+        // Acquire exclusive GC gate so GC never races against active chunk writes, snapshot commits, or cloud pulls.
+        await _gcGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            // Re-verify ref_count == 0 via DB delete BEFORE removing the physical file, or delete file after DB confirms.
-            // Deleting DB row first (WHERE ref_count <= 0) prevents racing with a concurrent snapshot reviving the chunk.
-            int removedRows = await _database
-                .DeleteUnreferencedCasChunksAsync([chunk.ChunkBlake3], cancellationToken)
+            DateTimeOffset cutoff = _timeProvider.GetUtcNow() - (gracePeriod < TimeSpan.Zero ? TimeSpan.Zero : gracePeriod);
+            IReadOnlyList<CasChunkRecord> candidates = await _database
+                .GetUnreferencedCasChunksBeforeAsync(cutoff, cancellationToken)
                 .ConfigureAwait(false);
-            if (removedRows == 0)
+
+            int deletedCount = 0;
+            long reclaimedBytes = 0;
+
+            foreach (CasChunkRecord chunk in candidates)
             {
-                continue;
+                cancellationToken.ThrowIfCancellationRequested();
+
+                // Delete DB row ONLY while ref_count <= 0; remove physical .zst file ONLY if 1 DB row was deleted.
+                int removedRows = await _database
+                    .DeleteUnreferencedCasChunksAsync([chunk.ChunkBlake3], cancellationToken)
+                    .ConfigureAwait(false);
+                if (removedRows != 1)
+                {
+                    continue;
+                }
+
+                deletedCount++;
+
+                string path = _paths.GetCasChunkPath(chunk.ChunkBlake3);
+                try
+                {
+                    if (File.Exists(path))
+                    {
+                        long onDiskBytes = new FileInfo(path).Length;
+                        File.Delete(path);
+                        reclaimedBytes += onDiskBytes;
+                        TryPruneEmptyShardParent(path);
+                    }
+                    else
+                    {
+                        reclaimedBytes += Math.Max(0, chunk.CompressedSizeBytes);
+                    }
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    // Non-fatal: file can be cleaned on a future GC pass.
+                }
             }
 
-            deletedHashes.Add(chunk.ChunkBlake3);
-            deletedCount++;
+            CasVaultStatsDto remaining = await _database.GetCasVaultStatsAsync(cancellationToken).ConfigureAwait(false);
+            return new SaveGcReport(
+                DeletedChunkCount: deletedCount,
+                ReclaimedBytes: reclaimedBytes,
+                RemainingChunkCount: remaining.TotalChunkCount,
+                RemainingStoredBytes: remaining.TotalCompressedBytes);
+        }
+        finally
+        {
+            _gcGate.Release();
+        }
+    }
 
-            string path = _paths.GetCasChunkPath(chunk.ChunkBlake3);
-            try
-            {
-                if (File.Exists(path))
-                {
-                    long onDiskBytes = new FileInfo(path).Length;
-                    File.Delete(path);
-                    reclaimedBytes += onDiskBytes;
-                    TryPruneEmptyShardParent(path);
-                }
-                else
-                {
-                    reclaimedBytes += Math.Max(0, chunk.CompressedSizeBytes);
-                }
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                // Non-fatal: file can be cleaned on a future GC pass.
-            }
+    /// <summary>
+    /// Decompresses a Zstd payload with strict output size bounding to prevent decompression-bomb OOMs.
+    /// </summary>
+    public static byte[] DecompressBounded(
+        ReadOnlySpan<byte> compressedBytes,
+        int maxDecompressedBytes,
+        string chunkLabel)
+    {
+        int effectiveCap = Math.Clamp(maxDecompressedBytes, 0, MaxDecompressedChunkBytes);
+        ulong declaredSize = Decompressor.GetDecompressedSize(compressedBytes);
+        // ZSTD_CONTENTSIZE_UNKNOWN = ulong.MaxValue, ZSTD_CONTENTSIZE_ERROR = ulong.MaxValue - 1
+        if (declaredSize != ulong.MaxValue
+            && declaredSize != ulong.MaxValue - 1
+            && declaredSize > (ulong)effectiveCap)
+        {
+            throw new InvalidDataException(
+                $"CAS chunk '{chunkLabel}' declared decompressed size ({declaredSize} bytes) exceeds limit ({effectiveCap} bytes).");
         }
 
-        CasVaultStatsDto remaining = await _database.GetCasVaultStatsAsync(cancellationToken).ConfigureAwait(false);
-        return new SaveGcReport(
-            DeletedChunkCount: deletedCount,
-            ReclaimedBytes: reclaimedBytes,
-            RemainingChunkCount: remaining.TotalChunkCount,
-            RemainingStoredBytes: remaining.TotalCompressedBytes);
+        try
+        {
+            using var decompressor = new Decompressor();
+            int unwrapLimit = Math.Max(1, effectiveCap);
+            byte[] raw = decompressor.Unwrap(compressedBytes, unwrapLimit).ToArray();
+            if (raw.Length > effectiveCap)
+            {
+                throw new InvalidDataException(
+                    $"CAS chunk '{chunkLabel}' decompressed size ({raw.Length} bytes) exceeds limit ({effectiveCap} bytes).");
+            }
+
+            return raw;
+        }
+        catch (Exception ex) when (ex is not InvalidDataException)
+        {
+            throw new InvalidDataException(
+                $"Failed to Zstd-decompress CAS chunk '{chunkLabel}': {ex.Message}",
+                ex);
+        }
     }
 
     private void TryPruneEmptyShardParent(string chunkFilePath)

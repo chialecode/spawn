@@ -442,6 +442,37 @@ public sealed partial class SpawnDatabase
         }
     }
 
+    public async Task<bool> UpdateSaveBranchBaseAsync(
+        string branchId,
+        string? baseSnapshotId,
+        DateTimeOffset updatedAtUtc,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(branchId);
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var conn = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = """
+                UPDATE save_branches
+                SET base_snapshot_id = $base_snapshot_id,
+                    updated_at_utc = $updated_at_utc
+                WHERE branch_id = $branch_id;
+                """;
+            cmd.Parameters.AddWithValue("$branch_id", branchId);
+            cmd.Parameters.AddWithValue("$base_snapshot_id", (object?)baseSnapshotId ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$updated_at_utc", FormatUtc(updatedAtUtc));
+            return await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) > 0;
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
     public async Task<bool> UpdateSaveBranchMetadataAsync(
         string branchId,
         string newName,
@@ -841,7 +872,12 @@ public sealed partial class SpawnDatabase
                     WHERE chunk_blake3 = $hash;
                     """;
                 refCmd.Parameters.AddWithValue("$hash", chunkHash);
-                await refCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                int updatedRows = await refCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                if (updatedRows != 1)
+                {
+                    throw new InvalidOperationException(
+                        $"CAS chunk '{chunkHash}' is missing from cas_chunks while committing snapshot '{snapshot.SnapshotId}'.");
+                }
             }
 
             if (advanceBranchHead)
@@ -1252,7 +1288,11 @@ public sealed partial class SpawnDatabase
                     0, $pack_id, $created_at_utc, $created_at_utc
                 )
                 ON CONFLICT(chunk_blake3) DO UPDATE SET
-                    pack_id = COALESCE(cas_chunks.pack_id, excluded.pack_id);
+                    pack_id = COALESCE(cas_chunks.pack_id, excluded.pack_id),
+                    last_unreferenced_at_utc = CASE
+                        WHEN cas_chunks.ref_count <= 0 THEN excluded.last_unreferenced_at_utc
+                        ELSE cas_chunks.last_unreferenced_at_utc
+                    END;
                 """;
             cmd.Parameters.AddWithValue("$hash", hash);
             cmd.Parameters.AddWithValue("$raw_size", Math.Max(0, rawSizeBytes));
@@ -1717,7 +1757,7 @@ public sealed partial class SpawnDatabase
                         bucket_or_root = excluded.bucket_or_root,
                         region = excluded.region,
                         path_style_addressing = excluded.path_style_addressing,
-                        secret_credential_id = COALESCE(excluded.secret_credential_id, cloud_sync_endpoints.secret_credential_id),
+                        secret_credential_id = excluded.secret_credential_id,
                         is_default = excluded.is_default,
                         updated_at_utc = excluded.updated_at_utc;
                     """;

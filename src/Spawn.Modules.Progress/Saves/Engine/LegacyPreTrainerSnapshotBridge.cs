@@ -134,6 +134,10 @@ public sealed class LegacyPreTrainerSnapshotBridge
             int fileCount = 0;
             int regKeyCount = 0;
 
+            await using IAsyncDisposable casWriteScope = await _casStore
+                .BeginChunkWriteScopeAsync(cancellationToken)
+                .ConfigureAwait(false);
+
             foreach (PreTrainerSnapshotFileEntry entry in manifest.Files)
             {
                 if (!PreTrainerSnapshotManifestStore.TryResolveContainedPath(

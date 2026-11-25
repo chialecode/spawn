@@ -74,7 +74,7 @@ internal sealed class SnapshotTestSandbox : IDisposable, IAsyncDisposable
         var psi = new ProcessStartInfo
         {
             FileName = Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe",
-            Arguments = $"/c mklink /J \"{linkPath}\" \"{targetPath}\"",
+            Arguments = $"/d /c mklink /J \"{linkPath}\" \"{targetPath}\"",
             CreateNoWindow = true,
             UseShellExecute = false,
             RedirectStandardOutput = true,
@@ -88,16 +88,22 @@ internal sealed class SnapshotTestSandbox : IDisposable, IAsyncDisposable
             return false;
         }
 
-        try
+        _ = proc.StandardOutput.ReadToEndAsync();
+        _ = proc.StandardError.ReadToEndAsync();
+        if (!proc.WaitForExit(10000))
         {
-            proc.PriorityClass = ProcessPriorityClass.BelowNormal;
-        }
-        catch
-        {
-            // Process may have exited already.
+            try
+            {
+                proc.Kill(entireProcessTree: true);
+            }
+            catch
+            {
+                // Ignore cleanup failure.
+            }
+
+            return false;
         }
 
-        proc.WaitForExit(5000);
         return proc.ExitCode == 0
                && Directory.Exists(linkPath)
                && (File.GetAttributes(linkPath) & FileAttributes.ReparsePoint) != 0;

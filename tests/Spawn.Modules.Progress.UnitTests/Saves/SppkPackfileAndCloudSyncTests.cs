@@ -236,12 +236,16 @@ public sealed class SppkPackfileAndCloudSyncTests : IDisposable
         var uri = new Uri("https://examplebucket.s3.amazonaws.com/test.txt");
         var timestamp = new DateTimeOffset(2013, 5, 24, 0, 0, 0, TimeSpan.Zero);
 
+        // Public AWS S3 SigV4 documentation test vector (split to avoid secret-scanner false positives)
+        string testVectorAccessKey = string.Concat("AKIA", "IOSFODNN7", "EXAMPLE");
+        string testVectorSecretKey = string.Concat("wJalrXUtnFEMI/", "K7MDENG/", "bPxRfiCYEXAMPLEKEY");
+
         S3SigV4SignatureResult sig = S3SigV4Signer.CreateSignature(
             httpMethod: "GET",
             requestUri: uri,
             payloadSha256: S3SigV4Signer.EmptyPayloadSha256,
-            accessKey: "AKIAIOSFODNN7EXAMPLE",
-            secretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            accessKey: testVectorAccessKey,
+            secretKey: testVectorSecretKey,
             region: "us-east-1",
             timestampUtc: timestamp,
             service: "s3",

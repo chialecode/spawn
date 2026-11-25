@@ -26,9 +26,9 @@
 8. **杀软与系统安全提示（`REQ-PRG-04`）**：Opt-in Defender 沙箱单目录排除助手、隔离错误码 `225`/`226` 诊断与 Smart App Control 透明说明。
 9. **`ITrainerBackend` 契约冻结（`REQ-PRG-07`）**：一期实现 `ExternalTrainerBackend`，为 `M6` 收窄原生修改后端留出扩展槽。
 
-### 1.2 `M4` 轨道职责（自 `M3` 顺延，契约保留于本规格 §5）
+### 1.2 `M4` 存档时间机器、分支树与云同步轨道（已实装于 `Spawn.Contracts` / `Spawn.Core` / `Spawn.Modules.Progress`，详见 §2.3、§3.1 与 §5）
 
-`ludusavi-manifest` 预编译索引与 `[save]`/`[config]` 拆流（`REQ-PRG-01`）、`FastCDC` 块级去重存档时间机器与防撕裂原子回滚（`REQ-PRG-02`）、`32MB SPPK` 自建云同步与血缘合并（`REQ-PRG-03`），并与 Nexus `mod_profile_hash`（`REQ-NEX-07`）联动。
+`ludusavi-manifest` 预编译索引与 16 占位符 `[save]`/`[config]`/`HKCU` 拆流（`REQ-PRG-01`）、基于 `FastCDC` + `BLAKE3` + `Zstd` 的 Git 式分支树存档时间机器与防撕裂原子回滚（`REQ-PRG-02`：支持任意历史快照分叉命名分支、分支安全切换、钉住与备注、旧 `PreTrainer` 快照无损桥接及退出后自动快照）、`32MB SPPK` 自建云同步与三路血缘分叉保留（`REQ-PRG-03`：支持 `LocalFolder` / `WebDAV` / `S3 SigV4`），并预留 Nexus `mod_profile_hash`（`REQ-NEX-07`）联动字段。
 
 ### 1.3 明确排除边界（Out-of-Scope）
 
@@ -123,22 +123,52 @@ stateDiagram-v2
     EmergencyStopped --> Ready : WM_CLOSE 500ms 后 TerminateJobObject 并上锁
 ```
 
-### 2.3 `M4` 轨道契约（顺延保留）
+### 2.3 `M4` 存档时间机器、分支树与云同步契约（`Spawn.Contracts`，已实装）
 
 ```csharp
-namespace Spawn.Modules.Progress.Contracts;
+namespace Spawn.Contracts;
+
+public interface ILudusaviRuleResolver
+{
+    Task<int> EnsureBuiltInRulesSeededAsync(CancellationToken ct = default);
+    Task<int> ImportRulesJsonAsync(string jsonContent, CancellationToken ct = default);
+    Task<ResolvedSaveLayout> ResolveGameSaveLayoutAsync(string gameId, CancellationToken ct = default);
+}
 
 public interface ISaveTimeMachineService
 {
-    ValueTask<ResolvedSaveLayout> ResolveGameSavePathsAsync(Guid gameId, CancellationToken ct = default);
-    Task<SaveSnapshotRecord> CreateSnapshotAsync(Guid gameId, SnapshotTriggerKind trigger, string? userNote = null, bool includeConfigFiles = false, CancellationToken ct = default);
-    Task<RollbackResult> RollbackToSnapshotAsync(Guid snapshotId, ModMismatchResolution mismatchPolicy = ModMismatchResolution.AbortAndPrompt, CancellationToken ct = default);
+    Task<SaveBranchRecord> EnsureDefaultBranchAsync(string gameId, CancellationToken ct = default);
+    Task<SaveTreeGraphDto> GetSaveTreeGraphAsync(string gameId, bool includeArchivedBranches = false, CancellationToken ct = default);
+    Task<IReadOnlyList<SaveGameSummaryDto>> ListGameSaveSummariesAsync(CancellationToken ct = default);
+    Task<CreateSaveSnapshotResult> CreateSnapshotAsync(CreateSaveSnapshotRequest request, CancellationToken ct = default);
+    Task<ForkBranchResult> CreateBranchAsync(ForkBranchRequest request, CancellationToken ct = default);
+    Task<SaveRestoreOutcome> SwitchBranchAsync(SwitchBranchRequest request, CancellationToken ct = default);
+    Task<SaveBranchRecord> RenameBranchAsync(string branchId, string newName, string? description = null, string? colorHex = null, CancellationToken ct = default);
+    Task ArchiveBranchAsync(string branchId, bool archived = true, CancellationToken ct = default);
+    Task<SaveRestoreOutcome> RestoreSnapshotAsync(RestoreSaveSnapshotRequest request, CancellationToken ct = default);
+    Task<SaveSnapshotRecord> UpdateSnapshotMetadataAsync(string snapshotId, string? note, bool? isPinned, CancellationToken ct = default);
+    Task DeleteSnapshotAsync(string snapshotId, CancellationToken ct = default);
+    Task<int> ImportLegacyPreTrainerSnapshotsAsync(string gameId, CancellationToken ct = default);
+    Task<SaveGameStateRecord> GetOrCreateGameStateAsync(string gameId, CancellationToken ct = default);
+    Task<SaveGameStateRecord> UpdateGameStateAsync(SaveGameStateRecord state, CancellationToken ct = default);
+    Task<SaveCasGcReport> RunCasGarbageCollectionAsync(TimeSpan gracePeriod, CancellationToken ct = default);
+}
+
+public interface ISaveWatcherService : IAsyncDisposable
+{
+    Task StartWatchingGameAsync(string gameId, CancellationToken ct = default);
+    Task StopWatchingGameAsync(string gameId, bool capturePostExitSnapshot = true, CancellationToken ct = default);
+    bool IsWatchingGame(string gameId);
 }
 
 public interface ICloudSaveSyncService
 {
-    Task<SyncPlanPreview> PlanSyncAsync(Guid gameId, CancellationToken ct = default);
-    Task<SyncExecutionReport> ExecuteSyncAsync(Guid gameId, DivergenceResolutionChoice? userChoice = null, IProgress<SyncProgressTick>? progress = null, CancellationToken ct = default);
+    Task<IReadOnlyList<CloudSyncEndpointRecord>> ListEndpointsAsync(CancellationToken ct = default);
+    Task<CloudSyncEndpointRecord> SaveEndpointAsync(CloudSyncEndpointRecord endpoint, CloudEndpointCredentials? credentials = null, CancellationToken ct = default);
+    Task DeleteEndpointAsync(string endpointId, CancellationToken ct = default);
+    Task<CloudEndpointTestResult> TestEndpointAsync(string endpointId, CancellationToken ct = default);
+    Task<CloudSyncPlanPreview> PlanSyncAsync(string gameId, string? endpointId = null, CancellationToken ct = default);
+    Task<CloudSyncExecutionReport> ExecuteSyncAsync(string gameId, string? endpointId = null, CloudDivergenceResolution? resolution = null, IProgress<CloudSyncProgressTick>? progress = null, CancellationToken ct = default);
 }
 ```
 
@@ -182,15 +212,17 @@ stateDiagram-v2
 
 `games` 主表新增列（列名以 `SpawnDatabase` 既有命名风格为准）：`steam_build_id`、`steam_last_updated`、`verified_offline_bypass INT DEFAULT 0`、`verified_offline_bypass_at_utc`。**`verified_offline_bypass` 绝不改写既有 `anti_cheat_tier`**；重扫游戏库不得清除用户确认，但若静态 `Tier` 变为 `Tier 1`/`Tier 3` 或检测到失去单人模式，自动失效并提示。修改器全局偏好（沙箱根目录覆盖、音频模式与提示音音量、按键保持时长、启动前备份开关/保留份数/阈值、随游戏退出、自动隐藏原窗、`vgk.sys` 严格模式）沿用 `M2` 设置存储机制持久化。
 
-`M4` 轨道表（顺延保留，`M3` 不建表）：
+`M4` 轨道 Schema `v5` 幂等迁移表（实装于 `src/Spawn.Core/SpawnDatabase.Saves.cs`）：
 
 | 表名 | 主键 | 关键字段与约束摘要 | 业务用途 |
 | :--- | :--- | :--- | :--- |
-| `ludusavi_rules` | `rule_name TEXT` | `steam_app_id INT`, `gog_id INT`, `aliases_json TEXT`, `save_paths_json TEXT NOT NULL`, `config_paths_json TEXT`, `registry_rules_json TEXT` | 预编译存档路径与标签索引（`steam_app_id` 索引，查询 `< 1ms`） |
-| `cas_chunks` | `chunk_blake3 TEXT` | `raw_size_bytes INT NOT NULL`, `compressed_size_bytes INT NOT NULL`, `ref_count INT NOT NULL`, `pack_id TEXT` | 全局去重 `FastCDC` 块字典 |
-| `save_snapshots` | `snapshot_id TEXT` | `game_id TEXT NOT NULL`, `profile_id TEXT`, `parent_snapshot_id TEXT`, `mod_profile_hash TEXT NOT NULL`, `trigger_kind TEXT`, `total_raw_bytes INT`, `created_machine_id TEXT`, `created_at_utc TEXT`, `is_pinned INT DEFAULT 0` | 存档快照历史树与血缘链 |
-| `snapshot_files` | `(snapshot_id, logical_path)` | `category TEXT NOT NULL`（`Save`/`Config`/`RegistryExport`）, `file_size INT`, `last_write_time_utc TEXT`, `file_blake3 TEXT`, `chunk_sequence_json TEXT NOT NULL` | 单快照内逻辑文件与有序块重组清单 |
-| `cloud_sync_endpoints` | `id TEXT` | `provider_type TEXT`（`S3`/`WebDav`/`LocalFolder`）, `endpoint_url TEXT`, `bucket_or_root TEXT`, `secret_file_name TEXT` | 云同步后端配置（凭据存 DPAPI `.sec`） |
+| `save_branches` | `branch_id TEXT` | `game_id TEXT NOT NULL`, `name TEXT NOT NULL`（同游戏忽略大小写唯一）, `color_hex TEXT`, `head_snapshot_id TEXT`, `base_snapshot_id TEXT`, `is_default INT`, `is_archived INT` | Git 式存档命名分支与树状分叉轨道（默认分支 `main`） |
+| `save_game_state` | `game_id TEXT` | `active_branch_id TEXT`, `current_head_snapshot_id TEXT`, `auto_watch_enabled INT`, `post_exit_snapshot_enabled INT`, `include_config_files INT`, `max_rolling_snapshots INT`, `cloud_endpoint_id TEXT`, `last_synced_at_utc TEXT`, `has_unresolved_cloud_conflict INT` | 每款游戏的活跃分支指针、监听偏好与云同步状态 |
+| `ludusavi_rules` | `rule_name TEXT` | `steam_app_id INT`, `gog_id TEXT`, `aliases_json TEXT`, `save_paths_json TEXT NOT NULL`, `config_paths_json TEXT`, `registry_rules_json TEXT`, `updated_at_utc TEXT` | 预编译存档路径与 `[save]`/`[config]`/`HKCU` 标签索引（`steam_app_id` 索引，查询 `< 1ms`） |
+| `cas_chunks` | `chunk_blake3 TEXT` | `raw_size_bytes INT NOT NULL`, `compressed_size_bytes INT NOT NULL`, `ref_count INT NOT NULL`, `pack_id TEXT`, `created_at_utc TEXT`, `last_unreferenced_at_utc TEXT` | 全局去重 `FastCDC` 块字典与延迟宽限期 GC 索引 |
+| `save_snapshots` | `snapshot_id TEXT` | `game_id TEXT NOT NULL`, `branch_id TEXT NOT NULL`, `parent_snapshot_id TEXT`, `merge_parent_snapshot_id TEXT`, `profile_id TEXT`, `mod_profile_hash TEXT`, `trigger_kind TEXT`, `note TEXT`, `file_count INT`, `registry_key_count INT`, `total_raw_bytes INT`, `total_stored_bytes INT`, `created_machine_id TEXT`, `playtime_active_seconds INT`, `created_at_utc TEXT`, `is_pinned INT`, `legacy_pre_trainer_snapshot_id TEXT` | 存档快照历史 DAG 与旧 `PreTrainer` 快照无损桥接 |
+| `snapshot_files` | `(snapshot_id, logical_path)` | `original_path TEXT NOT NULL`, `category TEXT NOT NULL`（`Save`/`Config`/`RegistryExport`）, `file_size INT`, `last_write_time_utc TEXT`, `file_blake3 TEXT`, `chunk_sequence_json TEXT NOT NULL` | 单快照内逻辑文件与有序块重组清单 |
+| `cloud_sync_endpoints` | `endpoint_id TEXT` | `display_name TEXT`, `provider_type TEXT`（`LocalFolder`/`WebDav`/`S3`）, `endpoint_url TEXT`, `bucket_or_root TEXT`, `region TEXT`, `path_style_addressing INT`, `secret_credential_id TEXT`, `is_default INT` | 云同步后端配置（凭据经 DPAPI 加密存 `secrets/<id>.sec`） |
 
 ### 3.2 本地物理存储布局
 
@@ -346,9 +378,9 @@ C# 路径展开器仅接纳 `when: [{ os: windows }]` 或无 OS 限定的条目�
 
 ### 5.2 Gear-Hash `FastCDC` 分块与防半写撕裂热备份协议（`REQ-PRG-02`）
 
-1. **确定性 `FastCDC` 参数契约（`A-01`）**：小文件 `< 2 MiB` 整文件单块 `BLAKE3` + `ZstdSharp.Port`（`Level 3`）；大文件 `MinSize = 256 KiB`、`AvgSize = 1 MiB`、`MaxSize = 4 MiB`，256 项 Gear 表采用固定魔数种子 `0x535041574E5F4344UL`（`"SPAWN_CD"`）经 `SplitMix64` 生成，两段式归一化掩码 `MaskS = 0x0003590703530000UL` / `MaskL = 0x0000D90303530000UL`。
-2. **三保险防撕裂捕获**：① `2500ms` 静默窗口（`A-03`）；② 前后元数据向量 $V_{\text{pre}} = V_{\text{post}}$ 比对，不一致丢弃重采（最多 3 次）；③ 排他锁 `ERROR_SHARING_VIOLATION` 或持续刷盘超 `15s` 时按 `OSS-05`（`D-11` Level 2 用户确认的单次 UAC）调用 `AlphaVSS` 卷影快照。
-3. **原子回滚铁律**：回滚前强制创建 `trigger_kind = "PreRollbackSafety"` 快照；目标块解压至 `<file>.spawn_stage_tmp` 并 `Flush(flushToDisk: true)`，全部校验通过后批量原子替换。
+1. **确定性 `FastCDC` 参数契约（`A-01`）**：纯托管 `Blake3 3.0.2`（BSD-2-Clause）与 `ZstdSharp.Port 0.8.8`（MIT）实现；小文件 `< 2 MiB` 整文件单块 `BLAKE3` + `Zstd`（`Level 3`）；大文件 `MinSize = 256 KiB`、`AvgSize = 1 MiB`、`MaxSize = 4 MiB`，256 项 Gear 表采用固定魔数种子 `0x535041574E5F4344UL`（`"SPAWN_CD"`）经 `SplitMix64` 生成，两段式归一化掩码 `MaskS = 0x0003590703530000UL` / `MaskL = 0x0000D90303530000UL`。
+2. **三保险防撕裂捕获（Clean Host 零 `AlphaVSS`）**：① `2500ms` 静默防抖窗口（`A-03`，`SaveWatcherService`）；② 以 `FileShare.ReadWrite | FileShare.Delete` 共享读取并在前后校验元数据向量 $V_{\text{pre}} = V_{\text{post}}$（长度与写入时间），不一致丢弃重采（最多 3 次）；③ 命中排他锁 `ERROR_SHARING_VIOLATION` 或持续写入超过上限时非阻塞跳过本次轮次并留待下次静默窗口或游戏退出后（`PostExit`）兜底捕获，**严禁在 Clean Host 引入 `AlphaVSS` 或任何提权卷影组件**。
+3. **原子回滚与分支切换铁律**：回滚任意历史节点前强制创建 `trigger_kind = "PreRollbackSafety"` 快照，跨分支切换前自动创建 `PreBranchSwitchSafety` 快照（若磁盘与当前分支 HEAD 字节一致则自动跳过冗余快照）；所有目标路径必须通过 `GameDataSafetyFence` 围栏校验；目标块解压至同目录 `<file>.spawn_stage_tmp` 并 `Flush(flushToDisk: true)`，全部 `BLAKE3` 校验通过后批量原子替换。
 
 ### 5.3 `32MB SPPK` 二进制封装格式协议（`REQ-PRG-03`, `A-02`）
 

@@ -84,8 +84,12 @@ public sealed class LudusaviRuleResolverTests
         DateTime oldUtc = DateTime.UtcNow.AddDays(-5);
         DateTime newUtc = DateTime.UtcNow.AddMinutes(-2);
         File.SetLastWriteTimeUtc(olderSteamSave, oldUtc);
+        Directory.SetLastWriteTimeUtc(Path.Combine(steamRoot, "userdata", "10001", "582010", "remote"), oldUtc);
+        Directory.SetLastWriteTimeUtc(Path.Combine(steamRoot, "userdata", "10001", "582010"), oldUtc);
         Directory.SetLastWriteTimeUtc(Path.Combine(steamRoot, "userdata", "10001"), oldUtc);
         File.SetLastWriteTimeUtc(newerSteamSave, newUtc);
+        Directory.SetLastWriteTimeUtc(Path.Combine(steamRoot, "userdata", "20002", "582010", "remote"), newUtc);
+        Directory.SetLastWriteTimeUtc(Path.Combine(steamRoot, "userdata", "20002", "582010"), newUtc);
         Directory.SetLastWriteTimeUtc(Path.Combine(steamRoot, "userdata", "20002"), newUtc);
 
         // Goldberg + gbe_fork custom IDs under %APPDATA%.

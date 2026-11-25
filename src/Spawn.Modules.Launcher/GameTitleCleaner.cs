@@ -105,6 +105,11 @@ public static partial class GameTitleCleaner
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex LeadingGtaAbbreviationRegex();
 
+    [GeneratedRegex(
+        @"^RDR(?:(?=\s*(?:[-:–—]|\b(?:II|1|2|Online|Undead\s+Nightmare|Remastered|Definitive)\b))|(?=\d+\b))",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex LeadingRdrAbbreviationRegex();
+
     [GeneratedRegex(@"\b([A-Za-z0-9]+)\b", RegexOptions.CultureInvariant)]
     private static partial Regex AlphanumericWordTokenRegex();
 
@@ -408,8 +413,9 @@ public static partial class GameTitleCleaner
     }
 
     /// <summary>
-    /// Expands well-known series acronyms (such as leading <c>GTA</c> -&gt; <c>Grand Theft Auto</c>)
-    /// for store and metadata search candidates without altering non-matching titles.
+    /// Expands well-known series acronyms (such as leading <c>GTA</c> -&gt; <c>Grand Theft Auto</c>
+    /// and <c>RDR</c> -&gt; <c>Red Dead Redemption</c>) for store and metadata search candidates
+    /// without altering non-matching titles.
     /// </summary>
     public static string ExpandSeriesAbbreviations(string? title)
     {
@@ -422,6 +428,14 @@ public static partial class GameTitleCleaner
         if (LeadingGtaAbbreviationRegex().IsMatch(trimmed))
         {
             return LeadingGtaAbbreviationRegex().Replace(trimmed, "Grand Theft Auto");
+        }
+
+        if (LeadingRdrAbbreviationRegex().IsMatch(trimmed))
+        {
+            string rest = trimmed[3..];
+            return rest.Length > 0 && char.IsLetterOrDigit(rest[0])
+                ? "Red Dead Redemption " + rest
+                : "Red Dead Redemption" + rest;
         }
 
         return trimmed;

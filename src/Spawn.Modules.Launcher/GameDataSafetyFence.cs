@@ -45,7 +45,7 @@ public sealed record GameDataTargetIdentity
 
         var exact = new List<string>();
         string exeBase = Path.GetFileNameWithoutExtension(game.ExecutableRelPath ?? string.Empty);
-        if (!string.IsNullOrWhiteSpace(exeBase))
+        if (!string.IsNullOrWhiteSpace(exeBase) && !GameDataSafetyFence.IsGenericOrWrapperExecutableStem(exeBase))
         {
             exact.Add(exeBase);
         }
@@ -53,13 +53,16 @@ public sealed record GameDataTargetIdentity
         string dirLeaf = Path.GetFileName(Path.TrimEndingDirectorySeparator(game.InstallDir ?? string.Empty));
         if (!string.IsNullOrWhiteSpace(dirLeaf))
         {
-            exact.Add(dirLeaf);
-
             string cleanedDirTitle = GameTitleCleaner.CleanTitle(dirLeaf, preserveRemasterEdition: true);
-            if (!string.Equals(cleanedDirTitle, "Unknown Game", StringComparison.OrdinalIgnoreCase)
-                && GameDataSafetyFence.ShouldPromoteInstallFolderToProductName(cleanedDirTitle, game.Title))
+            if (GameDataSafetyFence.CanAcceptInstallFolderForIdentity(dirLeaf, cleanedDirTitle, game.Title))
             {
-                AddUniqueProduct(products, cleanedDirTitle);
+                exact.Add(dirLeaf);
+
+                if (!string.Equals(cleanedDirTitle, "Unknown Game", StringComparison.OrdinalIgnoreCase)
+                    && GameDataSafetyFence.ShouldPromoteInstallFolderToProductName(cleanedDirTitle, game.Title))
+                {
+                    AddUniqueProduct(products, cleanedDirTitle);
+                }
             }
         }
 
@@ -400,10 +403,99 @@ public static partial class GameDataSafetyFence
         }
     }
 
+    internal static bool IsGenericOrWrapperExecutableStem(string? stem)
+    {
+        if (string.IsNullOrWhiteSpace(stem))
+        {
+            return true;
+        }
+
+        string trimmed = stem.Trim();
+        if (ProtectedSharedContainerLeafNames.Contains(trimmed)
+            || MultiGameSharedSubtreeSegments.Contains(trimmed)
+            || ForbiddenExecutableStems.Contains(trimmed)
+            || trimmed.StartsWith("PlayGTA", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        string norm = NormalizeName(trimmed);
+        if (norm.Length < 4 || GenericSegmentNames.Contains(norm) || ForbiddenExecutableStems.Contains(norm))
+        {
+            return true;
+        }
+
+        PeExecutableRole role = GameTitleCleaner.ClassifyPeVersionMetadata(trimmed, trimmed, null, null);
+        return role is PeExecutableRole.RedirectorOrPrerequisiteStub or PeExecutableRole.LauncherOrMenuWrapper;
+    }
+
+    internal static bool CanAcceptInstallFolderForIdentity(string rawDirLeaf, string cleanedDirTitle, string? gameTitle)
+    {
+        if (string.IsNullOrWhiteSpace(rawDirLeaf))
+        {
+            return false;
+        }
+
+        string trimmedLeaf = rawDirLeaf.Trim();
+        if (ProtectedSharedContainerLeafNames.Contains(trimmedLeaf) || MultiGameSharedSubtreeSegments.Contains(trimmedLeaf))
+        {
+            return false;
+        }
+
+        string normRaw = NormalizeName(trimmedLeaf);
+        if (normRaw.Length < 4 || GenericSegmentNames.Contains(normRaw))
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(gameTitle) || GameTitleCleaner.ContainsCjkCharacters(gameTitle))
+        {
+            return true;
+        }
+
+        if (!GameTitleCleaner.IsLikelyEnglishTitle(gameTitle))
+        {
+            return true;
+        }
+
+        string effectiveDir = string.IsNullOrWhiteSpace(cleanedDirTitle) || string.Equals(cleanedDirTitle, "Unknown Game", StringComparison.OrdinalIgnoreCase)
+            ? trimmedLeaf
+            : cleanedDirTitle;
+
+        if (string.Equals(NormalizeName(effectiveDir), NormalizeName(gameTitle), StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        CanonicalTitleProfile dirProfile = BuildCanonicalProfile(effectiveDir, allowTrailingSaveFolderSuffix: false);
+        CanonicalTitleProfile titleProfile = BuildCanonicalProfile(gameTitle, allowTrailingSaveFolderSuffix: false);
+        if (!HasCompatibleMarkersAndInstallments(dirProfile, titleProfile))
+        {
+            return false;
+        }
+
+        // When gameTitle is already a valid English title, an install folder name may only supplement identity
+        // if it shares at least one distinguishing core token with gameTitle (e.g. "GTA" <-> "Grand Theft Auto").
+        foreach (string token in dirProfile.CoreTokens)
+        {
+            if (titleProfile.CoreTokens.Contains(token, StringComparer.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     internal static bool ShouldPromoteInstallFolderToProductName(string cleanedDirTitle, string? gameTitle)
     {
         string normDir = NormalizeName(cleanedDirTitle);
-        if (normDir.Length < 4 || GenericSegmentNames.Contains(normDir))
+        if (normDir.Length < 4 || GenericSegmentNames.Contains(normDir) || ProtectedSharedContainerLeafNames.Contains(cleanedDirTitle))
+        {
+            return false;
+        }
+
+        if (!CanAcceptInstallFolderForIdentity(cleanedDirTitle, cleanedDirTitle, gameTitle))
         {
             return false;
         }
@@ -449,38 +541,70 @@ public static partial class GameDataSafetyFence
             return false;
         }
 
+        CanonicalTitleProfile segmentProfile = BuildCanonicalProfile(trimmed, allowTrailingSaveFolderSuffix: true);
+        CanonicalTitleProfile? primaryTitleProfile = !string.IsNullOrWhiteSpace(identity.Title)
+                                                     && GameTitleCleaner.IsLikelyEnglishTitle(identity.Title)
+            ? BuildCanonicalProfile(identity.Title, allowTrailingSaveFolderSuffix: false)
+            : null;
+
         foreach (string exact in identity.ExactNames)
         {
-            string ne = NormalizeName(exact);
-            if (ne.Length >= 4 && !GenericSegmentNames.Contains(ne) && string.Equals(norm, ne, StringComparison.Ordinal))
+            if (IsGenericOrWrapperExecutableStem(exact))
             {
-                return true;
+                continue;
             }
+
+            string ne = NormalizeName(exact);
+            if (ne.Length < 4 || GenericSegmentNames.Contains(ne) || !string.Equals(norm, ne, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            // Enforce primary title remaster/bundle/installment vetoes on ExactNames too so remaster binaries
+            // (e.g. SanAndreas.exe, ViceCity.exe, Crysis.exe, Mafia2.exe) never match original classic save folders!
+            if (primaryTitleProfile is { } primary && !HasCompatibleMarkersAndInstallments(segmentProfile, primary))
+            {
+                continue;
+            }
+
+            return true;
         }
 
-        CanonicalTitleProfile segmentProfile = BuildCanonicalProfile(trimmed, allowTrailingSaveFolderSuffix: true);
         string normSegmentWithoutSaveSuffix = StripSafeSaveFolderSuffixNormalized(norm);
 
         foreach (string product in identity.ProductNames)
         {
+            if (ProtectedSharedContainerLeafNames.Contains(product))
+            {
+                continue;
+            }
+
             string np = NormalizeName(product);
             if (np.Length < 4 || GenericSegmentNames.Contains(np))
             {
                 continue;
             }
 
+            CanonicalTitleProfile productProfile = BuildCanonicalProfile(product, allowTrailingSaveFolderSuffix: false);
+
             if (string.Equals(norm, np, StringComparison.Ordinal))
             {
+                if (primaryTitleProfile is { } primary && !HasCompatibleMarkersAndInstallments(segmentProfile, primary))
+                {
+                    continue;
+                }
+
                 return true;
             }
 
-            CanonicalTitleProfile productProfile = BuildCanonicalProfile(product, allowTrailingSaveFolderSuffix: false);
-
             // Universal conflict veto: never cross-match trilogy/anthology bundles vs individual titles,
             // original releases vs remasters/definitive editions, or differing sequel/installment numbers!
-            if (!segmentProfile.BundleMarkers.SetEquals(productProfile.BundleMarkers)
-                || !segmentProfile.RemasterMarkers.SetEquals(productProfile.RemasterMarkers)
-                || !segmentProfile.Installments.SequenceEqual(productProfile.Installments))
+            if (!HasCompatibleMarkersAndInstallments(segmentProfile, productProfile))
+            {
+                continue;
+            }
+
+            if (primaryTitleProfile is { } primaryCheck && !HasCompatibleMarkersAndInstallments(segmentProfile, primaryCheck))
             {
                 continue;
             }
@@ -513,6 +637,11 @@ public static partial class GameDataSafetyFence
 
         return false;
     }
+
+    private static bool HasCompatibleMarkersAndInstallments(CanonicalTitleProfile left, CanonicalTitleProfile right) =>
+        left.BundleMarkers.SetEquals(right.BundleMarkers)
+        && left.RemasterMarkers.SetEquals(right.RemasterMarkers)
+        && left.Installments.SequenceEqual(right.Installments);
 
     private static bool DoesCanonicalTokenProfileMatch(CanonicalTitleProfile segment, CanonicalTitleProfile product)
     {
@@ -781,6 +910,7 @@ public static partial class GameDataSafetyFence
     {
         "Steam",
         "SteamApps",
+        "Steamworks",
         "common",
         "CODEX",
         "RUNE",
@@ -795,13 +925,25 @@ public static partial class GameDataSafetyFence
         "Social Club",
         "GTA_DEF",
         "My Games",
+        "Rockstar",
         "Rockstar Games",
         "Capcom",
         "Ubisoft",
         "Ubisoft Game Launcher",
         "Square Enix",
+        "EA",
         "EA Games",
+        "EA Desktop",
+        "Origin",
         "Electronic Arts",
+        "Epic",
+        "Epic Games",
+        "EpicGamesLauncher",
+        "Riot Games",
+        "Blizzard Entertainment",
+        "Battle.net",
+        "GOG.com",
+        "GOG Galaxy",
         "FromSoftware",
         "Bandai Namco",
         "Bandai Namco Entertainment",
@@ -818,6 +960,19 @@ public static partial class GameDataSafetyFence
         "Paradox Interactive",
         "WB Games",
         "Warner Bros. Interactive Entertainment",
+        "RenPy",
+        "Godot",
+        "app_userdata",
+        "LOVE",
+        "RPG Maker",
+        "RPG Maker MV",
+        "RPG Maker MZ",
+        "GameMaker",
+        "GameMakerStudio2",
+        "NWJS",
+        "Electron",
+        "Unity",
+        "UnrealEngine",
         "Gameface",
         "UE4Game",
         "UE5Game",
@@ -830,19 +985,56 @@ public static partial class GameDataSafetyFence
         "GTA_DEF",
     };
 
+    private static readonly HashSet<string> ForbiddenExecutableStems = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "renpy",
+        "godot",
+        "love",
+        "nwjs",
+        "electron",
+        "gamemaker",
+        "gamemakerstudio",
+        "gamemakerstudio2",
+        "rpgmaker",
+        "rpgmakermv",
+        "rpgmakermz",
+        "unityplayer",
+        "bootstrappackagedgame",
+        "rockstarredirector",
+        "rockstargameslauncher",
+        "compactautorunner",
+        "autorunner",
+        "ue4prereqsetup",
+        "ueprereqsetup",
+        "prereqsetup",
+        "crashreportclient",
+        "unrealcefsubprocess",
+        "unitycrashhandler",
+        "unitycrashhandler32",
+        "unitycrashhandler64",
+        "socialclubsetup",
+        "social-club-setup",
+        "steamerrorreporter",
+    };
+
     private static readonly HashSet<string> GenericSegmentNames = new(StringComparer.Ordinal)
     {
         "game", "games", "mygames", "savedgames", "savegames", "savegame", "saves", "save", "savedata", "saved",
-        "steam", "steamapps", "common", "userdata", "user", "users", "data", "config", "configs", "settings",
+        "steam", "steamapps", "steamworks", "common", "userdata", "user", "users", "data", "config", "configs", "settings",
         "local", "locallow", "roaming", "appdata", "documents", "public", "programdata", "launcher", "bin",
         "win64", "win32", "x64", "x86", "binaries", "shipping", "client", "app", "application", "remote",
         "codex", "rune", "empress", "skidrow", "hoodlum", "gsesaves", "goldbergsteamemusaves", "smartsteamemu",
         "onlinefix", "valve", "ali213", "temp", "cache", "logs", "unity", "unrealengine", "engine",
         "profile", "profiles", "windowsnoeditor", "windows", "crashreportclient", "ngx",
         "gameface", "ue4game", "ue5game", "unrealgame", "defaultcompany",
+        "renpy", "godot", "appuserdata", "love", "nwjs", "electron", "gamemaker", "gamemakerstudio", "gamemakerstudio2",
+        "rpgmaker", "rpgmakermv", "rpgmakermz", "unityplayer", "bootstrappackagedgame", "rockstarredirector",
+        "compactautorunner", "autorunner", "ue4prereqsetup", "ueprereqsetup", "unrealcefsubprocess", "unitycrashhandler",
         "goldbergsocialclubemusaves", "socialclub", "gtadef",
         "rockstargames", "rockstar", "capcom", "ubisoft", "ubisoftgamelauncher", "squareenix",
-        "eagames", "electronicarts", "fromsoftware", "bandainamco", "bandainamcoentertainment",
+        "ea", "eagames", "eadesktop", "origin", "electronicarts", "epic", "epicgames", "epicgameslauncher",
+        "riotgames", "blizzard", "blizzardentertainment", "battlenet", "gogcom", "goggalaxy",
+        "fromsoftware", "bandainamco", "bandainamcoentertainment",
         "2kgames", "taketwo", "taketwointeractive", "bethesda", "bethesdasoftworks", "activision",
         "sega", "koeitecmo", "konami", "cdprojektred", "thqnordic", "paradoxinteractive", "wbgames",
         "definitiveedition", "definitive", "remastered", "remaster", "anniversaryedition", "edition",

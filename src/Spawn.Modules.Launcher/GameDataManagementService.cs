@@ -294,6 +294,11 @@ public sealed class GameDataManagementService : IGameDataManagementService
                 {
                     return GameDataCleanResult.Fail(reason ?? $"安全围栏已拦截不安全路径：{id}");
                 }
+
+                if (!isReg && ContainsDisallowedReparsePointOrSubtree(id, game.InstallDir, identity, _options))
+                {
+                    return GameDataCleanResult.Fail($"安全围栏拦截：目标包含符号链接或 NTFS 目录联接点 (ReparsePoint)，禁止清理：{id}");
+                }
             }
         }
 
@@ -327,6 +332,12 @@ public sealed class GameDataManagementService : IGameDataManagementService
                 if (!safe)
                 {
                     warnings.Add(reason ?? $"文件系统安全围栏拦截：{entry.PathOrRegistryKey}");
+                    continue;
+                }
+
+                if (ContainsDisallowedReparsePointOrSubtree(entry.PathOrRegistryKey, game.InstallDir, identity, _options))
+                {
+                    warnings.Add($"安全围栏拦截：目标路径或其子目录包含符号链接/NTFS 目录联接点 (ReparsePoint)，已拒绝递归删除：{entry.PathOrRegistryKey}");
                     continue;
                 }
             }
@@ -461,6 +472,12 @@ public sealed class GameDataManagementService : IGameDataManagementService
                 }
                 else if (Directory.Exists(entry.PathOrRegistryKey))
                 {
+                    if (ContainsDisallowedReparsePointOrSubtree(entry.PathOrRegistryKey, game.InstallDir, identity, _options))
+                    {
+                        warnings.Add($"安全围栏拦截：清理执行前检测到目标或其子目录含符号链接/NTFS 目录联接点 (ReparsePoint)，已跳过：{entry.PathOrRegistryKey}");
+                        continue;
+                    }
+
                     var (_, dirBytes, _) = InspectFilesystemStats(entry.PathOrRegistryKey);
                     if (shouldWriteBackup)
                     {
@@ -480,6 +497,13 @@ public sealed class GameDataManagementService : IGameDataManagementService
                         await AppendJournalItemAsync(manifestPath, manifest!, journalItem, totalBytesProcessed, cancellationToken).ConfigureAwait(false);
                     }
 
+                    // Re-check immediately prior to deletion in case a junction was mounted concurrently.
+                    if (ContainsDisallowedReparsePointOrSubtree(entry.PathOrRegistryKey, game.InstallDir, identity, _options))
+                    {
+                        warnings.Add($"安全围栏拦截：删除前检测到目录包含 NTFS 目录联接点 (ReparsePoint)，已拒绝递归删除：{entry.PathOrRegistryKey}");
+                        continue;
+                    }
+
                     Directory.Delete(entry.PathOrRegistryKey, recursive: true);
                     TrackPotentialEmptyCleanupParent(entry, game, identity, emptyEmulatorParentDirsToPrune);
                     affectedCount++;
@@ -488,6 +512,12 @@ public sealed class GameDataManagementService : IGameDataManagementService
                 }
                 else if (File.Exists(entry.PathOrRegistryKey))
                 {
+                    if (ContainsDisallowedReparsePointOrSubtree(entry.PathOrRegistryKey, game.InstallDir, identity, _options))
+                    {
+                        warnings.Add($"安全围栏拦截：目标文件或祖先路径含符号链接/联接点 (ReparsePoint)，已跳过：{entry.PathOrRegistryKey}");
+                        continue;
+                    }
+
                     long fileBytes = new FileInfo(entry.PathOrRegistryKey).Length;
                     if (shouldWriteBackup)
                     {
@@ -656,6 +686,12 @@ public sealed class GameDataManagementService : IGameDataManagementService
                                 continue;
                             }
 
+                            if (ContainsDisallowedReparsePointOrSubtree(item.OriginalPathOrKey, game.InstallDir, restoreIdentity, _options))
+                            {
+                                warnings.Add($"安全围栏拦截：恢复目标或其子目录含符号链接/NTFS 目录联接点 (ReparsePoint)，已跳过：{item.OriginalPathOrKey}");
+                                continue;
+                            }
+
                             CopyDirectoryRecursive(payloadPath, item.OriginalPathOrKey);
                             restoredCount++;
                             restoredBytes += item.SizeBytes;
@@ -675,6 +711,12 @@ public sealed class GameDataManagementService : IGameDataManagementService
                             if (!safe)
                             {
                                 warnings.Add(reason ?? $"跳过恢复受保护文件：{item.OriginalPathOrKey}");
+                                continue;
+                            }
+
+                            if (ContainsDisallowedReparsePointOrSubtree(item.OriginalPathOrKey, game.InstallDir, restoreIdentity, _options))
+                            {
+                                warnings.Add($"安全围栏拦截：恢复目标文件或祖先目录含符号链接/联接点 (ReparsePoint)，已跳过：{item.OriginalPathOrKey}");
                                 continue;
                             }
 
@@ -972,6 +1014,77 @@ public sealed class GameDataManagementService : IGameDataManagementService
         return false;
     }
 
+    private static bool ContainsDisallowedReparsePointOrSubtree(
+        string candidateTarget,
+        string gameInstallDir,
+        GameDataTargetIdentity identity,
+        GameDataManagementOptions options)
+    {
+        string normalizedTarget;
+        try
+        {
+            normalizedTarget = Path.TrimEndingDirectorySeparator(Path.GetFullPath(candidateTarget));
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return true;
+        }
+
+        if (ContainsDisallowedReparsePoint(normalizedTarget, gameInstallDir, identity, options))
+        {
+            return true;
+        }
+
+        if (!Directory.Exists(normalizedTarget))
+        {
+            return false;
+        }
+
+        var enumOpts = new EnumerationOptions
+        {
+            IgnoreInaccessible = false,
+            RecurseSubdirectories = false,
+            AttributesToSkip = 0,
+        };
+
+        bool WalkSubtreeForReparsePoint(DirectoryInfo dir, int depth)
+        {
+            if ((dir.Attributes & FileAttributes.ReparsePoint) != 0)
+            {
+                return true;
+            }
+
+            if (depth > 24)
+            {
+                return true;
+            }
+
+            foreach (FileSystemInfo child in dir.EnumerateFileSystemInfos("*", enumOpts))
+            {
+                if ((child.Attributes & FileAttributes.ReparsePoint) != 0)
+                {
+                    return true;
+                }
+
+                if (child is DirectoryInfo childDir && WalkSubtreeForReparsePoint(childDir, depth + 1))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        try
+        {
+            return WalkSubtreeForReparsePoint(new DirectoryInfo(normalizedTarget), depth: 0);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return true;
+        }
+    }
+
     private void AddUnityEngineLocations(GameRecord game, CandidateListBuilder builder)
     {
         var unityInfo = GameEngineInspector.TryReadUnityAppInfo(game.InstallDir);
@@ -1085,7 +1198,7 @@ public sealed class GameDataManagementService : IGameDataManagementService
             foreach (string gameDir in FindMatchingChildDirectories(localAppData, identity, BuildDeterministicFolderVariants(game, identity)))
             {
                 string customSavedRoot = Path.Combine(gameDir, "Saved");
-                if (Directory.Exists(customSavedRoot))
+                if (Directory.Exists(customSavedRoot) && !IsDirectoryReparsePoint(customSavedRoot))
                 {
                     AddUnrealSavedSubtree(customSavedRoot, "Unreal 引擎", requireSaveGamesExists: true, builder);
                 }
@@ -1095,6 +1208,11 @@ public sealed class GameDataManagementService : IGameDataManagementService
         }
 
         string savedRoot = Path.Combine(localAppData, ueProject, "Saved");
+        if (Directory.Exists(savedRoot) && IsDirectoryReparsePoint(savedRoot))
+        {
+            return;
+        }
+
         AddUnrealSavedSubtree(savedRoot, "Unreal 引擎", requireSaveGamesExists: false, builder);
     }
 
@@ -1105,7 +1223,9 @@ public sealed class GameDataManagementService : IGameDataManagementService
         CandidateListBuilder builder)
     {
         string saveGamesDir = Path.Combine(savedRoot, "SaveGames");
-        if (!requireSaveGamesExists || Directory.Exists(saveGamesDir))
+        bool saveGamesExists = Directory.Exists(saveGamesDir);
+        bool saveGamesIsReparse = saveGamesExists && IsDirectoryReparsePoint(saveGamesDir);
+        if (!saveGamesIsReparse && (!requireSaveGamesExists || saveGamesExists))
         {
             builder.TryAdd(
                 GameDataCategory.SaveData,
@@ -1116,16 +1236,20 @@ public sealed class GameDataManagementService : IGameDataManagementService
                 defaultSelected: true);
         }
 
-        builder.TryAdd(
-            GameDataCategory.ConfigAndLogs,
-            GameDataSourceRule.UnrealEngine,
-            sourceLabel,
-            Path.Combine(savedRoot, "Config"),
-            "Unreal Engine 画质与键位配置 (Saved\\Config)",
-            defaultSelected: false);
+        string configDir = Path.Combine(savedRoot, "Config");
+        if (!(Directory.Exists(configDir) && IsDirectoryReparsePoint(configDir)))
+        {
+            builder.TryAdd(
+                GameDataCategory.ConfigAndLogs,
+                GameDataSourceRule.UnrealEngine,
+                sourceLabel,
+                configDir,
+                "Unreal Engine 画质与键位配置 (Saved\\Config)",
+                defaultSelected: false);
+        }
 
         string logsDir = Path.Combine(savedRoot, "Logs");
-        if (Directory.Exists(logsDir))
+        if (Directory.Exists(logsDir) && !IsDirectoryReparsePoint(logsDir))
         {
             builder.TryAdd(
                 GameDataCategory.ConfigAndLogs,
@@ -1189,8 +1313,15 @@ public sealed class GameDataManagementService : IGameDataManagementService
 
             foreach (string localGameDir in matchedLocalDirs)
             {
+                if (Directory.Exists(localGameDir) && IsDirectoryReparsePoint(localGameDir))
+                {
+                    continue;
+                }
+
                 string savedDir = Path.Combine(localGameDir, "Saved");
-                if (Directory.Exists(savedDir) || hasUnreal)
+                bool savedExists = Directory.Exists(savedDir);
+                bool savedIsReparse = savedExists && IsDirectoryReparsePoint(savedDir);
+                if (!savedIsReparse && (savedExists || hasUnreal))
                 {
                     AddUnrealSavedSubtree(savedDir, "Rockstar / Unreal", requireSaveGamesExists: true, builder);
                 }
@@ -1198,7 +1329,7 @@ public sealed class GameDataManagementService : IGameDataManagementService
                 foreach (string directSaveSub in new[] { "savegames", "SaveGames", "Profiles" })
                 {
                     string candidateSaveDir = Path.Combine(localGameDir, directSaveSub);
-                    if (Directory.Exists(candidateSaveDir))
+                    if (Directory.Exists(candidateSaveDir) && !IsDirectoryReparsePoint(candidateSaveDir))
                     {
                         builder.TryAdd(
                             GameDataCategory.SaveData,
@@ -1265,11 +1396,19 @@ public sealed class GameDataManagementService : IGameDataManagementService
         bool hasUnreal,
         CandidateListBuilder builder)
     {
-        bool docDirExists = Directory.Exists(docGameDir) && !IsDirectoryReparsePoint(docGameDir);
+        bool docDirRawExists = Directory.Exists(docGameDir);
+        if (docDirRawExists && IsDirectoryReparsePoint(docGameDir))
+        {
+            return;
+        }
+
+        bool docDirExists = docDirRawExists;
         string profilesDir = Path.Combine(docGameDir, "Profiles");
+        bool profilesExists = docDirExists && Directory.Exists(profilesDir);
+        bool profilesIsReparse = profilesExists && IsDirectoryReparsePoint(profilesDir);
         bool addedProfileChildren = false;
 
-        if (docDirExists && Directory.Exists(profilesDir) && !IsDirectoryReparsePoint(profilesDir))
+        if (profilesExists && !profilesIsReparse)
         {
             try
             {
@@ -1301,7 +1440,7 @@ public sealed class GameDataManagementService : IGameDataManagementService
             }
         }
 
-        if (!addedProfileChildren)
+        if (!addedProfileChildren && !profilesIsReparse)
         {
             builder.TryAdd(
                 GameDataCategory.SaveData,
@@ -1331,8 +1470,13 @@ public sealed class GameDataManagementService : IGameDataManagementService
         }
 
         string configDir = Path.Combine(docGameDir, "Config");
+        bool configExists = docDirExists && Directory.Exists(configDir);
+        bool configIsReparse = configExists && IsDirectoryReparsePoint(configDir);
         string winNoEditorConfigDir = Path.Combine(configDir, "WindowsNoEditor");
-        if (Directory.Exists(winNoEditorConfigDir))
+        bool winNoEditorExists = configExists && !configIsReparse && Directory.Exists(winNoEditorConfigDir);
+        bool winNoEditorIsReparse = winNoEditorExists && IsDirectoryReparsePoint(winNoEditorConfigDir);
+
+        if (winNoEditorExists && !winNoEditorIsReparse)
         {
             bool hasDirectConfigFiles = false;
             try
@@ -1352,7 +1496,7 @@ public sealed class GameDataManagementService : IGameDataManagementService
                 "Rockstar 画质与键位配置目录 (Config\\WindowsNoEditor)",
                 defaultSelected: false);
         }
-        else if (Directory.Exists(configDir))
+        else if (configExists && !configIsReparse && !winNoEditorIsReparse)
         {
             builder.TryAdd(
                 GameDataCategory.ConfigAndLogs,
@@ -1379,6 +1523,11 @@ public sealed class GameDataManagementService : IGameDataManagementService
             {
                 foreach (string file in Directory.EnumerateFiles(docGameDir))
                 {
+                    if ((File.GetAttributes(file) & FileAttributes.ReparsePoint) != 0)
+                    {
+                        continue;
+                    }
+
                     string ext = Path.GetExtension(file);
                     if (ext.Equals(".cfg", StringComparison.OrdinalIgnoreCase)
                         || ext.Equals(".ini", StringComparison.OrdinalIgnoreCase)
@@ -1533,7 +1682,11 @@ public sealed class GameDataManagementService : IGameDataManagementService
         string installLeaf = Path.GetFileName(Path.TrimEndingDirectorySeparator(game.InstallDir ?? string.Empty));
         if (!string.IsNullOrWhiteSpace(installLeaf))
         {
-            seeds.Add(GameTitleCleaner.CleanTitle(installLeaf, preserveRemasterEdition: true));
+            string cleanedInstallLeaf = GameTitleCleaner.CleanTitle(installLeaf, preserveRemasterEdition: true);
+            if (GameDataSafetyFence.CanAcceptInstallFolderForIdentity(installLeaf, cleanedInstallLeaf, game.Title))
+            {
+                seeds.Add(cleanedInstallLeaf);
+            }
         }
 
         foreach (string prod in identity.ProductNames)
@@ -1626,10 +1779,16 @@ public sealed class GameDataManagementService : IGameDataManagementService
             return null;
         }
 
-        // Rockstar's Documents\Rockstar Games folders prefer abbreviated "GTA <Installment/Subtitle> Definitive Edition" / "GTA V".
+        // Rockstar's Documents\Rockstar Games folders prefer abbreviated "GTA <Installment/Subtitle> Definitive Edition" / "GTA V",
+        // whereas Red Dead Redemption uses the full "Red Dead Redemption <Installment>" folder name.
         foreach (string v in variants)
         {
             if (v.StartsWith("GTA ", StringComparison.OrdinalIgnoreCase) && !v.Contains(" - ", StringComparison.Ordinal))
+            {
+                return v;
+            }
+
+            if (v.StartsWith("Red Dead Redemption", StringComparison.OrdinalIgnoreCase) && !v.Contains(" - ", StringComparison.Ordinal))
             {
                 return v;
             }
@@ -2127,6 +2286,12 @@ public sealed class GameDataManagementService : IGameDataManagementService
                 }
 
                 var (safe, reason) = GameDataSafetyFence.ValidateFilesystemTarget(normalizedKey, installDir, identity, spawnPaths, options);
+                if (safe && ContainsDisallowedReparsePointOrSubtree(normalizedKey, installDir, identity, options))
+                {
+                    safe = false;
+                    reason = $"安全围栏拦截：目标路径或其子目录包含符号链接/NTFS 目录联接点 (ReparsePoint)，严禁递归清理：{normalizedKey}";
+                }
+
                 isSafe = safe;
                 safetyNote = reason;
 

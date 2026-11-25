@@ -20,6 +20,9 @@
     <Color x:Key="PrimaryTextColor">#F3F4F6</Color>
     <Color x:Key="SecondaryTextColor">#9CA3AF</Color>
     <Color x:Key="MutedTextColor">#6B7280</Color>
+    <Color x:Key="DisabledSurfaceColor">#25272B</Color>
+    <Color x:Key="DisabledBorderColor">#32353B</Color>
+    <Color x:Key="DisabledTextColor">#63666A</Color>
 
     <SolidColorBrush x:Key="RailBackgroundBrush" Color="{StaticResource RailBackgroundColor}" />
     <SolidColorBrush x:Key="SidebarBackgroundBrush" Color="{StaticResource SidebarBackgroundColor}" />
@@ -40,6 +43,9 @@
     <SolidColorBrush x:Key="PrimaryTextBrush" Color="{StaticResource PrimaryTextColor}" />
     <SolidColorBrush x:Key="SecondaryTextBrush" Color="{StaticResource SecondaryTextColor}" />
     <SolidColorBrush x:Key="MutedTextBrush" Color="{StaticResource MutedTextColor}" />
+    <SolidColorBrush x:Key="DisabledSurfaceBrush" Color="{StaticResource DisabledSurfaceColor}" />
+    <SolidColorBrush x:Key="DisabledBorderBrush" Color="{StaticResource DisabledBorderColor}" />
+    <SolidColorBrush x:Key="DisabledTextBrush" Color="{StaticResource DisabledTextColor}" />
 
     <!-- Semantic Status & Rarity Brushes -->
     <SolidColorBrush x:Key="RunningGreenBrush" Color="#10B981" />

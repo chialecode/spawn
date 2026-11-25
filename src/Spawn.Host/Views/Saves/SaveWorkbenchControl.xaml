@@ -54,10 +54,22 @@
                                 <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
                                 <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
                             </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource DisabledSurfaceBrush}" />
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource DisabledBorderBrush}" />
+                                <Setter Property="Foreground" Value="{DynamicResource DisabledTextBrush}" />
+                            </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Background" Value="{DynamicResource DisabledSurfaceBrush}" />
+                    <Setter Property="BorderBrush" Value="{DynamicResource DisabledBorderBrush}" />
+                    <Setter Property="Foreground" Value="{DynamicResource DisabledTextBrush}" />
+                </Trigger>
+            </Style.Triggers>
         </Style>
 
         <!-- SaveThemeComboBoxStyle is shared from Themes/Controls.xaml -->
@@ -93,10 +105,21 @@
                                 <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
                                 <Setter Property="FontWeight" Value="SemiBold" />
                             </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource DisabledSurfaceBrush}" />
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource DisabledBorderBrush}" />
+                                <Setter TargetName="Bd" Property="TextElement.Foreground" Value="{DynamicResource DisabledTextBrush}" />
+                                <Setter Property="Foreground" Value="{DynamicResource DisabledTextBrush}" />
+                            </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Foreground" Value="{DynamicResource DisabledTextBrush}" />
+                </Trigger>
+            </Style.Triggers>
         </Style>
 
         <!-- Reusable Node Inspector Content Template (Used in Right Drawer & Compact Overlay) -->
@@ -126,7 +149,7 @@
                                     Command="{Binding CloseCompactInspectorCommand}"
                                     Visibility="{Binding IsCompactLayout, Converter={StaticResource BoolToVis}}">
                                 <Path Data="M15,4 L7,12 L15,20 M7.5,12 H20"
-                                      Stroke="{DynamicResource PrimaryTextBrush}"
+                                      Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
                                       StrokeThickness="1.6"
                                       StrokeStartLineCap="Round"
                                       StrokeEndLineCap="Round"
@@ -252,18 +275,13 @@
                         </TextBlock>
 
                         <!-- Jump to Parent Link -->
-                        <Button Cursor="Hand"
+                        <Button Style="{StaticResource AccentLinkButtonStyle}"
                                 HorizontalAlignment="Left"
                                 Margin="0,5,0,0"
-                                Padding="0"
-                                Background="Transparent"
-                                BorderThickness="0"
-                                FocusVisualStyle="{x:Null}"
                                 Command="{Binding JumpToParentSnapshotCommand}"
                                 Visibility="{Binding SelectedNode.HasParent, Converter={StaticResource BoolToVis}}">
                             <TextBlock FontFamily="{StaticResource SpawnMonoFont}"
                                        FontSize="11.5"
-                                       Foreground="{DynamicResource AccentBrush}"
                                        Text="↳ 跳转至父节点快照" />
                         </Button>
                     </StackPanel>
@@ -392,12 +410,11 @@
                                     Content="确认原子回滚"
                                     Command="{Binding ConfirmRollbackSelectedCommand}"
                                     Visibility="{Binding RollbackRequiresModMismatchConfirm, Converter={StaticResource InvBoolToVis}}" />
-                            <Button Style="{StaticResource PrimaryCapsuleButtonStyle}"
+                            <Button Style="{StaticResource WarningPrimaryCapsuleButtonStyle}"
                                     Height="28"
                                     Padding="12,0"
                                     FontSize="12"
                                     Margin="0,0,6,0"
-                                    Background="{DynamicResource WarningAmberBrush}"
                                     Content="忽略 Mod 差异强制回滚"
                                     Command="{Binding ForceRollbackIgnoringModMismatchCommand}"
                                     Visibility="{Binding RollbackRequiresModMismatchConfirm, Converter={StaticResource BoolToVis}}" />
@@ -949,7 +966,7 @@
                                         Command="{Binding ClearTreeSearchCommand}"
                                         Visibility="{Binding TreeSearchText, Converter={StaticResource StrNotEmptyToVis}}">
                                     <Path Data="M0,0 L6,6 M6,0 L0,6"
-                                          Stroke="{DynamicResource MutedTextBrush}"
+                                          Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
                                           StrokeThickness="1.3"
                                           HorizontalAlignment="Center"
                                           VerticalAlignment="Center" />
@@ -983,6 +1000,11 @@
                                             <Setter Property="BorderBrush" Value="{DynamicResource WarningAmberBrush}" />
                                             <Setter Property="Foreground" Value="{DynamicResource WarningAmberBrush}" />
                                         </DataTrigger>
+                                        <Trigger Property="IsEnabled" Value="False">
+                                            <Setter Property="Background" Value="{DynamicResource DisabledSurfaceBrush}" />
+                                            <Setter Property="BorderBrush" Value="{DynamicResource DisabledBorderBrush}" />
+                                            <Setter Property="Foreground" Value="{DynamicResource DisabledTextBrush}" />
+                                        </Trigger>
                                     </Style.Triggers>
                                 </Style>
                             </Button.Style>

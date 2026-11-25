@@ -7,6 +7,7 @@ using Spawn.Core;
 using Spawn.Core.Update;
 using Spawn.Host.Services;
 using Spawn.Host.ViewModels;
+using Spawn.Host.ViewModels.Saves;
 using Spawn.Host.Views;
 using Spawn.Modules.Achievement;
 using Spawn.Modules.Launcher;
@@ -59,29 +60,7 @@ public partial class App : Application
         SessionEnding += (_, _) => _ = Dispatcher.InvokeAsync(() => ShutdownGracefullyAsync());
 
         var services = new ServiceCollection();
-        services.AddLogging(builder => builder.SetMinimumLevel(LogLevel.Warning));
-
-        services.AddSingleton(paths);
-        services.AddSingleton(_singleInstance);
-        services.AddSingleton<OverlayIpcClient>(sp => new OverlayIpcClient(sp.GetRequiredService<SpawnPaths>()));
-        services.AddSingleton<OverlayHostProcessManager>();
-        services.AddSingleton<IOverlayIpcClient, ResilientOverlayIpcClient>();
-
-        services.AddSpawnCore(paths);
-        services.AddSpawnLauncher();
-        services.AddSpawnAchievement();
-        services.AddSpawnProgress();
-        services.TryAddSingleton<IGameDataManagementService, NullFallbackGameDataManagementService>();
-
-        // Decorate game-data cleanup and pre-trainer snapshot services so UpdateIdleEvaluator sees live busy activity.
-        services.Replace(ServiceDescriptor.Singleton<IGameDataManagementService>(sp =>
-            new ActivityTrackingGameDataManagementService(
-                sp.GetRequiredService<GameDataManagementService>(),
-                sp.GetRequiredService<UpdateActivityTracker>())));
-        services.Replace(ServiceDescriptor.Singleton<IPreTrainerSaveSnapshotService>(sp =>
-            new ActivityTrackingPreTrainerSnapshotService(
-                sp.GetRequiredService<PreTrainerSaveSnapshotService>(),
-                sp.GetRequiredService<UpdateActivityTracker>())));
+        RegisterHostCoreAndModuleServices(services, paths, _singleInstance);
 
         services.Replace(ServiceDescriptor.Singleton<IUpdateIdleEvaluator>(sp =>
             new HostUpdateIdleEvaluator(
@@ -93,11 +72,6 @@ public partial class App : Application
             new HostUpdateQuitCoordinator(this)));
 
         services.AddSingleton<TrayIconService>();
-        services.AddSingleton<ThemeManagerService>();
-        services.AddSingleton<UpdateViewModel>();
-        services.AddSingleton<SettingsViewModel>();
-        services.AddSingleton<TrainerWorkbenchViewModel>();
-        services.AddSingleton<MainWindowViewModel>();
 
         _serviceProvider = services.BuildServiceProvider();
 
@@ -110,6 +84,12 @@ public partial class App : Application
 
         var achievementService = _serviceProvider.GetRequiredService<IAchievementService>();
         await achievementService.StartMonitoringAsync().ConfigureAwait(true);
+
+        var saveWatcher = _serviceProvider.GetService<ISaveWatcherService>();
+        if (saveWatcher is not null)
+        {
+            await saveWatcher.StartAsync().ConfigureAwait(true);
+        }
 
         var updateService = _serviceProvider.GetRequiredService<IUpdateService>();
         bool consumedValidUpdateMarker = _startupDecision is { ConsumedValidRestartMarker: true }
@@ -327,6 +307,21 @@ public partial class App : Application
                 }
             }
 
+            var saveWatcher = _serviceProvider.GetService<ISaveWatcherService>();
+            if (saveWatcher is not null)
+            {
+                try
+                {
+                    await saveWatcher.StopAsync()
+                        .WaitAsync(GracefulStopServiceTimeout)
+                        .ConfigureAwait(true);
+                }
+                catch (TimeoutException)
+                {
+                    // Bounded exit: never hang --quit-for-update forever.
+                }
+            }
+
             var achievementService = _serviceProvider.GetService<IAchievementService>();
             if (achievementService is not null)
             {
@@ -420,6 +415,12 @@ public partial class App : Application
                     await achievementService.StartMonitoringAsync().ConfigureAwait(true);
                 }
 
+                var saveWatcher = _serviceProvider.GetService<ISaveWatcherService>();
+                if (saveWatcher is not null)
+                {
+                    await saveWatcher.StartAsync().ConfigureAwait(true);
+                }
+
                 var updateService = _serviceProvider.GetService<IUpdateService>();
                 updateService?.StartBackgroundScheduler();
             }
@@ -471,6 +472,88 @@ public partial class App : Application
 
         public Task AbortDeferredShutdownAsync(CancellationToken cancellationToken = default) =>
             app.Dispatcher.InvokeAsync(() => app.AbortDeferredShutdownCoreAsync()).Task.Unwrap();
+    }
+
+    /// <summary>
+    /// Registers core, module, activity-tracking decorator, and ViewModel services shared by the live
+    /// WPF <see cref="App"/> host and headless DI composition tests.
+    /// </summary>
+    public static void RegisterHostCoreAndModuleServices(
+        IServiceCollection services,
+        SpawnPaths paths,
+        SingleInstanceCoordinator? singleInstance = null)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(paths);
+
+        services.AddLogging(builder => builder.SetMinimumLevel(LogLevel.Warning));
+
+        services.AddSingleton(paths);
+        if (singleInstance is not null)
+        {
+            services.AddSingleton(singleInstance);
+        }
+        else
+        {
+            services.AddSingleton(sp => new SingleInstanceCoordinator(sp.GetRequiredService<SpawnPaths>()));
+        }
+
+        services.AddSingleton<OverlayIpcClient>(sp => new OverlayIpcClient(sp.GetRequiredService<SpawnPaths>()));
+        services.AddSingleton<OverlayHostProcessManager>();
+        services.AddSingleton<IOverlayIpcClient, ResilientOverlayIpcClient>();
+
+        services.AddSpawnCore(paths);
+        services.AddSpawnLauncher();
+        services.AddSpawnAchievement();
+        services.AddSpawnProgress();
+        services.TryAddSingleton<IGameDataManagementService, NullFallbackGameDataManagementService>();
+
+        // Decorate game-data cleanup and pre-trainer snapshot services so UpdateIdleEvaluator sees live busy activity.
+        services.Replace(ServiceDescriptor.Singleton<IGameDataManagementService>(sp =>
+            new ActivityTrackingGameDataManagementService(
+                sp.GetRequiredService<GameDataManagementService>(),
+                sp.GetRequiredService<UpdateActivityTracker>())));
+        services.Replace(ServiceDescriptor.Singleton<IPreTrainerSaveSnapshotService>(sp =>
+            new ActivityTrackingPreTrainerSnapshotService(
+                sp.GetRequiredService<PreTrainerSaveSnapshotService>(),
+                sp.GetRequiredService<UpdateActivityTracker>())));
+
+        DecorateSingletonIfRegistered<ISaveTimeMachineService>(
+            services,
+            (inner, sp) => new ActivityTrackingSaveTimeMachineService(inner, sp.GetRequiredService<UpdateActivityTracker>()));
+        DecorateSingletonIfRegistered<ICloudSaveSyncService>(
+            services,
+            (inner, sp) => new ActivityTrackingCloudSaveSyncService(inner, sp.GetRequiredService<UpdateActivityTracker>()));
+
+        services.AddSingleton<ThemeManagerService>();
+        services.AddSingleton<UpdateViewModel>();
+        services.AddSingleton<SettingsViewModel>();
+        services.AddSingleton<TrainerWorkbenchViewModel>();
+        services.AddSingleton<SaveWorkbenchViewModel>();
+        services.AddSingleton<MainWindowViewModel>();
+    }
+
+    private static void DecorateSingletonIfRegistered<TService>(
+        IServiceCollection services,
+        Func<TService, IServiceProvider, TService> decoratorFactory)
+        where TService : class
+    {
+        ServiceDescriptor? existing = services.LastOrDefault(d => d.ServiceType == typeof(TService));
+        if (existing is null)
+        {
+            return;
+        }
+
+        services.Remove(existing);
+        services.AddSingleton<TService>(sp =>
+        {
+            TService inner = existing.ImplementationInstance is TService inst
+                ? inst
+                : existing.ImplementationFactory is not null
+                    ? (TService)existing.ImplementationFactory(sp)
+                    : (TService)ActivatorUtilities.CreateInstance(sp, existing.ImplementationType!);
+            return decoratorFactory(inner, sp);
+        });
     }
 
     protected override void OnExit(ExitEventArgs e)

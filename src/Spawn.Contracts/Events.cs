@@ -64,3 +64,13 @@ public sealed record AchievementSchemaUpdatedEvent(
     AchievementCaptureMode CaptureMode,
     string ChannelStatusText,
     DateTimeOffset OccurredUtc);
+
+/// <summary>
+/// Published whenever a game's Save Time Machine tree, active branch, snapshot list, or cloud sync state changes.
+/// </summary>
+public sealed record SaveTreeChangedEvent(
+    string GameId,
+    string? BranchId,
+    string? SnapshotId,
+    string Reason,
+    DateTimeOffset OccurredUtc);

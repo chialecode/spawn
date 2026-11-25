@@ -652,16 +652,17 @@ public sealed class OverlayAndShellHeadlessGateTests
     [Fact]
     public void M3A16_MainWindowXaml_RemovesTopBarQuickImportCapsule_ConsolidatesLibraryScanToSettings_AndEnforcesDedicatedTrainersRailAndThreeSubTabsSixSettingsCategories()
     {
-        // 1. Enum invariants: 4 PrimaryNavSection items (Library, Achievements, Trainers, Settings) + 3 GameDetail sub-tabs + 6 Settings categories.
+        // 1. Enum invariants: 5 PrimaryNavSection items (Library, Achievements, Saves, Trainers, Settings) + 4 GameDetail sub-tabs + 8 Settings categories.
         Assert.Equal(
-            [PrimaryNavSection.Library, PrimaryNavSection.Achievements, PrimaryNavSection.Trainers, PrimaryNavSection.Settings],
+            [PrimaryNavSection.Library, PrimaryNavSection.Achievements, PrimaryNavSection.Saves, PrimaryNavSection.Trainers, PrimaryNavSection.Settings],
             Enum.GetValues<PrimaryNavSection>());
         Assert.Equal(
-            [GameDetailSubTab.Achievements, GameDetailSubTab.GameData, GameDetailSubTab.Trainers],
+            [GameDetailSubTab.Achievements, GameDetailSubTab.Saves, GameDetailSubTab.GameData, GameDetailSubTab.Trainers],
             Enum.GetValues<GameDetailSubTab>());
+        Assert.Contains(SettingsCategory.SavesAndCloudSync, Enum.GetValues<SettingsCategory>());
         Assert.Contains(SettingsCategory.TrainerAndSandbox, Enum.GetValues<SettingsCategory>());
         Assert.Contains(SettingsCategory.Updates, Enum.GetValues<SettingsCategory>());
-        Assert.Equal(7, Enum.GetValues<SettingsCategory>().Length);
+        Assert.Equal(8, Enum.GetValues<SettingsCategory>().Length);
 
         string repoRoot = LocateRepositoryRoot();
         string mainWindowXamlPath = Path.Combine(repoRoot, "src", "Spawn.Host", "Views", "MainWindow.xaml");
@@ -708,12 +709,25 @@ public sealed class OverlayAndShellHeadlessGateTests
         Assert.Contains("ManagedTrainerRowMoreBtn", mainWindowXaml, StringComparison.Ordinal);
         Assert.Contains("TrainerWorkbenchTemplate", mainWindowXaml, StringComparison.Ordinal);
 
-        // 6. Column 1 XAML check: 4 RadioButtons in PrimaryRailGroup (Library, Achievements, Trainers, Settings).
+        // 5b. Dedicated Saves Time Machine & Branching Tree Sidebar Rail, Overview Mode, IME-guarded search, and shared SaveWorkbenchControl checks!
+        Assert.Contains("PrimaryNavSection.Saves", mainWindowXaml, StringComparison.Ordinal);
+        Assert.Contains("GameDetailSubTab.Saves", mainWindowXaml, StringComparison.Ordinal);
+        Assert.Contains("OpenGameSavesSubTabCommand", mainWindowXaml, StringComparison.Ordinal);
+        Assert.Contains("SettingsCategory.SavesAndCloudSync", mainWindowXaml, StringComparison.Ordinal);
+        Assert.Contains("存档与云同步", mainWindowXaml, StringComparison.Ordinal);
+        Assert.Contains("全部存档总览", mainWindowXaml, StringComparison.Ordinal);
+        Assert.Contains("SaveSidebarSearchTextBox", mainWindowXaml, StringComparison.Ordinal);
+        Assert.Contains("OnSaveSidebarSearchPreviewKeyDown", mainWindowXaml, StringComparison.Ordinal);
+        Assert.Contains("ShowSavesOverviewPanel", mainWindowXaml, StringComparison.Ordinal);
+        Assert.Contains("ShowSavesSingleGamePanel", mainWindowXaml, StringComparison.Ordinal);
+        Assert.Contains("SaveWorkbenchControl", mainWindowXaml, StringComparison.Ordinal);
+
+        // 6. Column 1 XAML check: 5 RadioButtons in PrimaryRailGroup (Library, Achievements, Saves, Trainers, Settings).
         XDocument doc = XDocument.Load(mainWindowXamlPath);
         int railButtons = doc.Descendants()
             .Count(e => e.Name.LocalName == "RadioButton"
                         && string.Equals(e.Attribute("GroupName")?.Value, "PrimaryRailGroup", StringComparison.Ordinal));
-        Assert.Equal(4, railButtons);
+        Assert.Equal(5, railButtons);
     }
 
     [Fact]

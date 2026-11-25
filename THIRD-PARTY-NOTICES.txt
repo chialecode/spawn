@@ -10,8 +10,9 @@ SPAWN. Each component remains subject to its upstream copyright and license.
 ---------------------------------------
 - All NuGet packages across the SPAWN solution transitive dependency graph
   (audited via every project's obj/project.assets.json) are under permissive
-  licenses (MIT, Apache-2.0, BSD-3-Clause, or Microsoft Win32Metadata build-time
-  SDK metadata). Zero GPL, AGPL, or LGPL NuGet packages are referenced.
+  licenses (MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, or Microsoft
+  Win32Metadata build-time SDK metadata). Zero GPL, AGPL, or LGPL NuGet
+  packages are referenced.
 - Prohibited packages (including Reloaded.Memory*, SevenZipExtractor,
   Squid-Box.SevenZipSharp, Keystone, Memory.dll, MinHook, EasyHook, Squalr) are
   enforced as hard build/test failures by Spawn.Architecture.GateTests.
@@ -79,6 +80,24 @@ SPAWN. Each component remains subject to its upstream copyright and license.
   Project: https://github.com/dotnet/efcore | https://github.com/ericsink/SQLitePCL.raw
   Scope:   Local SQLite WAL metadata storage (spawn.db).
 
+- Blake3 3.0.2
+  License: BSD-2-Clause License
+  Project: https://github.com/xoofx/blake3.net
+  Scope:   Pure managed BLAKE3 hashing in Spawn.Core for FastCDC save chunking,
+           CAS integrity verification, and 32MB SPPK packfile checksums.
+
+- ZstdSharp.Port 0.8.8
+  License: MIT License
+  Project: https://github.com/oleg-st/ZstdSharp
+  Scope:   Pure managed Zstandard compression/decompression in Spawn.Core for
+           CAS save chunks and SPPK cloud sync payloads.
+
+- Ludusavi Manifest Save Rules Attribution
+  License: MIT License
+  Project: https://github.com/mtkennerly/ludusavi-manifest
+  Scope:   Curated MIT-licensed game save/config path rule format and seed rules
+           for Spawn.Modules.Progress save path resolution.
+
 - .NET 10 Runtime Extensions & System Packages 10.0.15
   Packages: Microsoft.Extensions.DependencyInjection, Microsoft.Extensions.Http,
             Microsoft.Extensions.Logging, Microsoft.Extensions.Configuration,
@@ -135,3 +154,9 @@ BSD-3-Clause License (Google.Protobuf):
   modification, are permitted provided that the conditions of the 3-clause BSD
   license (copyright notice retention, binary notice retention, and non-endorsement)
   are met. See https://github.com/protocolbuffers/protobuf/blob/main/LICENSE.
+
+BSD-2-Clause License (Blake3):
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted provided that the conditions of the 2-clause BSD
+  license (copyright notice retention and binary notice retention) are met.
+  See https://github.com/xoofx/blake3.net/blob/master/license.txt.

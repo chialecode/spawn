@@ -1,6 +1,6 @@
 # SPAWN 数据模型与存储格式正本（Data Model & Storage Specification）
 
-> **文档状态**：Active（M1 基线锁定；M3 同步 SQLite Schema `v4` 修改器四表、`games` 扩展列与沙箱/快照目录布局）
+> **文档状态**：Active（M1 基线锁定；M3 同步 SQLite Schema `v4` 修改器四表与沙箱布局；M4 存档时间机器轨道同步 Schema `v5` 分支树、FastCDC CAS 与 32MB SPPK 云同步七表）
 > **适用范围**：`spawn.db` SQLite WAL 数据库契约、核心表结构 DDL、`SPAWN_Vault` 物理目录拓扑、`FastCDC` 分块算法与 `32MB SPPK` 云同步二进制协议
 > **关联文档**：[ADR-0004 存储与 Junction 拓扑](../decisions/0004-cas-fastcdc-storage-and-mod-junction-topology.md) · [系统顶层架构](system-architecture.md) · [存档与修改器规格](../modules/progress-saves-and-trainer.md) · [Mod 与极客工具规格](../modules/nexus-mods-and-utilities.md)
 
@@ -284,57 +284,123 @@ CREATE INDEX IF NOT EXISTS ix_pre_trainer_snapshots_game_created
     ON pre_trainer_snapshots(game_id, created_at_utc DESC);
 ```
 
-以下四表归属 `M4` 存档时间机器轨道（按 `D-25` 顺延保留，`M3` 不建表）：
+以下七表由 `M4` 存档时间机器与分支树轨道（Schema `v5` 幂等迁移，实装于 `src/Spawn.Core/SpawnDatabase.Saves.cs`，全 `snake_case` 命名）统一落库：
 
 ```sql
-CREATE TABLE IF NOT EXISTS ludusavi_rules (
-    RuleName                TEXT PRIMARY KEY,               -- 标准游戏英文/唯一标识名
-    SteamAppId              INTEGER,
-    GogId                   INTEGER,
-    AliasesJson             TEXT NOT NULL DEFAULT '[]',
-    SavePathsJson           TEXT NOT NULL,                  -- 仅含 [save] 标签的路径占位符规则数组
-    ConfigPathsJson         TEXT NOT NULL DEFAULT '[]',     -- 剥离出的 [config] 画质/键位规则数组
-    RegistryRulesJson       TEXT NOT NULL DEFAULT '[]'
+CREATE TABLE IF NOT EXISTS save_branches (
+    branch_id           TEXT PRIMARY KEY,
+    game_id             TEXT NOT NULL REFERENCES games(game_id) ON DELETE CASCADE,
+    name                TEXT NOT NULL,
+    description         TEXT,
+    color_hex           TEXT NOT NULL DEFAULT '#1677FF',
+    head_snapshot_id    TEXT,
+    base_snapshot_id    TEXT,
+    is_default          INTEGER NOT NULL DEFAULT 0,
+    is_archived         INTEGER NOT NULL DEFAULT 0,
+    created_at_utc      TEXT NOT NULL,
+    updated_at_utc      TEXT NOT NULL,
+    UNIQUE (game_id, name COLLATE NOCASE)
 );
 
-CREATE INDEX IF NOT EXISTS ix_ludusavi_steam ON ludusavi_rules(SteamAppId) WHERE SteamAppId IS NOT NULL;
-CREATE INDEX IF NOT EXISTS ix_ludusavi_gog   ON ludusavi_rules(GogId) WHERE GogId IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ix_save_branches_game
+    ON save_branches(game_id, is_default DESC, created_at_utc ASC);
 
-CREATE TABLE IF NOT EXISTS cas_chunks (
-    ChunkBlake3             TEXT PRIMARY KEY,               -- 64 字符十六进制 BLAKE3
-    RawSizeBytes            INTEGER NOT NULL,
-    CompressedSizeBytes     INTEGER NOT NULL,
-    RefCount                INTEGER NOT NULL DEFAULT 1,     -- 引用计数归零且经 GC 宽限期后方可回收物理块
-    PackId                  TEXT                            -- 已归档进远端云同步 SPPK 包时记录对应 PackId
+CREATE TABLE IF NOT EXISTS cloud_sync_endpoints (
+    endpoint_id             TEXT PRIMARY KEY,
+    display_name            TEXT NOT NULL,
+    provider_type           TEXT NOT NULL DEFAULT 'LocalFolder', -- 'LocalFolder' | 'WebDav' | 'S3'
+    endpoint_url            TEXT NOT NULL,
+    bucket_or_root          TEXT NOT NULL DEFAULT '',
+    region                  TEXT,
+    path_style_addressing   INTEGER NOT NULL DEFAULT 1,
+    secret_credential_id    TEXT,                                -- 对应 secrets/<id>.sec (DPAPI)
+    is_default              INTEGER NOT NULL DEFAULT 0,
+    created_at_utc          TEXT NOT NULL,
+    updated_at_utc          TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS save_snapshots (
-    SnapshotId              TEXT PRIMARY KEY,               -- ULID
-    GameId                  TEXT NOT NULL REFERENCES games(GameId) ON DELETE CASCADE,
-    ProfileId               TEXT,
-    ParentSnapshotId        TEXT,                           -- 指向上一代快照构成单向血缘 DAG (类 Git Commit)
-    ModProfileHash          TEXT NOT NULL,                  -- 创建快照时刻的 ModProfileHash
-    TriggerKind             TEXT NOT NULL,                  -- 'AutoQuiescent' | 'PostExit' | 'ManualPin' | 'PreRollbackSafety' | 'CloudMerge'
-    Note                    TEXT,
-    TotalRawBytes           INTEGER NOT NULL,
-    CreatedMachineId        TEXT NOT NULL,
-    PlaytimeActiveSeconds   INTEGER NOT NULL DEFAULT 0,
-    CreatedAtUtc            TEXT NOT NULL,
-    IsPinned                INTEGER NOT NULL DEFAULT 0      -- 1=永久钉住免受滚动淘汰策略清理
+    snapshot_id                     TEXT PRIMARY KEY,            -- ULID
+    game_id                         TEXT NOT NULL REFERENCES games(game_id) ON DELETE CASCADE,
+    branch_id                       TEXT NOT NULL REFERENCES save_branches(branch_id) ON DELETE CASCADE,
+    parent_snapshot_id              TEXT REFERENCES save_snapshots(snapshot_id) ON DELETE SET NULL,
+    merge_parent_snapshot_id        TEXT REFERENCES save_snapshots(snapshot_id) ON DELETE SET NULL,
+    profile_id                      TEXT,
+    mod_profile_hash                TEXT NOT NULL DEFAULT '',
+    trigger_kind                    TEXT NOT NULL DEFAULT 'Manual',
+    note                            TEXT,
+    file_count                      INTEGER NOT NULL DEFAULT 0,
+    registry_key_count              INTEGER NOT NULL DEFAULT 0,
+    total_raw_bytes                 INTEGER NOT NULL DEFAULT 0,
+    total_stored_bytes              INTEGER NOT NULL DEFAULT 0,
+    created_machine_id              TEXT NOT NULL,
+    playtime_active_seconds         INTEGER NOT NULL DEFAULT 0,
+    created_at_utc                  TEXT NOT NULL,
+    is_pinned                       INTEGER NOT NULL DEFAULT 0,  -- 1=永久钉住免受滚动淘汰策略清理
+    legacy_pre_trainer_snapshot_id  TEXT                         -- 从 M3 pre_trainer_snapshots 无损桥接时去重键
 );
 
-CREATE INDEX IF NOT EXISTS ix_snapshots_game_time ON save_snapshots(GameId, CreatedAtUtc DESC);
+CREATE INDEX IF NOT EXISTS ix_save_snapshots_game_time
+    ON save_snapshots(game_id, created_at_utc DESC, snapshot_id DESC);
+CREATE INDEX IF NOT EXISTS ix_save_snapshots_branch_time
+    ON save_snapshots(branch_id, created_at_utc DESC, snapshot_id DESC);
+CREATE INDEX IF NOT EXISTS ix_save_snapshots_parent
+    ON save_snapshots(parent_snapshot_id) WHERE parent_snapshot_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_save_snapshots_legacy
+    ON save_snapshots(legacy_pre_trainer_snapshot_id) WHERE legacy_pre_trainer_snapshot_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS save_game_state (
+    game_id                         TEXT PRIMARY KEY REFERENCES games(game_id) ON DELETE CASCADE,
+    active_branch_id                TEXT REFERENCES save_branches(branch_id) ON DELETE SET NULL,
+    current_head_snapshot_id        TEXT REFERENCES save_snapshots(snapshot_id) ON DELETE SET NULL,
+    auto_watch_enabled              INTEGER NOT NULL DEFAULT 1,
+    post_exit_snapshot_enabled      INTEGER NOT NULL DEFAULT 1,
+    include_config_files            INTEGER NOT NULL DEFAULT 0,
+    max_rolling_snapshots           INTEGER NOT NULL DEFAULT 30,
+    cloud_endpoint_id               TEXT REFERENCES cloud_sync_endpoints(endpoint_id) ON DELETE SET NULL,
+    last_synced_at_utc              TEXT,
+    has_unresolved_cloud_conflict   INTEGER NOT NULL DEFAULT 0,
+    updated_at_utc                  TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS snapshot_files (
-    SnapshotId              TEXT NOT NULL REFERENCES save_snapshots(SnapshotId) ON DELETE CASCADE,
-    LogicalPath             TEXT NOT NULL,                  -- 占位符标准化逻辑路径，如 '<winAppData>/FromSoftware/EldenRing/ER0000.sl2'
-    Category                TEXT NOT NULL,                  -- 'Save' | 'Config' | 'RegistryExport'
-    FileSize                INTEGER NOT NULL,
-    LastWriteTimeUtc        TEXT NOT NULL,
-    FileBlake3              TEXT NOT NULL,
-    ChunkSequenceJson       TEXT NOT NULL,                  -- 有序 [ChunkBlake3, ...] 重组清单
-    PRIMARY KEY (SnapshotId, LogicalPath)
+    snapshot_id         TEXT NOT NULL REFERENCES save_snapshots(snapshot_id) ON DELETE CASCADE,
+    logical_path        TEXT NOT NULL,                           -- 占位符标准化逻辑路径，如 '<winAppData>/EldenRing/<storeUserId>/ER0000.sl2'
+    original_path       TEXT NOT NULL,
+    category            TEXT NOT NULL DEFAULT 'Save',            -- 'Save' | 'Config' | 'RegistryExport'
+    file_size           INTEGER NOT NULL DEFAULT 0,
+    last_write_time_utc TEXT NOT NULL,
+    file_blake3         TEXT NOT NULL,
+    chunk_sequence_json TEXT NOT NULL DEFAULT '[]',              -- 有序 [chunk_blake3, ...] 重组清单
+    PRIMARY KEY (snapshot_id, logical_path)
 );
+
+CREATE TABLE IF NOT EXISTS cas_chunks (
+    chunk_blake3             TEXT PRIMARY KEY,                   -- 64 字符十六进制 BLAKE3
+    raw_size_bytes           INTEGER NOT NULL DEFAULT 0,
+    compressed_size_bytes    INTEGER NOT NULL DEFAULT 0,
+    ref_count                INTEGER NOT NULL DEFAULT 0,         -- 引用计数归零且经 GC 宽限期后方可回收物理块
+    pack_id                  TEXT,                               -- 已归档进远端云同步 SPPK 包时记录对应 PackId
+    created_at_utc           TEXT NOT NULL,
+    last_unreferenced_at_utc TEXT
+);
+
+CREATE INDEX IF NOT EXISTS ix_cas_chunks_unreferenced
+    ON cas_chunks(ref_count, last_unreferenced_at_utc) WHERE ref_count <= 0;
+
+CREATE TABLE IF NOT EXISTS ludusavi_rules (
+    rule_name           TEXT PRIMARY KEY COLLATE NOCASE,         -- 标准游戏英文/唯一标识名
+    steam_app_id        INTEGER,
+    gog_id              TEXT,
+    aliases_json        TEXT NOT NULL DEFAULT '[]',
+    save_paths_json     TEXT NOT NULL DEFAULT '[]',              -- 仅含 [save] 标签的路径占位符规则数组
+    config_paths_json   TEXT NOT NULL DEFAULT '[]',              -- 剥离出的 [config] 画质/键位规则数组
+    registry_rules_json TEXT NOT NULL DEFAULT '[]',
+    updated_at_utc      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_ludusavi_rules_steam ON ludusavi_rules(steam_app_id) WHERE steam_app_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ix_ludusavi_rules_gog   ON ludusavi_rules(gog_id) WHERE gog_id IS NOT NULL;
 ```
 
 ### 4.4 全域成就 Schema 与解锁记录表（Achievement 域）

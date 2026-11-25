@@ -10,6 +10,7 @@ using Microsoft.Win32;
 using Spawn.Contracts;
 using Spawn.Core;
 using Spawn.Host.Helpers;
+using Spawn.Host.ViewModels.Saves;
 
 namespace Spawn.Host.ViewModels;
 
@@ -27,6 +28,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private readonly ITrainerCatalogService _trainerCatalogService;
     private readonly ITrainerRuntimeService _trainerRuntimeService;
     private readonly ITrainerSafetyGate _trainerSafetyGate;
+    private readonly ISaveTimeMachineService? _saveTimeMachineService;
+    private readonly ICloudSaveSyncService? _cloudSaveSyncService;
+    private readonly ISaveWatcherService? _saveWatcherService;
     private readonly Action<string> _openExternalUrl;
     private readonly Dispatcher? _uiDispatcher;
     private readonly DispatcherTimer _uiRefreshTimer;
@@ -40,6 +44,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private IReadOnlyList<TrainerCatalogRecord> _allTrainerCatalogRecords = [];
     private readonly List<TrainerSidebarGameItemViewModel> _allTrainerSidebarGames = [];
     private readonly Dictionary<string, (bool IsSafetyLocked, bool IsHybridSinglePlayer)> _trainerSidebarSafetyCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<SaveSidebarGameItemViewModel> _allSaveSidebarGames = [];
+    private int _saveHubRefreshGeneration;
     private bool _isReloadLoopActive;
     private PendingLibraryReloadBatch? _pendingReloadBatch;
     private bool _isApplyingInternalSelection;
@@ -53,11 +59,16 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     public SettingsViewModel Settings { get; }
     public TrainerWorkbenchViewModel Trainer { get; }
+    public SaveWorkbenchViewModel Saves { get; }
 
     public ObservableCollection<GameListItemViewModel> AllGames { get; } = [];
     public ObservableCollection<GameSourceGroupViewModel> LibraryGroups { get; } = [];
     public ObservableCollection<AchievementRowViewModel> FilteredAchievements { get; } = [];
     public ObservableCollection<RecentUnlockItemViewModel> RecentUnlocks { get; } = [];
+
+    // Dedicated Saves sidebar & global managed save overview collections
+    public ObservableCollection<SaveSidebarGameItemViewModel> SaveSidebarGames { get; } = [];
+    public ObservableCollection<ManagedSaveGameOverviewItemViewModel> ManagedSaveGames { get; } = [];
 
     // Dedicated Trainers sidebar & global managed trainers overview collections
     public ObservableCollection<TrainerSidebarGameItemViewModel> TrainerSidebarGames { get; } = [];
@@ -92,6 +103,37 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     [ObservableProperty]
     private GameListItemViewModel? _selectedAchievementsGame;
+
+    // Dedicated Saves section navigation, search & aggregate overview state
+    [ObservableProperty]
+    private bool _isSaveOverviewSelected = true;
+
+    [ObservableProperty]
+    private GameListItemViewModel? _selectedSaveGame;
+
+    [ObservableProperty]
+    private string _saveSidebarSearchText = string.Empty;
+
+    [ObservableProperty]
+    private int _totalSaveSnapshotsCount;
+
+    [ObservableProperty]
+    private int _totalSaveBranchesCount;
+
+    [ObservableProperty]
+    private string _saveVaultStoredSizeText = "0 B";
+
+    [ObservableProperty]
+    private string _saveVaultDedupRatioText = string.Empty;
+
+    [ObservableProperty]
+    private bool _hasAnySaveWatcherActive;
+
+    [ObservableProperty]
+    private bool _hasAnyCloudConflict;
+
+    [ObservableProperty]
+    private bool _isSyncingAllCloudSaves;
 
     // Dedicated Trainers section navigation & search state
     [ObservableProperty]
@@ -183,12 +225,28 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         ? "修改器管理 · 有修改器正在运行"
         : "修改器管理";
 
+    public string SavesRailToolTip => HasAnyCloudConflict
+        ? "存档时间机器 · 存在未处理的云端分叉冲突"
+        : (HasAnySaveWatcherActive ? "存档时间机器 · 静默监听备份中" : "存档时间机器与多分支存档");
+
+    public string SaveOverviewCountBadgeText => HasAnyCloudConflict
+        ? "冲突"
+        : string.Create(CultureInfo.InvariantCulture, $"{TotalSaveSnapshotsCount}");
+
+    public string SaveVaultPathText => _paths.VaultChunksDirectory;
+    public bool HasManagedSaveGames => ManagedSaveGames.Count > 0;
+    public bool HasFilteredSaveSidebarGames => SaveSidebarGames.Count > 0;
+    public bool CanSyncAllCloudSaves => !IsSyncingAllCloudSaves && _cloudSaveSyncService is not null && !HasAnyRunningGame;
+
     public string TopBarTitle => ActiveSection switch
     {
         PrimaryNavSection.Settings => Settings.CurrentCategoryTitle,
         PrimaryNavSection.Achievements => IsAchievementsOverviewSelected || SelectedAchievementsGame is null
             ? "成就中心"
             : $"成就 · {SelectedAchievementsGame.Title}",
+        PrimaryNavSection.Saves => IsSaveOverviewSelected || SelectedSaveGame is null
+            ? "存档时间机器"
+            : $"存档 · {SelectedSaveGame.Title}",
         PrimaryNavSection.Trainers => IsTrainerOverviewSelected || SelectedTrainerGame is null
             ? "修改器管理"
             : $"修改器 · {SelectedTrainerGame.Title}",
@@ -198,6 +256,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     public GameListItemViewModel? ActiveWorkbenchGame => ActiveSection switch
     {
         PrimaryNavSection.Achievements => SelectedAchievementsGame,
+        PrimaryNavSection.Saves => SelectedSaveGame,
         PrimaryNavSection.Trainers => SelectedTrainerGame,
         _ => SelectedGame,
     };
@@ -211,6 +270,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     public bool ShowGameAchievementsSubPanel =>
         SelectedGameSubTab == GameDetailSubTab.Achievements;
 
+    public bool ShowGameSavesSubPanel =>
+        SelectedGameSubTab == GameDetailSubTab.Saves;
+
     public bool ShowGameDataSubPanel =>
         SelectedGameSubTab == GameDetailSubTab.GameData;
 
@@ -222,6 +284,12 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     public bool ShowAchievementsSingleGamePanel =>
         ActiveSection == PrimaryNavSection.Achievements && !IsAchievementsOverviewSelected && SelectedAchievementsGame is not null;
+
+    public bool ShowSavesOverviewPanel =>
+        ActiveSection == PrimaryNavSection.Saves && (IsSaveOverviewSelected || SelectedSaveGame is null);
+
+    public bool ShowSavesSingleGamePanel =>
+        ActiveSection == PrimaryNavSection.Saves && !IsSaveOverviewSelected && SelectedSaveGame is not null;
 
     public bool ShowTrainersOverviewPanel =>
         ActiveSection == PrimaryNavSection.Trainers && (IsTrainerOverviewSelected || SelectedTrainerGame is null);
@@ -343,7 +411,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         SettingsViewModel settingsViewModel,
         TrainerWorkbenchViewModel trainerWorkbench,
         Action<string>? openExternalUrl = null,
-        Dispatcher? uiDispatcher = null)
+        Dispatcher? uiDispatcher = null,
+        SaveWorkbenchViewModel? saveWorkbench = null,
+        ISaveTimeMachineService? saveTimeMachineService = null,
+        ICloudSaveSyncService? cloudSaveSyncService = null,
+        ISaveWatcherService? saveWatcherService = null)
     {
         _paths = paths;
         _db = db;
@@ -357,10 +429,18 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         _trainerCatalogService = trainerCatalogService;
         _trainerRuntimeService = trainerRuntimeService;
         _trainerSafetyGate = trainerSafetyGate;
+        _saveTimeMachineService = saveTimeMachineService;
+        _cloudSaveSyncService = cloudSaveSyncService;
+        _saveWatcherService = saveWatcherService;
         _openExternalUrl = openExternalUrl ?? OpenUrlWithShell;
         _uiDispatcher = uiDispatcher;
         Settings = settingsViewModel;
         Trainer = trainerWorkbench;
+        Saves = saveWorkbench ?? new SaveWorkbenchViewModel(
+            launchService,
+            saveTimeMachineService,
+            cloudSaveSyncService,
+            saveWatcherService);
 
         LibraryGroups.Add(_allGroup);
         LibraryGroups.Add(_gogGroup);
@@ -398,6 +478,18 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             await RefreshTrainerHubStateAsync().ConfigureAwait(true);
         };
 
+        Saves.StatusFeedbackRequested += (msg, isError) => ShowStatusBanner(msg, isError);
+        Saves.OpenSavesSettingsRequested += OpenSavesSettings;
+        Saves.SaveTreeMutatedRequested += async _ =>
+        {
+            await RefreshSaveHubStateAsync().ConfigureAwait(true);
+        };
+
+        if (_saveWatcherService is not null)
+        {
+            _saveWatcherService.WatcherStatusChanged += OnSaveWatcherStatusChanged;
+        }
+
         _launchService.SessionChanged += OnLaunchSessionChanged;
         _achievementService.AchievementUnlocked += OnAchievementUnlocked;
         _trainerRuntimeService.StateChanged += OnTrainerRuntimeStateChanged;
@@ -409,6 +501,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
         _subscriptions.Add(_eventBus.Subscribe<AchievementSchemaUpdatedEvent>((ev, _) =>
             DispatchToUiOrInlineAsync(() => HandleSchemaUpdatedAsync(ev))));
+
+        _subscriptions.Add(_eventBus.Subscribe<SaveTreeChangedEvent>((ev, _) =>
+            DispatchToUiOrInlineAsync(() => HandleSaveTreeChangedAsync(ev))));
 
         _uiRefreshTimer = _uiDispatcher is not null
             ? new DispatcherTimer(TimeSpan.FromSeconds(1), DispatcherPriority.Background, OnUiRefreshTick, _uiDispatcher)
@@ -465,6 +560,14 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         {
             _ = RefreshAchievementsCenterOverviewAsync();
         }
+        else if (value == PrimaryNavSection.Saves)
+        {
+            _ = RefreshSaveHubStateAsync();
+            if (!IsSaveOverviewSelected && SelectedSaveGame is not null)
+            {
+                _ = Saves.LoadForGameAsync(SelectedSaveGame);
+            }
+        }
         else if (value == PrimaryNavSection.Trainers)
         {
             _ = RefreshTrainerHubStateAsync();
@@ -476,7 +579,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         else if (value == PrimaryNavSection.Library && SelectedGame is not null)
         {
             _ = LoadAchievementsForGameAsync(SelectedGame.GameId);
-            if (SelectedGameSubTab == GameDetailSubTab.GameData)
+            if (SelectedGameSubTab == GameDetailSubTab.Saves)
+            {
+                _ = Saves.LoadForGameAsync(SelectedGame);
+            }
+            else if (SelectedGameSubTab == GameDetailSubTab.GameData)
             {
                 _ = LoadGameDataForSelectedAsync(refreshOnline: false);
             }
@@ -509,7 +616,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
                 _ = LoadAchievementsForGameAsync(newValue.GameId);
             }
 
-            if (SelectedGameSubTab == GameDetailSubTab.GameData)
+            if (SelectedGameSubTab == GameDetailSubTab.Saves)
+            {
+                _ = Saves.LoadForGameAsync(newValue);
+            }
+            else if (SelectedGameSubTab == GameDetailSubTab.GameData)
             {
                 _ = LoadGameDataForSelectedAsync(refreshOnline: false);
             }
@@ -531,6 +642,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             if (ActiveSection == PrimaryNavSection.Library)
             {
                 _ = Trainer.LoadForGameAsync(null);
+                _ = Saves.LoadForGameAsync(null);
             }
         }
 
@@ -550,10 +662,15 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     partial void OnSelectedGameSubTabChanged(GameDetailSubTab value)
     {
         OnPropertyChanged(nameof(ShowGameAchievementsSubPanel));
+        OnPropertyChanged(nameof(ShowGameSavesSubPanel));
         OnPropertyChanged(nameof(ShowGameDataSubPanel));
         OnPropertyChanged(nameof(ShowGameTrainersSubPanel));
 
-        if (value == GameDetailSubTab.GameData && SelectedGame is not null)
+        if (value == GameDetailSubTab.Saves)
+        {
+            _ = Saves.LoadForGameAsync(SelectedGame);
+        }
+        else if (value == GameDetailSubTab.GameData && SelectedGame is not null)
         {
             _ = LoadGameDataForSelectedAsync(refreshOnline: false);
         }
@@ -586,6 +703,36 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             _ = LoadAchievementsForGameAsync(value.GameId);
         }
     }
+
+    partial void OnIsSaveOverviewSelectedChanged(bool value)
+    {
+        SyncSaveSidebarSelectionFlags();
+        OnPropertyChanged(nameof(TopBarTitle));
+        OnPropertyChanged(nameof(ActiveWorkbenchGame));
+        NotifyMainPanelViewFlags();
+    }
+
+    partial void OnSelectedSaveGameChanged(GameListItemViewModel? value)
+    {
+        SyncSaveSidebarSelectionFlags();
+        OnPropertyChanged(nameof(TopBarTitle));
+        OnPropertyChanged(nameof(ActiveWorkbenchGame));
+        NotifyMainPanelViewFlags();
+    }
+
+    partial void OnSaveSidebarSearchTextChanged(string value) => RebuildFilteredSaveSidebarGames();
+
+    partial void OnTotalSaveSnapshotsCountChanged(int value) => OnPropertyChanged(nameof(SaveOverviewCountBadgeText));
+
+    partial void OnHasAnyCloudConflictChanged(bool value)
+    {
+        OnPropertyChanged(nameof(SavesRailToolTip));
+        OnPropertyChanged(nameof(SaveOverviewCountBadgeText));
+    }
+
+    partial void OnHasAnySaveWatcherActiveChanged(bool value) => OnPropertyChanged(nameof(SavesRailToolTip));
+
+    partial void OnIsSyncingAllCloudSavesChanged(bool value) => OnPropertyChanged(nameof(CanSyncAllCloudSaves));
 
     partial void OnIsTrainerOverviewSelectedChanged(bool value)
     {
@@ -656,6 +803,16 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     }
 
     [RelayCommand]
+    private void OpenGameSavesSubTab()
+    {
+        SelectedGameSubTab = GameDetailSubTab.Saves;
+        if (SelectedGame is not null)
+        {
+            _ = Saves.LoadForGameAsync(SelectedGame);
+        }
+    }
+
+    [RelayCommand]
     private void OpenGameDataSubTab()
     {
         SelectedGameSubTab = GameDetailSubTab.GameData;
@@ -687,6 +844,153 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     {
         Settings.SelectedCategory = SettingsCategory.TrainerAndSandbox;
         ActiveSection = PrimaryNavSection.Settings;
+    }
+
+    [RelayCommand]
+    private void OpenSavesSettings()
+    {
+        Settings.SelectedCategory = SettingsCategory.SavesAndCloudSync;
+        ActiveSection = PrimaryNavSection.Settings;
+    }
+
+    [RelayCommand]
+    private void SelectSavesOverview()
+    {
+        bool sectionChanged = ActiveSection != PrimaryNavSection.Saves;
+        IsSaveOverviewSelected = true;
+        SelectedSaveGame = null;
+        if (IsNarrowWindow)
+        {
+            IsNarrowSidebarOpen = false;
+        }
+
+        if (sectionChanged)
+        {
+            ActiveSection = PrimaryNavSection.Saves;
+        }
+        else
+        {
+            _ = RefreshSaveHubStateAsync();
+        }
+    }
+
+    [RelayCommand]
+    private void SelectSaveSidebarGame(SaveSidebarGameItemViewModel? item)
+    {
+        if (item is null)
+        {
+            return;
+        }
+
+        SelectSaveGameItem(item.Game);
+    }
+
+    [RelayCommand]
+    private void SelectSaveGameItem(GameListItemViewModel? game)
+    {
+        if (game is null)
+        {
+            return;
+        }
+
+        bool sectionChanged = ActiveSection != PrimaryNavSection.Saves;
+        SelectedSaveGame = game;
+        IsSaveOverviewSelected = false;
+        if (IsNarrowWindow)
+        {
+            IsNarrowSidebarOpen = false;
+        }
+
+        if (sectionChanged)
+        {
+            ActiveSection = PrimaryNavSection.Saves;
+        }
+        else
+        {
+            _ = Saves.LoadForGameAsync(game);
+        }
+    }
+
+    [RelayCommand]
+    private void ClearSaveSidebarSearch() => SaveSidebarSearchText = string.Empty;
+
+    [RelayCommand]
+    private async Task RefreshSaveHubAsync()
+    {
+        await RefreshSaveHubStateAsync().ConfigureAwait(true);
+        if (!IsSaveOverviewSelected && SelectedSaveGame is not null)
+        {
+            await Saves.LoadForGameAsync(SelectedSaveGame).ConfigureAwait(true);
+        }
+
+        ShowStatusBanner($"已刷新存档库（共 {TotalSaveSnapshotsCount} 份快照 · {TotalSaveBranchesCount} 条分支）", isError: false);
+    }
+
+    [RelayCommand]
+    private void OpenSaveVaultFolder()
+    {
+        try
+        {
+            Directory.CreateDirectory(_paths.VaultChunksDirectory);
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = $"\"{_paths.VaultChunksDirectory}\"",
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            ShowStatusBanner($"打开存档库目录失败：{ex.Message}", isError: true);
+        }
+    }
+
+    [RelayCommand]
+    private void OpenFirstConflictedSaveGame()
+    {
+        SaveSidebarGameItemViewModel? first = _allSaveSidebarGames.FirstOrDefault(g => g.HasCloudConflict);
+        if (first is not null)
+        {
+            SelectSaveGameItem(first.Game);
+            Saves.IsCloudDrawerOpen = true;
+        }
+    }
+
+    [RelayCommand]
+    public async Task SyncAllCloudSavesAsync()
+    {
+        if (_cloudSaveSyncService is null || IsSyncingAllCloudSaves)
+        {
+            return;
+        }
+
+        if (HasAnyRunningGame)
+        {
+            ShowStatusBanner("当前有游戏正在运行，请先退出游戏后再执行全库云同步", isError: true);
+            return;
+        }
+
+        IsSyncingAllCloudSaves = true;
+        try
+        {
+            IReadOnlyList<CloudSyncExecutionReport> reports = await _cloudSaveSyncService.SyncAllConfiguredGamesAsync().ConfigureAwait(true);
+            await RefreshSaveHubStateAsync().ConfigureAwait(true);
+            int ok = reports.Count(r => r.Succeeded);
+            int conflicts = reports.Count(r => r.Relation == CloudSyncRelation.Diverged);
+            ShowStatusBanner(
+                conflicts > 0
+                    ? $"全库云同步完成：{ok} 款已同步，{conflicts} 款发现分叉冲突待处理"
+                    : (reports.Count > 0 ? $"全库云同步完成：已同步 {ok}/{reports.Count} 款游戏存档" : "尚未为任何游戏绑定云同步端点"),
+                isError: conflicts > 0);
+        }
+        catch (Exception ex)
+        {
+            ShowStatusBanner($"全库云同步失败：{ex.Message}", isError: true);
+        }
+        finally
+        {
+            IsSyncingAllCloudSaves = false;
+        }
     }
 
     [RelayCommand]
@@ -2189,6 +2493,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
                 {
                     Trainer.UpdateSelectedGameRunningState(false);
                 }
+
+                if (string.Equals(Saves.CurrentGameId, ev.GameId, StringComparison.OrdinalIgnoreCase))
+                {
+                    Saves.UpdateSelectedGameRunningState(false);
+                }
             }
             else
             {
@@ -2197,12 +2506,18 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
                 {
                     Trainer.UpdateSelectedGameRunningState(true);
                 }
+
+                if (string.Equals(Saves.CurrentGameId, ev.GameId, StringComparison.OrdinalIgnoreCase))
+                {
+                    Saves.UpdateSelectedGameRunningState(true);
+                }
             }
         }
 
         SyncCollectionInPlace(AllGames, SortGamesRunningFirst(AllGames));
         RebuildGroupsPreservingSelection();
         OnPropertyChanged(nameof(HasAnyRunningGame));
+        OnPropertyChanged(nameof(CanSyncAllCloudSaves));
         OnPropertyChanged(nameof(LibraryRailToolTip));
         OnPropertyChanged(nameof(PrimaryLaunchButtonText));
     }
@@ -2423,13 +2738,236 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(ShowLibraryEmptyState));
         OnPropertyChanged(nameof(ShowLibraryGameWorkbench));
         OnPropertyChanged(nameof(ShowGameAchievementsSubPanel));
+        OnPropertyChanged(nameof(ShowGameSavesSubPanel));
         OnPropertyChanged(nameof(ShowGameDataSubPanel));
         OnPropertyChanged(nameof(ShowGameTrainersSubPanel));
         OnPropertyChanged(nameof(ShowAchievementsOverviewPanel));
         OnPropertyChanged(nameof(ShowAchievementsSingleGamePanel));
+        OnPropertyChanged(nameof(ShowSavesOverviewPanel));
+        OnPropertyChanged(nameof(ShowSavesSingleGamePanel));
         OnPropertyChanged(nameof(ShowTrainersOverviewPanel));
         OnPropertyChanged(nameof(ShowTrainersSingleGamePanel));
         OnPropertyChanged(nameof(ShowSettingsPanel));
+    }
+
+    // -------------------------------------------------------------------------
+    // Dedicated Saves Sidebar, Global Overview & Bidirectional Sync
+    // -------------------------------------------------------------------------
+
+    public async Task RefreshSaveHubStateAsync(CancellationToken cancellationToken = default)
+    {
+        int generation = Interlocked.Increment(ref _saveHubRefreshGeneration);
+        var gamesSnapshot = AllGames.ToList();
+
+        IReadOnlyList<SaveLibraryGameOverviewDto> overviews = _saveTimeMachineService is not null
+            ? await _saveTimeMachineService.GetLibraryOverviewAsync(cancellationToken).ConfigureAwait(true)
+            : [];
+
+        CasVaultStatsDto vaultStats = _saveTimeMachineService is not null
+            ? await _saveTimeMachineService.GetVaultStatsAsync(cancellationToken).ConfigureAwait(true)
+            : await _db.GetCasVaultStatsAsync(cancellationToken).ConfigureAwait(true);
+
+        if (generation != Volatile.Read(ref _saveHubRefreshGeneration))
+        {
+            return;
+        }
+
+        var overviewByGameId = overviews.ToDictionary(o => o.GameId, StringComparer.OrdinalIgnoreCase);
+        var existingByGameId = _allSaveSidebarGames.ToDictionary(s => s.GameId, StringComparer.OrdinalIgnoreCase);
+        var sidebarItems = new List<SaveSidebarGameItemViewModel>(gamesSnapshot.Count);
+        var managedItems = new List<ManagedSaveGameOverviewItemViewModel>(gamesSnapshot.Count);
+
+        foreach (GameListItemViewModel gameVm in gamesSnapshot)
+        {
+            overviewByGameId.TryGetValue(gameVm.GameId, out SaveLibraryGameOverviewDto? ov);
+            SaveLibraryGameOverviewDto effectiveOverview = ov ?? new SaveLibraryGameOverviewDto
+            {
+                GameId = gameVm.GameId,
+                GameTitle = gameVm.Title,
+                ActiveBranchName = "main",
+                IsGameRunning = gameVm.IsRunning,
+            };
+
+            bool isSelected = !IsSaveOverviewSelected
+                && SelectedSaveGame is not null
+                && string.Equals(SelectedSaveGame.GameId, gameVm.GameId, StringComparison.OrdinalIgnoreCase);
+
+            if (existingByGameId.TryGetValue(gameVm.GameId, out SaveSidebarGameItemViewModel? existing)
+                && ReferenceEquals(existing.Game, gameVm))
+            {
+                existing.ApplyOverview(effectiveOverview);
+                existing.IsSelected = isSelected;
+                sidebarItems.Add(existing);
+            }
+            else
+            {
+                sidebarItems.Add(new SaveSidebarGameItemViewModel(gameVm, effectiveOverview, isSelected));
+            }
+
+            managedItems.Add(new ManagedSaveGameOverviewItemViewModel(
+                effectiveOverview,
+                gameVm,
+                HandleManagedSaveOpenTree,
+                HandleManagedSaveQuickBackupAsync,
+                HandleManagedSaveQuickSyncAsync));
+        }
+
+        _allSaveSidebarGames.Clear();
+        _allSaveSidebarGames.AddRange(SortSaveSidebarGames(sidebarItems));
+        RebuildFilteredSaveSidebarGames();
+
+        var orderedManaged = managedItems
+            .OrderByDescending(m => m.HasCloudConflict)
+            .ThenByDescending(m => m.SnapshotCount > 0)
+            .ThenByDescending(m => m.Overview.LastSnapshotAtUtc ?? DateTimeOffset.MinValue)
+            .ThenBy(m => m.GameTitle, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+
+        ManagedSaveGames.Clear();
+        foreach (ManagedSaveGameOverviewItemViewModel item in orderedManaged)
+        {
+            ManagedSaveGames.Add(item);
+        }
+
+        TotalSaveSnapshotsCount = overviews.Sum(o => o.SnapshotCount);
+        TotalSaveBranchesCount = overviews.Sum(o => o.BranchCount);
+        SaveVaultStoredSizeText = UiFormatters.FormatByteSize(vaultStats.TotalCompressedBytes);
+        SaveVaultDedupRatioText = vaultStats.TotalSnapshotRawBytes > 0
+            ? UiFormatters.FormatDeduplicationPercent(vaultStats.DeduplicationRatio)
+            : string.Empty;
+        HasAnyCloudConflict = overviews.Any(o => o.HasCloudConflict);
+        HasAnySaveWatcherActive = _saveWatcherService is not null
+            && _saveWatcherService.GetAllStatuses().Any(s => s.Status is SaveWatcherStatusKind.Watching or SaveWatcherStatusKind.Debouncing or SaveWatcherStatusKind.Capturing);
+
+        OnPropertyChanged(nameof(HasManagedSaveGames));
+        OnPropertyChanged(nameof(SaveOverviewCountBadgeText));
+        OnPropertyChanged(nameof(SavesRailToolTip));
+        OnPropertyChanged(nameof(CanSyncAllCloudSaves));
+    }
+
+    private void RebuildFilteredSaveSidebarGames()
+    {
+        string keyword = SaveSidebarSearchText.Trim();
+        var desired = new List<SaveSidebarGameItemViewModel>(_allSaveSidebarGames.Count);
+        foreach (SaveSidebarGameItemViewModel item in _allSaveSidebarGames)
+        {
+            if (string.IsNullOrEmpty(keyword)
+                || item.Title.Contains(keyword, StringComparison.OrdinalIgnoreCase)
+                || item.ActiveBranchName.Contains(keyword, StringComparison.OrdinalIgnoreCase)
+                || item.StatusPillText.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+            {
+                desired.Add(item);
+            }
+        }
+
+        SyncCollectionInPlace(SaveSidebarGames, desired);
+        OnPropertyChanged(nameof(HasFilteredSaveSidebarGames));
+    }
+
+    private void SyncSaveSidebarSelectionFlags()
+    {
+        string? selectedId = IsSaveOverviewSelected ? null : SelectedSaveGame?.GameId;
+        foreach (SaveSidebarGameItemViewModel item in _allSaveSidebarGames)
+        {
+            item.IsSelected = !string.IsNullOrWhiteSpace(selectedId)
+                && string.Equals(item.GameId, selectedId, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    private static List<SaveSidebarGameItemViewModel> SortSaveSidebarGames(IEnumerable<SaveSidebarGameItemViewModel> source) =>
+        source
+            .OrderBy(g => g.SortPriority)
+            .ThenByDescending(g => g.LastSnapshotAtUtc ?? DateTimeOffset.MinValue)
+            .ThenByDescending(g => g.SnapshotCount)
+            .ThenBy(g => g.Game.Record.EffectiveSortTitle, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+
+    private void HandleManagedSaveOpenTree(ManagedSaveGameOverviewItemViewModel item)
+    {
+        GameListItemViewModel? game = item.Game ?? AllGames.FirstOrDefault(
+            g => string.Equals(g.GameId, item.GameId, StringComparison.OrdinalIgnoreCase));
+        if (game is not null)
+        {
+            SelectSaveGameItem(game);
+        }
+    }
+
+    private async Task HandleManagedSaveQuickBackupAsync(ManagedSaveGameOverviewItemViewModel item)
+    {
+        if (_saveTimeMachineService is null || item.IsBusy)
+        {
+            return;
+        }
+
+        item.IsBusy = true;
+        try
+        {
+            CreateSaveSnapshotResult res = await _saveTimeMachineService.CreateSnapshotAsync(new CreateSaveSnapshotRequest
+            {
+                GameId = item.GameId,
+                TriggerKind = SaveSnapshotTriggerKind.Manual,
+            }).ConfigureAwait(true);
+
+            await RefreshSaveHubStateAsync().ConfigureAwait(true);
+            await Saves.ReloadCurrentGameIfMatchesAsync(item.GameId).ConfigureAwait(true);
+            ShowStatusBanner(res.Message, isError: !res.Succeeded && !res.Skipped);
+        }
+        catch (Exception ex)
+        {
+            ShowStatusBanner($"快速备份失败：{ex.Message}", isError: true);
+        }
+        finally
+        {
+            item.IsBusy = false;
+        }
+    }
+
+    private async Task HandleManagedSaveQuickSyncAsync(ManagedSaveGameOverviewItemViewModel item)
+    {
+        if (_cloudSaveSyncService is null || item.IsBusy)
+        {
+            return;
+        }
+
+        item.IsBusy = true;
+        try
+        {
+            CloudSyncExecutionReport res = await _cloudSaveSyncService.ExecuteSyncAsync(item.GameId).ConfigureAwait(true);
+            await RefreshSaveHubStateAsync().ConfigureAwait(true);
+            await Saves.ReloadCurrentGameIfMatchesAsync(item.GameId).ConfigureAwait(true);
+            ShowStatusBanner(res.Message, isError: !res.Succeeded);
+        }
+        catch (Exception ex)
+        {
+            ShowStatusBanner($"同步存档失败：{ex.Message}", isError: true);
+        }
+        finally
+        {
+            item.IsBusy = false;
+        }
+    }
+
+    private async Task HandleSaveTreeChangedAsync(SaveTreeChangedEvent ev)
+    {
+        if (Volatile.Read(ref _isDisposed) != 0)
+        {
+            return;
+        }
+
+        await Saves.ReloadCurrentGameIfMatchesAsync(ev.GameId).ConfigureAwait(true);
+        if (ActiveSection == PrimaryNavSection.Saves)
+        {
+            await RefreshSaveHubStateAsync().ConfigureAwait(true);
+        }
+    }
+
+    private void OnSaveWatcherStatusChanged(object? sender, SaveWatcherStatusDto status)
+    {
+        DispatchToUi(() =>
+        {
+            HasAnySaveWatcherActive = _saveWatcherService is not null
+                && _saveWatcherService.GetAllStatuses().Any(s => s.Status is SaveWatcherStatusKind.Watching or SaveWatcherStatusKind.Debouncing or SaveWatcherStatusKind.Capturing);
+        });
     }
 
     // -------------------------------------------------------------------------
@@ -3089,7 +3627,13 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         _launchService.SessionChanged -= OnLaunchSessionChanged;
         _achievementService.AchievementUnlocked -= OnAchievementUnlocked;
         _trainerRuntimeService.StateChanged -= OnTrainerRuntimeStateChanged;
+        if (_saveWatcherService is not null)
+        {
+            _saveWatcherService.WatcherStatusChanged -= OnSaveWatcherStatusChanged;
+        }
+
         Trainer.Dispose();
+        Saves.Dispose();
         foreach (var sub in _subscriptions)
         {
             sub.Dispose();

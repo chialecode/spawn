@@ -112,11 +112,11 @@ public sealed class TrainerSchemaAndPathsTests
             await cmd.ExecuteNonQueryAsync();
         }
 
-        // 2. Run first v3 -> v4 upgrade via SpawnDatabase.
+        // 2. Run first v3 -> latest (v5) upgrade via SpawnDatabase.
         using (var db = new SpawnDatabase(sandbox.Paths))
         {
             await db.InitializeAsync();
-            Assert.Equal(4, await db.GetSchemaVersionAsync());
+            Assert.Equal(5, await db.GetSchemaVersionAsync());
 
             var preservedGame = await db.GetGameByIdAsync(existingGameId);
             Assert.NotNull(preservedGame);
@@ -179,7 +179,7 @@ public sealed class TrainerSchemaAndPathsTests
         using (var reupgraded = new SpawnDatabase(sandbox.Paths))
         {
             await reupgraded.InitializeAsync();
-            Assert.Equal(4, await reupgraded.GetSchemaVersionAsync());
+            Assert.Equal(5, await reupgraded.GetSchemaVersionAsync());
             var gameAfterReupgrade = await reupgraded.GetGameByIdAsync(existingGameId);
             Assert.NotNull(gameAfterReupgrade);
             Assert.Equal(4200, gameAfterReupgrade!.TotalActiveSec);
@@ -188,7 +188,7 @@ public sealed class TrainerSchemaAndPathsTests
         using (var reopened = new SpawnDatabase(sandbox.Paths))
         {
             await reopened.InitializeAsync();
-            Assert.Equal(4, await reopened.GetSchemaVersionAsync());
+            Assert.Equal(5, await reopened.GetSchemaVersionAsync());
         }
     }
 

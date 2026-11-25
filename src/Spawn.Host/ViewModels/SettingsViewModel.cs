@@ -10,6 +10,7 @@ using Spawn.Contracts;
 using Spawn.Core;
 using Spawn.Host.Helpers;
 using Spawn.Host.Services;
+using Spawn.Host.ViewModels.Saves;
 using Spawn.Modules.Progress.Catalog;
 using Spawn.Modules.Progress.Security;
 
@@ -33,6 +34,9 @@ public sealed partial class SettingsViewModel : ObservableObject
     private readonly IDefenderExclusionAssistant? _defenderAssistant;
     private readonly ITrainerAudioController? _trainerAudioController;
     private readonly ITrainerRuntimeService? _trainerRuntime;
+    private readonly ISaveTimeMachineService? _saveService;
+    private readonly ICloudSaveSyncService? _cloudSyncService;
+    private readonly ILudusaviRuleResolver? _ruleResolver;
     private readonly Action<string> _openExternalUrl;
     private bool _suppressAutoSave;
 
@@ -150,8 +154,78 @@ public sealed partial class SettingsViewModel : ObservableObject
     [ObservableProperty]
     private bool _isDefenderWorking;
 
+    // Save Time Machine & Cloud Sync Settings (Category 8: SettingsCategory.SavesAndCloudSync)
+    [ObservableProperty]
+    private bool _saveAutoWatchByDefault = true;
+
+    [ObservableProperty]
+    private bool _savePostExitSnapshotByDefault = true;
+
+    [ObservableProperty]
+    private bool _saveIncludeConfigByDefault;
+
+    [ObservableProperty]
+    private int _saveQuiescentDebounceMs = SaveSettingsDto.DefaultQuiescentDebounceMs;
+
+    [ObservableProperty]
+    private int _saveDefaultMaxRollingSnapshots = SaveSettingsDto.DefaultRollingRetentionCount;
+
+    [ObservableProperty]
+    private int _saveDefaultMaxSnapshotSizeMb = SaveSettingsDto.DefaultSnapshotMaxSizeMb;
+
+    [ObservableProperty]
+    private int _ludusaviRuleCount;
+
+    [ObservableProperty]
+    private CasVaultStatsDto? _saveVaultStats;
+
+    [ObservableProperty]
+    private string _newCloudEndpointName = string.Empty;
+
+    [ObservableProperty]
+    private CloudSyncProviderType _newCloudProviderType = CloudSyncProviderType.LocalFolder;
+
+    [ObservableProperty]
+    private bool _newCloudEndpointIsDefault = true;
+
+    [ObservableProperty]
+    private string _newCloudEndpointUrl = string.Empty;
+
+    [ObservableProperty]
+    private string _newCloudBucketOrRoot = string.Empty;
+
+    [ObservableProperty]
+    private string _newCloudRegion = "auto";
+
+    [ObservableProperty]
+    private string _newCloudUsernameOrAccessKey = string.Empty;
+
     public ObservableCollection<ScanDirectoryEntry> ScanDirectories { get; } = [];
+    public ObservableCollection<CloudEndpointItemViewModel> CloudSyncEndpoints { get; } = [];
     public UpdateViewModel Update { get; }
+
+    public IReadOnlyList<NamedOption<int>> SaveRollingRetentionOptions { get; } =
+    [
+        new(10, "保留最近 10 份"),
+        new(30, "保留最近 30 份（默认）"),
+        new(50, "保留最近 50 份"),
+        new(100, "保留最近 100 份"),
+    ];
+
+    public IReadOnlyList<NamedOption<int>> SaveMaxSnapshotSizeMbOptions { get; } =
+    [
+        new(256, "256 MB"),
+        new(512, "512 MB（默认）"),
+        new(1024, "1024 MB"),
+        new(2048, "2048 MB"),
+    ];
+
+    public IReadOnlyList<NamedOption<CloudSyncProviderType>> CloudProviderTypeOptions { get; } =
+    [
+        new(CloudSyncProviderType.LocalFolder, "本地同步目录 / 网盘"),
+        new(CloudSyncProviderType.WebDav, "WebDAV 服务器"),
+        new(CloudSyncProviderType.S3, "S3 / R2 对象存储"),
+    ];
 
     public IReadOnlyList<NamedOption<TrainerAudioMode>> TrainerAudioModeOptions { get; } =
     [
@@ -223,12 +297,24 @@ public sealed partial class SettingsViewModel : ObservableObject
     {
         SettingsCategory.AchievementAndSteamApi => "成就与 Steam API",
         SettingsCategory.OverlayAndSound => "弹窗外观与音效",
+        SettingsCategory.SavesAndCloudSync => "存档与云同步",
         SettingsCategory.TrainerAndSandbox => "修改器与安全沙箱",
         SettingsCategory.AppearanceTheme => "外观主题",
         SettingsCategory.Updates => "更新",
         SettingsCategory.AboutAndVersion => "关于与版本",
         _ => "常规与游戏库",
     };
+
+    public string SaveQuiescentDebounceDisplayText =>
+        string.Create(CultureInfo.InvariantCulture, $"{SaveQuiescentDebounceMs} ms");
+
+    public bool IsNewCloudEndpointRemote => NewCloudProviderType != CloudSyncProviderType.LocalFolder;
+
+    public string SaveLudusaviAndVaultSummaryText => SaveVaultStats is null
+        ? string.Create(CultureInfo.InvariantCulture, $"Ludusavi 规则库：{LudusaviRuleCount} 条 · 本地块库：{_paths.VaultChunksDirectory}")
+        : string.Create(
+            CultureInfo.InvariantCulture,
+            $"Ludusavi 规则：{LudusaviRuleCount} 条 · 块数 {SaveVaultStats.TotalChunkCount}（未引用 {SaveVaultStats.UnreferencedChunkCount}）· 实占 {UiFormatters.FormatByteSize(SaveVaultStats.TotalCompressedBytes)}（{UiFormatters.FormatDeduplicationPercent(SaveVaultStats.DeduplicationRatio)}）");
 
     public string EffectiveTrainerSandboxRoot => !string.IsNullOrWhiteSpace(AppliedCustomTrainerSandboxRoot)
         ? AppliedCustomTrainerSandboxRoot!
@@ -307,7 +393,10 @@ public sealed partial class SettingsViewModel : ObservableObject
         ITrainerAudioController? trainerAudioController = null,
         Action<string>? openExternalUrl = null,
         ITrainerRuntimeService? trainerRuntime = null,
-        UpdateViewModel? updateViewModel = null)
+        UpdateViewModel? updateViewModel = null,
+        ISaveTimeMachineService? saveService = null,
+        ICloudSaveSyncService? cloudSyncService = null,
+        ILudusaviRuleResolver? ruleResolver = null)
     {
         _paths = paths;
         _buildSnapshot = SpawnBuildInfo.GetSnapshot(paths.Identity);
@@ -319,6 +408,9 @@ public sealed partial class SettingsViewModel : ObservableObject
         _defenderAssistant = defenderAssistant;
         _trainerAudioController = trainerAudioController;
         _trainerRuntime = trainerRuntime;
+        _saveService = saveService;
+        _cloudSyncService = cloudSyncService;
+        _ruleResolver = ruleResolver;
         _openExternalUrl = openExternalUrl ?? OpenExternalUriDefault;
         Update = updateViewModel ?? new UpdateViewModel(updateService: null, openExternalUrl: _openExternalUrl);
         Update.StatusFeedbackRequested += msg => StatusFeedbackRequested?.Invoke(msg);
@@ -387,6 +479,7 @@ public sealed partial class SettingsViewModel : ObservableObject
 
             await ReloadScanDirectoriesAsync(cancellationToken).ConfigureAwait(true);
             await RefreshSteamApiKeyStatusAsync(cancellationToken).ConfigureAwait(true);
+            await RefreshSaveAndCloudSettingsAsync(cancellationToken).ConfigureAwait(true);
             await Update.InitializeAsync(cancellationToken).ConfigureAwait(true);
         }
         finally
@@ -532,6 +625,29 @@ public sealed partial class SettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(ShowSmartAppControlCard));
         OnPropertyChanged(nameof(ShowDefenderManualGuidance));
     }
+
+    partial void OnSaveAutoWatchByDefaultChanged(bool value) => PersistSaveSettingsIfReady();
+    partial void OnSavePostExitSnapshotByDefaultChanged(bool value) => PersistSaveSettingsIfReady();
+    partial void OnSaveIncludeConfigByDefaultChanged(bool value) => PersistSaveSettingsIfReady();
+
+    partial void OnSaveQuiescentDebounceMsChanged(int value)
+    {
+        int clamped = Math.Clamp(value, SaveSettingsDto.MinQuiescentDebounceMs, SaveSettingsDto.MaxQuiescentDebounceMs);
+        if (clamped != value)
+        {
+            SaveQuiescentDebounceMs = clamped;
+            return;
+        }
+
+        OnPropertyChanged(nameof(SaveQuiescentDebounceDisplayText));
+        PersistSaveSettingsIfReady();
+    }
+
+    partial void OnSaveDefaultMaxRollingSnapshotsChanged(int value) => PersistSaveSettingsIfReady();
+    partial void OnSaveDefaultMaxSnapshotSizeMbChanged(int value) => PersistSaveSettingsIfReady();
+    partial void OnLudusaviRuleCountChanged(int value) => OnPropertyChanged(nameof(SaveLudusaviAndVaultSummaryText));
+    partial void OnSaveVaultStatsChanged(CasVaultStatsDto? value) => OnPropertyChanged(nameof(SaveLudusaviAndVaultSummaryText));
+    partial void OnNewCloudProviderTypeChanged(CloudSyncProviderType value) => OnPropertyChanged(nameof(IsNewCloudEndpointRemote));
 
     [RelayCommand]
     private void SelectCategory(SettingsCategory category) => SelectedCategory = category;
@@ -1183,6 +1299,272 @@ public sealed partial class SettingsViewModel : ObservableObject
         };
 
         _ = _db.SaveTrainerSettingsAsync(dto);
+    }
+
+    // -------------------------------------------------------------------------
+    // Save Time Machine & Decentralized Cloud Sync Settings (Category 8)
+    // -------------------------------------------------------------------------
+
+    public async Task RefreshSaveAndCloudSettingsAsync(CancellationToken cancellationToken = default)
+    {
+        SaveSettingsDto saveSettings = _saveService is not null
+            ? await _saveService.GetSettingsAsync(cancellationToken).ConfigureAwait(true)
+            : await _db.GetSaveSettingsAsync(cancellationToken).ConfigureAwait(true);
+
+        bool prevSuppress = _suppressAutoSave;
+        _suppressAutoSave = true;
+        try
+        {
+            SaveAutoWatchByDefault = saveSettings.AutoWatchByDefault;
+            SavePostExitSnapshotByDefault = saveSettings.PostExitSnapshotByDefault;
+            SaveIncludeConfigByDefault = saveSettings.IncludeConfigFilesByDefault;
+            SaveQuiescentDebounceMs = saveSettings.QuiescentDebounceMs;
+            SaveDefaultMaxRollingSnapshots = saveSettings.DefaultMaxRollingSnapshots;
+            SaveDefaultMaxSnapshotSizeMb = saveSettings.DefaultMaxSnapshotSizeMb;
+        }
+        finally
+        {
+            _suppressAutoSave = prevSuppress;
+        }
+
+        OnPropertyChanged(nameof(SaveQuiescentDebounceDisplayText));
+
+        LudusaviRuleCount = _ruleResolver is not null
+            ? await _ruleResolver.GetRuleCountAsync(cancellationToken).ConfigureAwait(true)
+            : await _db.GetLudusaviRuleCountAsync(cancellationToken).ConfigureAwait(true);
+
+        SaveVaultStats = _saveService is not null
+            ? await _saveService.GetVaultStatsAsync(cancellationToken).ConfigureAwait(true)
+            : await _db.GetCasVaultStatsAsync(cancellationToken).ConfigureAwait(true);
+
+        IReadOnlyList<CloudSyncEndpointRecord> endpoints = _cloudSyncService is not null
+            ? await _cloudSyncService.ListEndpointsAsync(cancellationToken).ConfigureAwait(true)
+            : await _db.GetAllCloudSyncEndpointsAsync(cancellationToken).ConfigureAwait(true);
+
+        CloudSyncEndpoints.Clear();
+        foreach (CloudSyncEndpointRecord ep in endpoints)
+        {
+            CloudSyncEndpoints.Add(new CloudEndpointItemViewModel(ep));
+        }
+    }
+
+    private void PersistSaveSettingsIfReady()
+    {
+        if (_suppressAutoSave)
+        {
+            return;
+        }
+
+        var dto = new SaveSettingsDto
+        {
+            AutoWatchByDefault = SaveAutoWatchByDefault,
+            PostExitSnapshotByDefault = SavePostExitSnapshotByDefault,
+            IncludeConfigFilesByDefault = SaveIncludeConfigByDefault,
+            QuiescentDebounceMs = Math.Clamp(SaveQuiescentDebounceMs, SaveSettingsDto.MinQuiescentDebounceMs, SaveSettingsDto.MaxQuiescentDebounceMs),
+            DefaultMaxRollingSnapshots = SaveDefaultMaxRollingSnapshots,
+            DefaultMaxSnapshotSizeMb = SaveDefaultMaxSnapshotSizeMb,
+        };
+
+        _ = _saveService is not null
+            ? _saveService.SaveSettingsAsync(dto)
+            : _db.SaveSaveSettingsAsync(dto);
+    }
+
+    [RelayCommand]
+    private void BrowseLocalCloudEndpointFolder()
+    {
+        var dialog = new OpenFolderDialog
+        {
+            Title = "选择本地同步目录或网盘同步文件夹（仅存放 32MB SPPK 与 JSON，绝不含 spawn.db）",
+            Multiselect = false,
+        };
+
+        if (dialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(dialog.FolderName))
+        {
+            NewCloudEndpointUrl = dialog.FolderName;
+            if (string.IsNullOrWhiteSpace(NewCloudEndpointName))
+            {
+                NewCloudEndpointName = Path.GetFileName(Path.TrimEndingDirectorySeparator(dialog.FolderName));
+            }
+        }
+    }
+
+    public async Task<bool> SaveNewCloudEndpointAsync(string? passwordOrSecretKey)
+    {
+        string name = NewCloudEndpointName.Trim();
+        string url = NewCloudEndpointUrl.Trim();
+        if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(url))
+        {
+            StatusFeedbackRequested?.Invoke("请填写云同步端点名称以及本地目录或远程 URL");
+            return false;
+        }
+
+        var record = new CloudSyncEndpointRecord
+        {
+            EndpointId = Guid.CreateVersion7().ToString("N"),
+            DisplayName = name,
+            ProviderType = NewCloudProviderType,
+            EndpointUrl = url,
+            BucketOrRoot = NewCloudBucketOrRoot.Trim(),
+            Region = NewCloudProviderType == CloudSyncProviderType.S3 && !string.IsNullOrWhiteSpace(NewCloudRegion)
+                ? NewCloudRegion.Trim()
+                : null,
+            PathStyleAddressing = true,
+            IsDefault = NewCloudEndpointIsDefault,
+            HasSecretConfigured = !string.IsNullOrWhiteSpace(NewCloudUsernameOrAccessKey) || !string.IsNullOrWhiteSpace(passwordOrSecretKey),
+            CreatedAtUtc = DateTimeOffset.UtcNow,
+            UpdatedAtUtc = DateTimeOffset.UtcNow,
+        };
+
+        CloudSyncEndpointSecrets? secrets = NewCloudProviderType == CloudSyncProviderType.LocalFolder
+            ? null
+            : new CloudSyncEndpointSecrets(
+                string.IsNullOrWhiteSpace(NewCloudUsernameOrAccessKey) ? null : NewCloudUsernameOrAccessKey.Trim(),
+                string.IsNullOrWhiteSpace(passwordOrSecretKey) ? null : passwordOrSecretKey);
+
+        try
+        {
+            if (_cloudSyncService is not null)
+            {
+                _ = await _cloudSyncService.SaveEndpointAsync(record, secrets).ConfigureAwait(true);
+            }
+            else
+            {
+                await _db.UpsertCloudSyncEndpointAsync(record).ConfigureAwait(true);
+            }
+
+            NewCloudEndpointName = string.Empty;
+            NewCloudEndpointUrl = string.Empty;
+            NewCloudBucketOrRoot = string.Empty;
+            NewCloudUsernameOrAccessKey = string.Empty;
+            await RefreshSaveAndCloudSettingsAsync().ConfigureAwait(true);
+            StatusFeedbackRequested?.Invoke($"已保存云同步端点「{name}」");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            StatusFeedbackRequested?.Invoke($"保存云同步端点失败：{ex.Message}");
+            return false;
+        }
+    }
+
+    [RelayCommand]
+    public async Task TestCloudEndpointAsync(CloudEndpointItemViewModel? item)
+    {
+        if (item is null)
+        {
+            return;
+        }
+
+        if (_cloudSyncService is null)
+        {
+            item.LastTestSucceeded = false;
+            item.LastTestResultText = "云同步服务尚未挂载";
+            return;
+        }
+
+        try
+        {
+            CloudSyncEndpointTestResult res = await _cloudSyncService.TestEndpointConnectionAsync(item.EndpointId).ConfigureAwait(true);
+            item.LastTestSucceeded = res.Succeeded;
+            item.LastTestResultText = res.Succeeded
+                ? $"连接正常（{res.LatencyMs} ms）· {res.Message}"
+                : $"连接失败 · {res.Message}";
+            StatusFeedbackRequested?.Invoke(item.LastTestResultText);
+        }
+        catch (Exception ex)
+        {
+            item.LastTestSucceeded = false;
+            item.LastTestResultText = $"测试异常：{ex.Message}";
+            StatusFeedbackRequested?.Invoke(item.LastTestResultText);
+        }
+    }
+
+    [RelayCommand]
+    public async Task DeleteCloudEndpointAsync(CloudEndpointItemViewModel? item)
+    {
+        if (item is null)
+        {
+            return;
+        }
+
+        try
+        {
+            if (_cloudSyncService is not null)
+            {
+                _ = await _cloudSyncService.DeleteEndpointAsync(item.EndpointId).ConfigureAwait(true);
+            }
+            else
+            {
+                _ = await _db.DeleteCloudSyncEndpointAsync(item.EndpointId).ConfigureAwait(true);
+            }
+
+            await RefreshSaveAndCloudSettingsAsync().ConfigureAwait(true);
+            StatusFeedbackRequested?.Invoke($"已删除云同步端点「{item.DisplayName}」");
+        }
+        catch (Exception ex)
+        {
+            StatusFeedbackRequested?.Invoke($"删除云同步端点失败：{ex.Message}");
+        }
+    }
+
+    [RelayCommand]
+    public async Task ImportLudusaviRulesJsonAsync()
+    {
+        if (_ruleResolver is null)
+        {
+            StatusFeedbackRequested?.Invoke("Ludusavi 规则解析器尚未挂载");
+            return;
+        }
+
+        var dialog = new OpenFileDialog
+        {
+            Title = "选择预编译 Ludusavi 存档规则 JSON 文件",
+            Filter = "JSON 文件 (*.json)|*.json",
+            CheckFileExists = true,
+            Multiselect = false,
+        };
+
+        if (dialog.ShowDialog() != true || string.IsNullOrWhiteSpace(dialog.FileName))
+        {
+            return;
+        }
+
+        try
+        {
+            string json = await File.ReadAllTextAsync(dialog.FileName).ConfigureAwait(true);
+            int count = await _ruleResolver.ImportRulesJsonAsync(json).ConfigureAwait(true);
+            await RefreshSaveAndCloudSettingsAsync().ConfigureAwait(true);
+            StatusFeedbackRequested?.Invoke($"已导入 {count} 条 Ludusavi 存档路径规则");
+        }
+        catch (Exception ex)
+        {
+            StatusFeedbackRequested?.Invoke($"导入 Ludusavi 规则失败：{ex.Message}");
+        }
+    }
+
+    [RelayCommand]
+    public async Task RunSaveCasGcAsync()
+    {
+        if (_saveService is null)
+        {
+            StatusFeedbackRequested?.Invoke("存档时间机器服务尚未挂载");
+            return;
+        }
+
+        try
+        {
+            SaveGcReport report = await _saveService.RunCasGarbageCollectionAsync(TimeSpan.Zero).ConfigureAwait(true);
+            await RefreshSaveAndCloudSettingsAsync().ConfigureAwait(true);
+            StatusFeedbackRequested?.Invoke(
+                report.DeletedChunkCount > 0
+                    ? $"已清理 {report.DeletedChunkCount} 个未引用 CAS 块，回收空间 {UiFormatters.FormatByteSize(report.ReclaimedBytes)}"
+                    : "本地 CAS 块库已处于最紧凑状态，暂无可回收块");
+        }
+        catch (Exception ex)
+        {
+            StatusFeedbackRequested?.Invoke($"清理 CAS 块失败：{ex.Message}");
+        }
     }
 
     private static void OpenExternalUriDefault(string uri)

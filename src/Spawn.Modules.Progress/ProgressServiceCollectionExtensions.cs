@@ -3,9 +3,13 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Spawn.Contracts;
 using Spawn.Core;
+using Spawn.Core.Storage;
 using Spawn.Modules.Progress.Audio;
 using Spawn.Modules.Progress.Catalog;
 using Spawn.Modules.Progress.Runtime;
+using Spawn.Modules.Progress.Saves.Cloud;
+using Spawn.Modules.Progress.Saves.Engine;
+using Spawn.Modules.Progress.Saves.Rules;
 using Spawn.Modules.Progress.Security;
 using Spawn.Modules.Progress.Snapshots;
 
@@ -14,11 +18,14 @@ namespace Spawn.Modules.Progress;
 /// <summary>
 /// Dependency injection registration extensions for <c>Spawn.Modules.Progress</c>
 /// (Clean Host side: trainer catalog, clean-room discovery/download/import, A0+A audio mute,
-/// pre-trainer save snapshots, runtime orchestration, LOOP-06 shutdown hook, and Defender exclusion assistant).
+/// pre-trainer save snapshots, Save Time Machine &amp; branching tree, Ludusavi rule resolver,
+/// quiescent save watcher, 32MB SPPK cloud sync, runtime orchestration, LOOP-06 shutdown hook,
+/// and Defender exclusion assistant).
 /// </summary>
 public static class ProgressServiceCollectionExtensions
 {
     public const string CatalogHttpClientName = "Spawn.Modules.Progress.Catalog";
+    public const string CloudSyncHttpClientName = "SpawnCloudSync";
 
     public static IServiceCollection AddSpawnProgress(
         this IServiceCollection services,
@@ -137,6 +144,64 @@ public static class ProgressServiceCollectionExtensions
             pipeServerFactory: sp.GetRequiredService<ITrainerPipeServerFactory>()));
         services.TryAddSingleton<DefenderExclusionAssistant>();
         services.TryAddSingleton<IDefenderExclusionAssistant>(sp => sp.GetRequiredService<DefenderExclusionAssistant>());
+
+        // 6. Save Time Machine, Branching Save Tree, Ludusavi Path Resolver, Quiescent Watcher & 32MB SPPK Cloud Sync
+        services.AddHttpClient(CloudSyncHttpClientName, client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(60);
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("SpawnCloudSync/1.0 (+https://github.com/chialecode/spawn)");
+        });
+
+        services.TryAddSingleton<LudusaviRuleResolver>(sp => new LudusaviRuleResolver(
+            database: sp.GetRequiredService<SpawnDatabase>(),
+            gameDataService: sp.GetRequiredService<IGameDataManagementService>(),
+            knownFolderProvider: sp.GetService<IKnownFolderProvider>(),
+            timeProvider: sp.GetService<TimeProvider>(),
+            logger: sp.GetService<ILogger<LudusaviRuleResolver>>()));
+        services.TryAddSingleton<ILudusaviRuleResolver>(sp => sp.GetRequiredService<LudusaviRuleResolver>());
+
+        services.TryAddSingleton(_ => new SaveWatcherOptions());
+
+        services.TryAddSingleton<SaveTimeMachineService>(sp => new SaveTimeMachineService(
+            database: sp.GetRequiredService<SpawnDatabase>(),
+            paths: sp.GetRequiredService<SpawnPaths>(),
+            casStore: sp.GetRequiredService<CasChunkStore>(),
+            ruleResolver: sp.GetRequiredService<ILudusaviRuleResolver>(),
+            gameDataService: sp.GetRequiredService<IGameDataManagementService>(),
+            gameLaunchService: sp.GetRequiredService<IGameLaunchService>(),
+            eventBus: sp.GetRequiredService<ISpawnEventBus>(),
+            timeProvider: sp.GetService<TimeProvider>(),
+            logger: sp.GetService<ILogger<SaveTimeMachineService>>(),
+            isWatchingProbe: gameId =>
+            {
+                ISaveWatcherService? watcher = sp.GetService<ISaveWatcherService>();
+                return watcher is not null
+                       && watcher.GetStatus(gameId).Status is SaveWatcherStatusKind.Watching
+                           or SaveWatcherStatusKind.Debouncing
+                           or SaveWatcherStatusKind.Capturing;
+            }));
+        services.TryAddSingleton<ISaveTimeMachineService>(sp => sp.GetRequiredService<SaveTimeMachineService>());
+
+        services.TryAddSingleton<SaveWatcherService>(sp => new SaveWatcherService(
+            timeMachine: sp.GetRequiredService<ISaveTimeMachineService>(),
+            ruleResolver: sp.GetRequiredService<ILudusaviRuleResolver>(),
+            eventBus: sp.GetRequiredService<ISpawnEventBus>(),
+            database: sp.GetRequiredService<SpawnDatabase>(),
+            timeProvider: sp.GetService<TimeProvider>(),
+            options: sp.GetRequiredService<SaveWatcherOptions>(),
+            logger: sp.GetService<ILogger<SaveWatcherService>>()));
+        services.TryAddSingleton<ISaveWatcherService>(sp => sp.GetRequiredService<SaveWatcherService>());
+
+        services.TryAddSingleton<CloudSaveSyncService>(sp => new CloudSaveSyncService(
+            database: sp.GetRequiredService<SpawnDatabase>(),
+            casChunkStore: sp.GetRequiredService<CasChunkStore>(),
+            secretStore: sp.GetRequiredService<DpapiSecretStore>(),
+            timeMachineService: sp.GetRequiredService<ISaveTimeMachineService>(),
+            eventBus: sp.GetRequiredService<ISpawnEventBus>(),
+            httpClientFactory: sp.GetService<IHttpClientFactory>(),
+            timeProvider: sp.GetService<TimeProvider>(),
+            logger: sp.GetService<ILogger<CloudSaveSyncService>>()));
+        services.TryAddSingleton<ICloudSaveSyncService>(sp => sp.GetRequiredService<CloudSaveSyncService>());
 
         return services;
     }

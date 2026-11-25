@@ -751,13 +751,14 @@ public sealed class UpdateServiceTests
             Assert.Equal(UpdateCheckOutcome.UpToDate, reloaded.CurrentSnapshot.LastCheckOutcome);
         }
 
-        // Confirm SQLite schema version stayed at v4 (NO schema upgrade!).
+        // Confirm UpdateService persisted history in app_settings without adding its own schema upgrade beyond SpawnDatabase's version (v5).
+        int expectedSchemaVersion = await sandbox.Database.GetSchemaVersionAsync();
         await using var conn = new SqliteConnection($"Data Source={sandbox.Paths.DatabaseFilePath};Mode=ReadOnly;");
         await conn.OpenAsync();
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT MAX(version) FROM schema_migrations;";
         long maxVersion = Convert.ToInt64(await cmd.ExecuteScalarAsync(), CultureInfo.InvariantCulture);
-        Assert.Equal(4L, maxVersion);
+        Assert.Equal(expectedSchemaVersion, maxVersion);
     }
 
     [Fact]

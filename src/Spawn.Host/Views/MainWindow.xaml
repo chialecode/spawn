@@ -85,10 +85,22 @@
                                 <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
                                 <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
                             </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource DisabledSurfaceBrush}" />
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource DisabledBorderBrush}" />
+                                <Setter Property="Foreground" Value="{DynamicResource DisabledTextBrush}" />
+                            </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Background" Value="{DynamicResource DisabledSurfaceBrush}" />
+                    <Setter Property="BorderBrush" Value="{DynamicResource DisabledBorderBrush}" />
+                    <Setter Property="Foreground" Value="{DynamicResource DisabledTextBrush}" />
+                </Trigger>
+            </Style.Triggers>
         </Style>
 
         <!-- Compact Row ⋯ ToggleButton Style -->
@@ -1124,6 +1136,11 @@
                                                 <DataTrigger Binding="{Binding IsPrimaryButtonRunningStyle}" Value="True">
                                                     <Setter Property="Background" Value="{DynamicResource RunningGreenBrush}" />
                                                 </DataTrigger>
+                                                <Trigger Property="IsEnabled" Value="False">
+                                                    <Setter Property="Background" Value="{DynamicResource DisabledSurfaceBrush}" />
+                                                    <Setter Property="BorderBrush" Value="{DynamicResource DisabledBorderBrush}" />
+                                                    <Setter Property="Foreground" Value="{DynamicResource DisabledTextBrush}" />
+                                                </Trigger>
                                             </Style.Triggers>
                                         </Style>
                                     </Button.Style>
@@ -1638,7 +1655,7 @@
                                                 Content="{Binding ActionButtonLabel}"
                                                 Command="{Binding TriggerCommand}"
                                                 IsEnabled="{Binding DataContext.CanTriggerHotkeys, RelativeSource={RelativeSource AncestorType=ListBox}}" />
-                                        <Button Style="{StaticResource SubtleIconButtonStyle}"
+                                        <Button Style="{StaticResource DangerSubtleIconButtonStyle}"
                                                 Width="28"
                                                 Height="28"
                                                 Margin="4,0,0,0"
@@ -1646,7 +1663,7 @@
                                                 Command="{Binding RemoveCommand}"
                                                 Visibility="{Binding IsManualEntry, Converter={StaticResource BoolToVis}}">
                                             <Path Data="M0,0 L8,8 M8,0 L0,8"
-                                                  Stroke="{DynamicResource DangerTextBrush}"
+                                                  Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
                                                   StrokeThickness="1.3"
                                                   HorizontalAlignment="Center"
                                                   VerticalAlignment="Center" />
@@ -2453,7 +2470,7 @@
                                             Command="{Binding ClearSaveSidebarSearchCommand}"
                                             Visibility="{Binding SaveSidebarSearchText, Converter={StaticResource StrNotEmptyToVis}}">
                                         <Path Data="M0,0 L7,7 M7,0 L0,7"
-                                              Stroke="{DynamicResource MutedTextBrush}"
+                                              Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
                                               StrokeThickness="1.3"
                                               HorizontalAlignment="Center"
                                               VerticalAlignment="Center" />
@@ -2645,7 +2662,7 @@
                                             Command="{Binding ClearTrainerSidebarSearchCommand}"
                                             Visibility="{Binding TrainerSidebarSearchText, Converter={StaticResource StrNotEmptyToVis}}">
                                         <Path Data="M0,0 L7,7 M7,0 L0,7"
-                                              Stroke="{DynamicResource MutedTextBrush}"
+                                              Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
                                               StrokeThickness="1.3"
                                               HorizontalAlignment="Center"
                                               VerticalAlignment="Center" />
@@ -3002,7 +3019,7 @@
                                         ToolTip="稍后提醒"
                                         Command="{Binding Settings.Update.DismissReadyBannerCommand}">
                                     <Path Data="M0,0 L8,8 M8,0 L0,8"
-                                          Stroke="{DynamicResource SecondaryTextBrush}"
+                                          Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
                                           StrokeThickness="1.3"
                                           HorizontalAlignment="Center"
                                           VerticalAlignment="Center" />
@@ -3030,7 +3047,7 @@
                                     Command="{Binding DismissStatusBannerCommand}"
                                     DockPanel.Dock="Right">
                                 <Path Data="M0,0 L8,8 M8,0 L0,8"
-                                      Stroke="{DynamicResource SecondaryTextBrush}"
+                                      Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
                                       StrokeThickness="1.3"
                                       HorizontalAlignment="Center"
                                       VerticalAlignment="Center" />
@@ -3260,12 +3277,17 @@
                                             <DataTrigger Binding="{Binding IsRunning}" Value="True">
                                                 <Setter Property="Background" Value="{DynamicResource RunningGreenBrush}" />
                                             </DataTrigger>
+                                            <Trigger Property="IsEnabled" Value="False">
+                                                <Setter Property="Background" Value="{DynamicResource DisabledSurfaceBrush}" />
+                                                <Setter Property="BorderBrush" Value="{DynamicResource DisabledBorderBrush}" />
+                                                <Setter Property="Foreground" Value="{DynamicResource DisabledTextBrush}" />
+                                            </Trigger>
                                         </Style.Triggers>
                                     </Style>
                                 </Button.Style>
                                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                                     <Path Data="M1,1 L10,6.5 L1,12 Z"
-                                          Fill="#FFFFFF"
+                                          Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
                                           Width="9"
                                           Height="11"
                                           Stretch="Uniform"
@@ -4081,14 +4103,13 @@
                                         Margin="0,2,8,2"
                                         Content="{Binding Trainer.OriginalWindowToggleButtonText}"
                                         Command="{Binding ToggleActiveRunningTrainerWindowCommand}" />
-                                <Button Height="32"
+                                <Button Style="{StaticResource RunningPrimaryCapsuleButtonStyle}"
+                                        Height="32"
                                         Padding="16,0"
                                         FontSize="12.5"
                                         Margin="0,2,0,2"
-                                        Background="{DynamicResource RunningGreenBrush}"
                                         Content="停止修改器"
-                                        Command="{Binding StopActiveRunningTrainerCommand}"
-                                        Style="{StaticResource PrimaryCapsuleButtonStyle}" />
+                                        Command="{Binding StopActiveRunningTrainerCommand}" />
                             </WrapPanel>
                         </Grid>
                     </Border>
@@ -4333,6 +4354,11 @@
                                                                 <DataTrigger Binding="{Binding IsRunning}" Value="True">
                                                                     <Setter Property="Background" Value="{DynamicResource RunningGreenBrush}" />
                                                                 </DataTrigger>
+                                                                <Trigger Property="IsEnabled" Value="False">
+                                                                    <Setter Property="Background" Value="{DynamicResource DisabledSurfaceBrush}" />
+                                                                    <Setter Property="BorderBrush" Value="{DynamicResource DisabledBorderBrush}" />
+                                                                    <Setter Property="Foreground" Value="{DynamicResource DisabledTextBrush}" />
+                                                                </Trigger>
                                                             </Style.Triggers>
                                                         </Style>
                                                     </Button.Style>

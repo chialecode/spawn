@@ -216,12 +216,11 @@
                                                 Content="测试连接"
                                                 Command="{Binding DataContext.TestCloudEndpointCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
                                                 CommandParameter="{Binding}" />
-                                        <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                                        <Button Style="{StaticResource DangerSecondaryCapsuleButtonStyle}"
                                                 Height="28"
                                                 Padding="10,0"
                                                 FontSize="12"
                                                 Margin="0,2,0,2"
-                                                Foreground="{DynamicResource DangerTextBrush}"
                                                 Content="删除"
                                                 Command="{Binding DataContext.DeleteCloudEndpointCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
                                                 CommandParameter="{Binding}" />

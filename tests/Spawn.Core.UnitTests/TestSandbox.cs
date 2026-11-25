@@ -133,6 +133,30 @@ public sealed class ManualTimeProvider : TimeProvider
         }
     }
 
+    /// <summary>
+    /// Timers that are set and have not fired yet. A test moves the clock only while the code under test waits on one, so a step never lands
+    /// between two of its waits and gets lost (#31).
+    /// </summary>
+    public int PendingTimerCount
+    {
+        get
+        {
+            lock (_gate)
+            {
+                int pending = 0;
+                foreach (var entry in _timers)
+                {
+                    if (!entry.Disposed && entry.DueAtUtc != DateTimeOffset.MaxValue)
+                    {
+                        pending++;
+                    }
+                }
+
+                return pending;
+            }
+        }
+    }
+
     public void Advance(TimeSpan delta)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(delta, TimeSpan.Zero);
@@ -180,6 +204,7 @@ public sealed class ManualTimeProvider : TimeProvider
     {
         lock (_gate)
         {
+            entry.MarkDisposedLocked();
             _timers.Remove(entry);
         }
     }
@@ -193,6 +218,11 @@ public sealed class ManualTimeProvider : TimeProvider
         public DateTimeOffset DueAtUtc { get; set; }
         public TimeSpan Period { get; set; }
         public bool Disposed { get; private set; }
+
+        public void MarkDisposedLocked()
+        {
+            Disposed = true;
+        }
 
         public ScheduledEntry(
             ManualTimeProvider owner,
@@ -234,7 +264,13 @@ public sealed class ManualTimeProvider : TimeProvider
 
         public void Invoke()
         {
-            if (!Disposed)
+            bool disposed;
+            lock (_owner._gate)
+            {
+                disposed = Disposed;
+            }
+
+            if (!disposed)
             {
                 _callback(_state);
             }
@@ -242,7 +278,6 @@ public sealed class ManualTimeProvider : TimeProvider
 
         public void Dispose()
         {
-            Disposed = true;
             _owner.RemoveTimer(this);
         }
 

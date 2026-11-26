@@ -46,7 +46,12 @@ public sealed partial class SynthesizedUnlockSoundPlayer : IDisposable
 
     private readonly Lock _cacheLock = new();
     private readonly bool _forceSilentEnvironment;
-    private bool _steamProbeCompleted;
+    private readonly Func<SteamClientSoundProbeResult> _steamProbe;
+    private readonly Func<DateTimeOffset> _utcNowProvider;
+    private readonly TimeSpan _missingSteamReprobeInterval;
+    private DateTimeOffset _lastSteamProbeUtc = DateTimeOffset.MinValue;
+    private string? _cachedSteamPath;
+    private long _cachedSteamWriteTicks;
     private DecodedStereoWav? _cachedSteamClip;
     private string? _cachedCustomPath;
     private long _cachedCustomWriteTicks;
@@ -54,10 +59,244 @@ public sealed partial class SynthesizedUnlockSoundPlayer : IDisposable
     private int _disposed;
 
     public SynthesizedUnlockSoundPlayer(bool forceSilent = false)
+        : this(
+            forceSilent,
+            static () => SteamClientSoundLocator.Probe(),
+            static () => DateTimeOffset.UtcNow,
+            TimeSpan.FromSeconds(60))
     {
+    }
+
+    public SynthesizedUnlockSoundPlayer(
+        bool forceSilent,
+        Func<SteamClientSoundProbeResult> steamProbe,
+        Func<DateTimeOffset>? utcNowProvider = null,
+        TimeSpan? missingSteamReprobeInterval = null)
+    {
+        ArgumentNullException.ThrowIfNull(steamProbe);
         _forceSilentEnvironment = forceSilent
             || string.Equals(Environment.GetEnvironmentVariable("SPAWN_MUTE_AUDIO"), "1", StringComparison.OrdinalIgnoreCase)
             || string.Equals(Environment.GetEnvironmentVariable("SPAWN_HEADLESS_TEST"), "1", StringComparison.OrdinalIgnoreCase);
+        _steamProbe = steamProbe;
+        _utcNowProvider = utcNowProvider ?? (static () => DateTimeOffset.UtcNow);
+        _missingSteamReprobeInterval = missingSteamReprobeInterval ?? TimeSpan.FromSeconds(60);
+    }
+
+    /// <summary>
+    /// Forces the next <see cref="OverlaySoundPreset.SteamAuthentic"/> playback to re-probe the local Steam installation.
+    /// </summary>
+    public void InvalidateSteamSoundCache()
+    {
+        lock (_cacheLock)
+        {
+            _lastSteamProbeUtc = DateTimeOffset.MinValue;
+            _cachedSteamPath = null;
+            _cachedSteamWriteTicks = 0;
+            _cachedSteamClip = null;
+        }
+    }
+
+    /// <summary>
+    /// Fully validates and decodes a user-selected custom <c>.wav</c> file (verifying uncompressed PCM or IEEE Float
+    /// encoding and rejecting ADPCM / compressed / malformed containers with an actionable Chinese reason).
+    /// </summary>
+    public static WavValidationResult ValidateCustomWavFile(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return new WavValidationResult(false, "未指定自定义音效文件路径。");
+        }
+
+        string normalized;
+        try
+        {
+            normalized = Path.GetFullPath(path.Trim().Trim('"'));
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return new WavValidationResult(false, $"自定义音频路径格式无效：{ex.Message}");
+        }
+
+        if (!File.Exists(normalized))
+        {
+            return new WavValidationResult(false, "找不到指定的自定义 .wav 文件，请检查文件是否已被移动或删除。");
+        }
+
+        try
+        {
+            var info = new FileInfo(normalized);
+            if (info.Length <= 44)
+            {
+                return new WavValidationResult(false, "音频文件过小或为空，不是有效的 RIFF WAVE 文件。");
+            }
+
+            if (info.Length > 20 * 1024 * 1024)
+            {
+                return new WavValidationResult(false, "自定义音频文件超过 20 MB 上限，请选择更精简的提示音文件。");
+            }
+
+            byte[] rawBytes = File.ReadAllBytes(normalized);
+            return ValidateWavBytes(rawBytes);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return new WavValidationResult(false, $"无法读取该音频文件：{ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Pure in-memory RIFF WAVE format and full-decode validation returning a clear Chinese diagnostic message.
+    /// </summary>
+    public static WavValidationResult ValidateWavBytes(ReadOnlySpan<byte> wavBytes)
+    {
+        if (wavBytes.Length < 44
+            || !wavBytes[..4].SequenceEqual("RIFF"u8)
+            || !wavBytes.Slice(8, 4).SequenceEqual("WAVE"u8))
+        {
+            return new WavValidationResult(
+                false,
+                "文件头不是标准 RIFF WAVE 格式（仅支持标准 .wav，不支持直接改后缀的 MP3/OGG/FLAC）。");
+        }
+
+        ushort effectiveFormatTag = 0;
+        ushort channels = 0;
+        int sampleRate = 0;
+        ushort bitsPerSample = 0;
+        bool hasFmt = false;
+        bool hasData = false;
+
+        int offset = 12;
+        while (offset + 8 <= wavBytes.Length)
+        {
+            ReadOnlySpan<byte> chunkId = wavBytes.Slice(offset, 4);
+            uint rawChunkSize = BinaryPrimitives.ReadUInt32LittleEndian(wavBytes.Slice(offset + 4, 4));
+            offset += 8;
+
+            int available = wavBytes.Length - offset;
+            int chunkLen = rawChunkSize > (uint)available ? available : (int)rawChunkSize;
+            ReadOnlySpan<byte> payload = wavBytes.Slice(offset, chunkLen);
+
+            if (chunkId.SequenceEqual("fmt "u8) && chunkLen >= 16)
+            {
+                ushort rawFormat = BinaryPrimitives.ReadUInt16LittleEndian(payload[..2]);
+                channels = BinaryPrimitives.ReadUInt16LittleEndian(payload.Slice(2, 2));
+                sampleRate = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(4, 4));
+                bitsPerSample = BinaryPrimitives.ReadUInt16LittleEndian(payload.Slice(14, 2));
+                effectiveFormatTag = rawFormat == 0xFFFE && chunkLen >= 40
+                    ? BinaryPrimitives.ReadUInt16LittleEndian(payload.Slice(24, 2))
+                    : rawFormat;
+                hasFmt = true;
+            }
+            else if (chunkId.SequenceEqual("data"u8))
+            {
+                hasData = true;
+                if (hasFmt)
+                {
+                    break;
+                }
+            }
+
+            long advance = (long)chunkLen + (chunkLen & 1);
+            if (advance <= 0 || offset + advance > wavBytes.Length)
+            {
+                break;
+            }
+
+            offset += (int)advance;
+        }
+
+        if (!hasFmt)
+        {
+            return new WavValidationResult(false, "WAV 文件缺少格式头（fmt 块），文件可能已损坏。");
+        }
+
+        if (!hasData)
+        {
+            return new WavValidationResult(false, "WAV 文件缺少音频数据块（data 块），无法播放。");
+        }
+
+        if (effectiveFormatTag is not (1 or 3))
+        {
+            string codecName = effectiveFormatTag switch
+            {
+                0x0002 => "Microsoft ADPCM 压缩格式",
+                0x0011 => "IMA/DVI ADPCM 压缩格式",
+                0x0006 => "ITU G.711 A-law 压缩格式",
+                0x0007 => "ITU G.711 μ-law 压缩格式",
+                0x0055 => "MP3 封装格式",
+                _ => $"编码格式 0x{effectiveFormatTag:X4}",
+            };
+            return new WavValidationResult(
+                false,
+                $"不支持的 WAV 编码（{codecName}）；请转换为未压缩 PCM（8/16/24/32-bit）或 IEEE Float（32/64-bit）标准 WAV 后重试。");
+        }
+
+        if (channels is < 1 or > 8)
+        {
+            return new WavValidationResult(false, $"不支持的声道数（{channels} 声道），仅支持 1~8 声道 WAV。");
+        }
+
+        if (sampleRate is < 4000 or > 384000)
+        {
+            return new WavValidationResult(false, $"不支持的采样率（{sampleRate} Hz），仅支持 4000~384000 Hz。");
+        }
+
+        if ((effectiveFormatTag == 1 && bitsPerSample is not (8 or 16 or 24 or 32))
+            || (effectiveFormatTag == 3 && bitsPerSample is not (32 or 64)))
+        {
+            string kind = effectiveFormatTag == 3 ? "IEEE Float" : "PCM";
+            return new WavValidationResult(false, $"不支持的位深组合（{kind} {bitsPerSample}-bit）。");
+        }
+
+        if (!TryDecodeRiffWav(wavBytes, out DecodedStereoWav decoded) || decoded.FrameCount <= 0)
+        {
+            return new WavValidationResult(false, "WAV 音频数据区为空或已截断损坏，无法完整解码播放。");
+        }
+
+        double durationSec = (double)decoded.FrameCount / decoded.SampleRate;
+        string formatLabel = effectiveFormatTag == 3 ? "IEEE Float" : "PCM";
+        return new WavValidationResult(
+            true,
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"WAV 校验通过（{formatLabel} {bitsPerSample}-bit / {sampleRate} Hz / {channels} 声道，时长 {durationSec:0.00} 秒）。"),
+            SampleRate: sampleRate,
+            Channels: channels,
+            BitsPerSample: bitsPerSample,
+            DurationSeconds: durationSec);
+    }
+
+    /// <summary>
+    /// Returns <see langword="true"/> when a rare (&lt;10%) or 100% Platinum toast under
+    /// <see cref="OverlaySoundPreset.SteamAuthentic"/> should use SPAWN's enhanced rare/platinum chime
+    /// instead of playing the identical standard Steam clip.
+    /// </summary>
+    public static bool ShouldUseEnhancedRareOrPlatinumSound(OverlayToastRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (request.SoundPreset != OverlaySoundPreset.SteamAuthentic || !request.EnhanceRareAndPlatinumSound)
+        {
+            return false;
+        }
+
+        return request.IsPlatinumCompletion || request.IsRare || request.GlobalPercent is < 10.0;
+    }
+
+    /// <summary>
+    /// Computes the deterministic audio playback plan (external clip vs. enhanced synthesized chime) for <paramref name="request"/>.
+    /// </summary>
+    public static ResolvedSoundPlan ResolvePlaybackPlan(OverlayToastRequest request, bool hasExternalClip)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ChimePreset chime = ResolveChimePreset(request);
+        if (ShouldUseEnhancedRareOrPlatinumSound(request))
+        {
+            return new ResolvedSoundPlan(UseExternalClip: false, SynthesizedPreset: chime, IsEnhancedRareOrPlatinum: true);
+        }
+
+        bool useExternal = request.SoundPreset is OverlaySoundPreset.SteamAuthentic or OverlaySoundPreset.CustomWav
+                           && hasExternalClip;
+        return new ResolvedSoundPlan(UseExternalClip: useExternal, SynthesizedPreset: chime, IsEnhancedRareOrPlatinum: false);
     }
 
     public void PlayForToast(OverlayToastRequest request)
@@ -1067,34 +1306,82 @@ public sealed partial class SynthesizedUnlockSoundPlayer : IDisposable
         }
     }
 
-    private DecodedStereoWav? TryResolveDecodedExternalClip(OverlayToastRequest request)
+    /// <summary>
+    /// Resolves the decoded external WAV clip (if applicable) for <paramref name="request"/>, respecting the
+    /// rare/platinum enhancement switch and non-permanent Steam probe caching.
+    /// </summary>
+    public DecodedStereoWav? TryResolveDecodedExternalClip(OverlayToastRequest request)
     {
+        ArgumentNullException.ThrowIfNull(request);
+        if (ShouldUseEnhancedRareOrPlatinumSound(request))
+        {
+            return null;
+        }
+
         return request.SoundPreset switch
         {
-            OverlaySoundPreset.SteamAuthentic => GetOrLoadSteamAuthenticClip(),
+            OverlaySoundPreset.SteamAuthentic => GetOrLoadSteamAuthenticClip(forceReprobe: request.ReplaceActivePreview),
             OverlaySoundPreset.CustomWav => GetOrLoadCustomWavClip(request.CustomSoundPath),
             _ => null,
         };
     }
 
-    private DecodedStereoWav? GetOrLoadSteamAuthenticClip()
+    private DecodedStereoWav? GetOrLoadSteamAuthenticClip(bool forceReprobe = false)
     {
         lock (_cacheLock)
         {
-            if (_steamProbeCompleted)
+            DateTimeOffset now = _utcNowProvider();
+
+            if (!forceReprobe && _cachedSteamClip is not null)
             {
-                return _cachedSteamClip;
+                if (!string.IsNullOrWhiteSpace(_cachedSteamPath))
+                {
+                    try
+                    {
+                        if (File.Exists(_cachedSteamPath)
+                            && File.GetLastWriteTimeUtc(_cachedSteamPath).Ticks == _cachedSteamWriteTicks)
+                        {
+                            return _cachedSteamClip;
+                        }
+                    }
+                    catch
+                    {
+                        // Re-probe below if the previously cached path became unreadable.
+                    }
+                }
+                else
+                {
+                    return _cachedSteamClip;
+                }
             }
 
-            _steamProbeCompleted = true;
+            // When Steam was previously absent, allow re-probing after the cooldown elapses or when explicitly requested
+            // (e.g., settings preview / InvalidateSteamSoundCache) instead of caching absence permanently.
+            if (!forceReprobe
+                && _cachedSteamClip is null
+                && _lastSteamProbeUtc != DateTimeOffset.MinValue
+                && (now - _lastSteamProbeUtc) < _missingSteamReprobeInterval)
+            {
+                return null;
+            }
+
+            _lastSteamProbeUtc = now;
+            _cachedSteamClip = null;
+            _cachedSteamPath = null;
+            _cachedSteamWriteTicks = 0;
+
             try
             {
-                SteamClientSoundProbeResult probe = SteamClientSoundLocator.Probe();
+                SteamClientSoundProbeResult probe = _steamProbe();
                 if (!string.IsNullOrWhiteSpace(probe.EffectiveSoundPath) && File.Exists(probe.EffectiveSoundPath))
                 {
-                    byte[] rawBytes = File.ReadAllBytes(probe.EffectiveSoundPath);
+                    string soundPath = probe.EffectiveSoundPath;
+                    long writeTicks = File.GetLastWriteTimeUtc(soundPath).Ticks;
+                    byte[] rawBytes = File.ReadAllBytes(soundPath);
                     if (TryDecodeRiffWav(rawBytes, out DecodedStereoWav decoded))
                     {
+                        _cachedSteamPath = soundPath;
+                        _cachedSteamWriteTicks = writeTicks;
                         _cachedSteamClip = decoded;
                     }
                 }
@@ -1102,6 +1389,8 @@ public sealed partial class SynthesizedUnlockSoundPlayer : IDisposable
             catch
             {
                 _cachedSteamClip = null;
+                _cachedSteamPath = null;
+                _cachedSteamWriteTicks = 0;
             }
 
             return _cachedSteamClip;
@@ -1158,10 +1447,10 @@ public sealed partial class SynthesizedUnlockSoundPlayer : IDisposable
         return null;
     }
 
-    private static ChimePreset ResolveChimePreset(OverlayToastRequest request) =>
+    public static ChimePreset ResolveChimePreset(OverlayToastRequest request) =>
         request.IsPlatinumCompletion
             ? ChimePreset.PlatinumCelebration
-            : request.IsRare || (request.Theme == OverlayThemeKind.XboxRare && request.GlobalPercent is < 10.0)
+            : request.IsRare || request.GlobalPercent is < 10.0
                 ? ChimePreset.RareDiamond
                 : request.Theme == OverlayThemeKind.Ps5Trophy
                     ? ChimePreset.Ps5Trophy
@@ -1377,6 +1666,19 @@ public sealed partial class SynthesizedUnlockSoundPlayer : IDisposable
             return aligned;
         }
     }
+
+    public sealed record WavValidationResult(
+        bool IsValid,
+        string Message,
+        int SampleRate = 0,
+        int Channels = 0,
+        int BitsPerSample = 0,
+        double DurationSeconds = 0.0);
+
+    public readonly record struct ResolvedSoundPlan(
+        bool UseExternalClip,
+        ChimePreset SynthesizedPreset,
+        bool IsEnhancedRareOrPlatinum);
 
     public readonly record struct DecodedStereoWav(
         int SampleRate,

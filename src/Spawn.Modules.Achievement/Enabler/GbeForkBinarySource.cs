@@ -9,6 +9,40 @@ using Spawn.Core;
 namespace Spawn.Modules.Achievement;
 
 /// <summary>
+/// Distinct failure categories when acquiring the pinned <c>gbe_fork</c> release binaries.
+/// </summary>
+public enum GbeForkAcquisitionErrorKind
+{
+    None = 0,
+    OfflineDisabled = 1,
+    NetworkDownloadFailed = 2,
+    Sha256VerificationFailed = 3,
+    MissingSevenZipExtractor = 4,
+    ExtractionOrPayloadFailed = 5,
+}
+
+/// <summary>
+/// Outcome of attempting to extract a <c>.7z</c> archive via OS or 7-Zip tooling.
+/// </summary>
+public enum SevenZipExtractOutcome
+{
+    Succeeded = 0,
+    MissingExtractor = 1,
+    ExtractionFailed = 2,
+}
+
+/// <summary>
+/// Structured outcome returned by <see cref="IGbeForkBinarySource.AcquireSteamApiDllAsync"/>.
+/// </summary>
+public sealed record GbeForkBinaryAcquisitionResult(
+    byte[]? DllBytes,
+    GbeForkAcquisitionErrorKind ErrorKind = GbeForkAcquisitionErrorKind.None,
+    string? ErrorMessage = null)
+{
+    public bool Succeeded => DllBytes is { Length: > 0 } && ErrorKind == GbeForkAcquisitionErrorKind.None;
+}
+
+/// <summary>
 /// Supplies the <c>gbe_fork</c> replacement <c>steam_api(64).dll</c> bytes used by <see cref="GbeForkActivatorService"/>.
 /// Production uses <see cref="PinnedGbeForkReleaseSource"/>; tests inject their own deterministic source instead of
 /// relying on any test-only branch inside production code.
@@ -17,6 +51,21 @@ public interface IGbeForkBinarySource
 {
     /// <summary>Returns the replacement DLL bytes, or <see langword="null"/> when unavailable (offline / integrity failure).</summary>
     Task<byte[]?> GetSteamApiDllAsync(bool is64Bit, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns both the replacement DLL bytes and a classified error reason when acquisition fails.
+    /// Default implementation preserves full backward compatibility for existing test stubs.
+    /// </summary>
+    async Task<GbeForkBinaryAcquisitionResult> AcquireSteamApiDllAsync(bool is64Bit, CancellationToken cancellationToken = default)
+    {
+        byte[]? bytes = await GetSteamApiDllAsync(is64Bit, cancellationToken).ConfigureAwait(false);
+        return bytes is { Length: > 0 }
+            ? new GbeForkBinaryAcquisitionResult(bytes)
+            : new GbeForkBinaryAcquisitionResult(
+                null,
+                GbeForkAcquisitionErrorKind.NetworkDownloadFailed,
+                $"未能获取经 SHA-256 校验的固定版本 gbe_fork {PinnedGbeForkReleaseSource.PinnedReleaseTag} 组件 {(is64Bit ? "steam_api64.dll" : "steam_api.dll")}。");
+    }
 }
 
 /// <summary>
@@ -44,12 +93,40 @@ public sealed class PinnedGbeForkReleaseSource : IGbeForkBinarySource, IDisposab
     private readonly AchievementModuleOptions _options;
     private readonly HttpClient _httpClient;
     private readonly bool _ownsHttpClient;
+    private readonly Func<ReadOnlyMemory<byte>, bool> _archiveDigestVerifier;
+    private readonly Func<string, string, CancellationToken, Task<SevenZipExtractOutcome>> _sevenZipExtractor;
 
-    public PinnedGbeForkReleaseSource(SpawnPaths paths, AchievementModuleOptions? options = null, HttpClient? httpClient = null)
+    public GbeForkAcquisitionErrorKind LastErrorKind { get; private set; }
+    public string? LastErrorMessage { get; private set; }
+
+    public PinnedGbeForkReleaseSource(
+        SpawnPaths paths,
+        AchievementModuleOptions? options = null,
+        HttpClient? httpClient = null)
+        : this(paths, options, httpClient, archiveDigestVerifier: null, sevenZipExtractor: null)
+    {
+    }
+
+    public static PinnedGbeForkReleaseSource CreateForTesting(
+        SpawnPaths paths,
+        AchievementModuleOptions? options,
+        HttpClient? httpClient,
+        Func<ReadOnlyMemory<byte>, bool>? archiveDigestVerifier = null,
+        Func<string, string, CancellationToken, Task<SevenZipExtractOutcome>>? sevenZipExtractor = null) =>
+        new(paths, options, httpClient, archiveDigestVerifier, sevenZipExtractor);
+
+    private PinnedGbeForkReleaseSource(
+        SpawnPaths paths,
+        AchievementModuleOptions? options,
+        HttpClient? httpClient,
+        Func<ReadOnlyMemory<byte>, bool>? archiveDigestVerifier,
+        Func<string, string, CancellationToken, Task<SevenZipExtractOutcome>>? sevenZipExtractor)
     {
         ArgumentNullException.ThrowIfNull(paths);
         _paths = paths;
         _options = options ?? new AchievementModuleOptions();
+        _archiveDigestVerifier = archiveDigestVerifier ?? (static bytes => IsPinnedArchiveDigest(bytes.Span));
+        _sevenZipExtractor = sevenZipExtractor ?? ExtractSevenZipSilentlyAsync;
 
         if (httpClient is not null)
         {
@@ -75,28 +152,58 @@ public sealed class PinnedGbeForkReleaseSource : IGbeForkBinarySource, IDisposab
 
     public async Task<byte[]?> GetSteamApiDllAsync(bool is64Bit, CancellationToken cancellationToken = default)
     {
+        GbeForkBinaryAcquisitionResult result = await AcquireSteamApiDllAsync(is64Bit, cancellationToken).ConfigureAwait(false);
+        return result.DllBytes;
+    }
+
+    public async Task<GbeForkBinaryAcquisitionResult> AcquireSteamApiDllAsync(
+        bool is64Bit,
+        CancellationToken cancellationToken = default)
+    {
         string dllName = is64Bit ? "steam_api64.dll" : "steam_api.dll";
 
         byte[]? cached = await TryReadVerifiedCachedDllAsync(dllName, cancellationToken).ConfigureAwait(false);
         if (cached is not null)
         {
-            return cached;
+            RecordError(GbeForkAcquisitionErrorKind.None, null);
+            return new GbeForkBinaryAcquisitionResult(cached);
         }
 
         if (!_options.AllowNetworkDownloads)
         {
-            return null;
+            string msg = $"本地未缓存已校验的 gbe_fork {PinnedReleaseTag} 组件（{dllName}），且当前已禁用联网下载。";
+            RecordError(GbeForkAcquisitionErrorKind.OfflineDisabled, msg);
+            return new GbeForkBinaryAcquisitionResult(null, GbeForkAcquisitionErrorKind.OfflineDisabled, msg);
         }
 
-        bool populated = await TryDownloadAndPopulateCacheAsync(cancellationToken).ConfigureAwait(false);
-        return populated
-            ? await TryReadVerifiedCachedDllAsync(dllName, cancellationToken).ConfigureAwait(false)
-            : null;
+        var (populateError, populateMessage) = await TryDownloadAndPopulateCacheAsync(cancellationToken).ConfigureAwait(false);
+        if (populateError != GbeForkAcquisitionErrorKind.None)
+        {
+            RecordError(populateError, populateMessage);
+            return new GbeForkBinaryAcquisitionResult(null, populateError, populateMessage);
+        }
+
+        byte[]? populatedDll = await TryReadVerifiedCachedDllAsync(dllName, cancellationToken).ConfigureAwait(false);
+        if (populatedDll is { Length: > 0 })
+        {
+            RecordError(GbeForkAcquisitionErrorKind.None, null);
+            return new GbeForkBinaryAcquisitionResult(populatedDll);
+        }
+
+        string missingDllMsg = $"已解压 gbe_fork {PinnedReleaseTag} 压缩包，但未在归档中找到所需的 {dllName}。";
+        RecordError(GbeForkAcquisitionErrorKind.ExtractionOrPayloadFailed, missingDllMsg);
+        return new GbeForkBinaryAcquisitionResult(null, GbeForkAcquisitionErrorKind.ExtractionOrPayloadFailed, missingDllMsg);
     }
 
     /// <summary>Returns <see langword="true"/> only when <paramref name="archiveBytes"/> hashes to <see cref="PinnedAssetSha256"/>.</summary>
     public static bool IsPinnedArchiveDigest(ReadOnlySpan<byte> archiveBytes) =>
         string.Equals(Convert.ToHexStringLower(SHA256.HashData(archiveBytes)), PinnedAssetSha256, StringComparison.Ordinal);
+
+    private void RecordError(GbeForkAcquisitionErrorKind kind, string? message)
+    {
+        LastErrorKind = kind;
+        LastErrorMessage = message;
+    }
 
     private async Task<byte[]?> TryReadVerifiedCachedDllAsync(string dllName, CancellationToken ct)
     {
@@ -130,7 +237,7 @@ public sealed class PinnedGbeForkReleaseSource : IGbeForkBinarySource, IDisposab
         }
     }
 
-    private async Task<bool> TryDownloadAndPopulateCacheAsync(CancellationToken ct)
+    private async Task<(GbeForkAcquisitionErrorKind ErrorKind, string? ErrorMessage)> TryDownloadAndPopulateCacheAsync(CancellationToken ct)
     {
         string stagingRoot = Path.Combine(_paths.CacheDirectory, $"gbe_dl_{Guid.NewGuid():N}");
         try
@@ -138,12 +245,41 @@ public sealed class PinnedGbeForkReleaseSource : IGbeForkBinarySource, IDisposab
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(TimeSpan.FromSeconds(60));
 
-            byte[] archiveBytes = await _httpClient.GetByteArrayAsync(PinnedAssetUrl, cts.Token).ConfigureAwait(false);
+            byte[] archiveBytes;
+            try
+            {
+                using var response = await _httpClient.GetAsync(PinnedAssetUrl, HttpCompletionOption.ResponseContentRead, cts.Token).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                {
+                    return (
+                        GbeForkAcquisitionErrorKind.NetworkDownloadFailed,
+                        $"网络下载 gbe_fork {PinnedReleaseTag} 失败（HTTP {(int)response.StatusCode} {response.ReasonPhrase}），请检查网络连接或代理设置后重试。");
+                }
+
+                archiveBytes = await response.Content.ReadAsByteArrayAsync(cts.Token).ConfigureAwait(false);
+            }
+            catch (HttpRequestException ex)
+            {
+                return (
+                    GbeForkAcquisitionErrorKind.NetworkDownloadFailed,
+                    $"网络下载 gbe_fork {PinnedReleaseTag} 失败：{ex.Message}。请检查网络连接或 GitHub 访问代理后重试。");
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                return (
+                    GbeForkAcquisitionErrorKind.NetworkDownloadFailed,
+                    $"网络下载 gbe_fork {PinnedReleaseTag} 超时（超过 60 秒），请检查网络连接后重试。");
+            }
 
             // Fail closed: never extract or execute anything whose digest differs from the pinned value.
-            if (!IsPinnedArchiveDigest(archiveBytes))
+            if (!_archiveDigestVerifier(archiveBytes))
             {
-                return false;
+                string actualSha = Convert.ToHexStringLower(SHA256.HashData(archiveBytes));
+                string actualPrefix = actualSha[..Math.Min(12, actualSha.Length)];
+                string expectedPrefix = PinnedAssetSha256[..12];
+                return (
+                    GbeForkAcquisitionErrorKind.Sha256VerificationFailed,
+                    $"gbe_fork {PinnedReleaseTag} 归档 SHA-256 校验失败（实际 {actualPrefix}…，期望 {expectedPrefix}…），已出于安全原因中止解包，请检查网络劫持或代理缓存后重试。");
             }
 
             Directory.CreateDirectory(stagingRoot);
@@ -152,12 +288,22 @@ public sealed class PinnedGbeForkReleaseSource : IGbeForkBinarySource, IDisposab
             Directory.CreateDirectory(extractDir);
             await File.WriteAllBytesAsync(archivePath, archiveBytes, cts.Token).ConfigureAwait(false);
 
-            bool extracted = PinnedAssetName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)
-                ? TryExtractZip(archivePath, extractDir)
-                : await ExtractSevenZipSilentlyAsync(archivePath, extractDir, cts.Token).ConfigureAwait(false);
-            if (!extracted)
+            SevenZipExtractOutcome extractOutcome = PinnedAssetName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)
+                ? (TryExtractZip(archivePath, extractDir) ? SevenZipExtractOutcome.Succeeded : SevenZipExtractOutcome.ExtractionFailed)
+                : await _sevenZipExtractor(archivePath, extractDir, cts.Token).ConfigureAwait(false);
+
+            if (extractOutcome == SevenZipExtractOutcome.MissingExtractor)
             {
-                return false;
+                return (
+                    GbeForkAcquisitionErrorKind.MissingSevenZipExtractor,
+                    $"系统缺少可用的 .7z 解压工具：当前系统的 tar.exe 不支持解压 {PinnedAssetName} 且未检测到 7-Zip。Windows 10 用户请先安装免费开源的 7-Zip（7-zip.org）后再重试激活。");
+            }
+
+            if (extractOutcome != SevenZipExtractOutcome.Succeeded)
+            {
+                return (
+                    GbeForkAcquisitionErrorKind.ExtractionOrPayloadFailed,
+                    $"解压 gbe_fork 归档 {PinnedAssetName} 失败，请检查磁盘空间或安全软件拦截后重试。");
             }
 
             string[] allDlls = Directory.GetFiles(extractDir, "steam_api*.dll", SearchOption.AllDirectories);
@@ -187,7 +333,9 @@ public sealed class PinnedGbeForkReleaseSource : IGbeForkBinarySource, IDisposab
 
             if (dllHashes.Count == 0)
             {
-                return false;
+                return (
+                    GbeForkAcquisitionErrorKind.ExtractionOrPayloadFailed,
+                    $"已解压 gbe_fork {PinnedReleaseTag} 归档，但未在内容中找到 steam_api64.dll 或 steam_api.dll。");
             }
 
             var manifest = new PinnedCacheManifest
@@ -211,11 +359,17 @@ public sealed class PinnedGbeForkReleaseSource : IGbeForkBinarySource, IDisposab
                     cts.Token).ConfigureAwait(false);
             }
 
-            return true;
+            return (GbeForkAcquisitionErrorKind.None, null);
         }
-        catch (Exception ex) when (ex is HttpRequestException or IOException or UnauthorizedAccessException or OperationCanceledException or InvalidDataException)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            return false;
+            return (GbeForkAcquisitionErrorKind.NetworkDownloadFailed, "操作已取消。");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            return (
+                GbeForkAcquisitionErrorKind.ExtractionOrPayloadFailed,
+                $"缓存或解压 gbe_fork 组件时发生磁盘错误：{ex.Message}");
         }
         finally
         {
@@ -246,30 +400,60 @@ public sealed class PinnedGbeForkReleaseSource : IGbeForkBinarySource, IDisposab
         }
     }
 
-    private static async Task<bool> ExtractSevenZipSilentlyAsync(string archivePath, string extractDir, CancellationToken ct)
+    private static async Task<SevenZipExtractOutcome> ExtractSevenZipSilentlyAsync(string archivePath, string extractDir, CancellationToken ct)
     {
-        // Primary: Windows 11 built-in System32\tar.exe (bsdtar / libarchive with .7z support); fallback: installed 7-Zip CLI.
+        // Primary: Windows 11 built-in System32\tar.exe (bsdtar / libarchive with .7z support).
+        // Note: Windows 10 ships an older bsdtar without .7z support, so tar.exe failure without 7z.exe is classified as MissingExtractor.
         string sysTar = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "tar.exe");
         if (File.Exists(sysTar) && await RunHiddenAsync(sysTar, ["-xf", archivePath, "-C", extractDir], ct).ConfigureAwait(false))
         {
-            return true;
+            return SevenZipExtractOutcome.Succeeded;
         }
 
-        string[] sevenZipCandidates =
-        [
+        var sevenZipCandidates = new List<string>
+        {
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "7-Zip", "7z.exe"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "7-Zip", "7z.exe"),
-        ];
+        };
 
-        foreach (string sevenZip in sevenZipCandidates)
+        string? envPath = Environment.GetEnvironmentVariable("PATH");
+        if (!string.IsNullOrWhiteSpace(envPath))
         {
-            if (File.Exists(sevenZip) && await RunHiddenAsync(sevenZip, ["x", archivePath, $"-o{extractDir}", "-y"], ct).ConfigureAwait(false))
+            foreach (string segment in envPath.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
-                return true;
+                try
+                {
+                    string candidate = Path.Combine(segment, "7z.exe");
+                    if (!sevenZipCandidates.Contains(candidate, StringComparer.OrdinalIgnoreCase))
+                    {
+                        sevenZipCandidates.Add(candidate);
+                    }
+                }
+                catch
+                {
+                    // Ignore malformed PATH entry.
+                }
             }
         }
 
-        return false;
+        bool foundSevenZipCli = false;
+        foreach (string sevenZip in sevenZipCandidates)
+        {
+            if (!File.Exists(sevenZip))
+            {
+                continue;
+            }
+
+            foundSevenZipCli = true;
+            if (await RunHiddenAsync(sevenZip, ["x", archivePath, $"-o{extractDir}", "-y"], ct).ConfigureAwait(false))
+            {
+                return SevenZipExtractOutcome.Succeeded;
+            }
+        }
+
+        return foundSevenZipCli
+            ? SevenZipExtractOutcome.ExtractionFailed
+            : SevenZipExtractOutcome.MissingExtractor;
     }
 
     private static async Task<bool> RunHiddenAsync(string fileName, IReadOnlyList<string> args, CancellationToken ct)

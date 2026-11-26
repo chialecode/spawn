@@ -498,7 +498,7 @@ public sealed class SteamEmulatorAchievementProvider : IAchievementSourceProvide
     /// <summary>
     /// Synchronizes a manual unlock/reset operation back to a local Goldberg / <c>gbe_fork</c> JSON save when present.
     /// </summary>
-    public static async Task TrySyncLocalGoldbergSaveAsync(
+    public static async Task<bool> TrySyncLocalGoldbergSaveAsync(
         string jsonFilePath,
         string apiName,
         bool unlocked,
@@ -506,7 +506,7 @@ public sealed class SteamEmulatorAchievementProvider : IAchievementSourceProvide
     {
         if (string.IsNullOrWhiteSpace(jsonFilePath))
         {
-            return;
+            return false;
         }
 
         try
@@ -517,7 +517,13 @@ public sealed class SteamEmulatorAchievementProvider : IAchievementSourceProvide
                 byte[]? existing = await ResilientFileReader.ReadSharedBytesWithRetryAsync(jsonFilePath, cancellationToken).ConfigureAwait(false);
                 if (existing is { Length: > 0 })
                 {
-                    using var doc = JsonDocument.Parse(existing);
+                    ReadOnlyMemory<byte> jsonSlice = existing.Length >= 3
+                                                     && existing[0] == 0xEF
+                                                     && existing[1] == 0xBB
+                                                     && existing[2] == 0xBF
+                        ? existing.AsMemory(3)
+                        : existing.AsMemory();
+                    using var doc = JsonDocument.Parse(jsonSlice);
                     if (doc.RootElement.ValueKind == JsonValueKind.Object)
                     {
                         foreach (var prop in doc.RootElement.EnumerateObject())
@@ -562,12 +568,14 @@ public sealed class SteamEmulatorAchievementProvider : IAchievementSourceProvide
 
             string tempPath = jsonFilePath + ".spawn_tmp";
             string serialized = JsonSerializer.Serialize(dict, IndentedJsonOptions);
-            await File.WriteAllTextAsync(tempPath, serialized, Encoding.UTF8, cancellationToken).ConfigureAwait(false);
+            await File.WriteAllTextAsync(tempPath, serialized, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false), cancellationToken).ConfigureAwait(false);
             File.Move(tempPath, jsonFilePath, overwrite: true);
+            return true;
         }
         catch
         {
             // Best-effort local emulator file sync.
+            return false;
         }
     }
 

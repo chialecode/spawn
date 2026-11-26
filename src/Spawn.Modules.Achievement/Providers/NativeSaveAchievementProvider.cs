@@ -241,12 +241,9 @@ public sealed class NativeSaveAchievementProvider : IAchievementSourceProvider
             return [];
         }
 
-        var stamp = ResilientFileReader.GetMetadataStamp(target.FilePath);
-        DateTimeOffset fallbackTime = stamp.Exists
-            ? new DateTimeOffset(stamp.LastWriteTicksUtc, TimeSpan.Zero)
-            : DateTimeOffset.UtcNow;
-
-        return EvaluateRule(rule, rawBytes, fallbackTime);
+        // Native save formats (bitmask / string array / regex / binary offset) do not record per-achievement unlock times.
+        // Return UnlockedUtc = null so silentSeed imports never fabricate "today" timestamps on the recent timeline.
+        return EvaluateRule(rule, rawBytes, fileWriteTimeUtc: null);
     }
 
     /// <summary>
@@ -264,15 +261,13 @@ public sealed class NativeSaveAchievementProvider : IAchievementSourceProvider
             return [];
         }
 
-        DateTimeOffset effectiveUtc = fileWriteTimeUtc ?? DateTimeOffset.UtcNow;
-
         return rule.ExtractorKind switch
         {
-            NativeSaveExtractorKind.BitmaskFromRegexInt => EvaluateBitmaskRule(rule, rawBytes, effectiveUtc),
-            NativeSaveExtractorKind.RegexKeyValue => EvaluateRegexKeyValueRule(rule, rawBytes, effectiveUtc),
-            NativeSaveExtractorKind.JsonPath => EvaluateJsonPathRule(rule, rawBytes, effectiveUtc),
-            NativeSaveExtractorKind.BinaryBitOffset => EvaluateBinaryBitOffsetRule(rule, rawBytes, effectiveUtc),
-            NativeSaveExtractorKind.JsonStringArray => EvaluateJsonStringArrayRule(rule, rawBytes, effectiveUtc),
+            NativeSaveExtractorKind.BitmaskFromRegexInt => EvaluateBitmaskRule(rule, rawBytes, fileWriteTimeUtc),
+            NativeSaveExtractorKind.RegexKeyValue => EvaluateRegexKeyValueRule(rule, rawBytes, fileWriteTimeUtc),
+            NativeSaveExtractorKind.JsonPath => EvaluateJsonPathRule(rule, rawBytes, fileWriteTimeUtc),
+            NativeSaveExtractorKind.BinaryBitOffset => EvaluateBinaryBitOffsetRule(rule, rawBytes, fileWriteTimeUtc),
+            NativeSaveExtractorKind.JsonStringArray => EvaluateJsonStringArrayRule(rule, rawBytes, fileWriteTimeUtc),
             _ => [],
         };
     }
@@ -360,7 +355,7 @@ public sealed class NativeSaveAchievementProvider : IAchievementSourceProvider
     private static List<ParsedAchievementEntry> EvaluateBitmaskRule(
         NativeSaveAchievementRule rule,
         ReadOnlySpan<byte> rawBytes,
-        DateTimeOffset unlockTimeUtc)
+        DateTimeOffset? unlockTimeUtc)
     {
         string? text = rule.UseLimboAesOrPlainDecoder
             ? LimboSaveDecoder.DecodeToText(rawBytes)
@@ -434,7 +429,7 @@ public sealed class NativeSaveAchievementProvider : IAchievementSourceProvider
     private static List<ParsedAchievementEntry> EvaluateRegexKeyValueRule(
         NativeSaveAchievementRule rule,
         ReadOnlySpan<byte> rawBytes,
-        DateTimeOffset unlockTimeUtc)
+        DateTimeOffset? unlockTimeUtc)
     {
         string text = rule.UseLimboAesOrPlainDecoder
             ? (LimboSaveDecoder.DecodeToText(rawBytes) ?? string.Empty)
@@ -485,7 +480,7 @@ public sealed class NativeSaveAchievementProvider : IAchievementSourceProvider
     private static List<ParsedAchievementEntry> EvaluateJsonPathRule(
         NativeSaveAchievementRule rule,
         ReadOnlySpan<byte> rawBytes,
-        DateTimeOffset unlockTimeUtc)
+        DateTimeOffset? unlockTimeUtc)
     {
         try
         {
@@ -519,7 +514,7 @@ public sealed class NativeSaveAchievementProvider : IAchievementSourceProvider
     private static List<ParsedAchievementEntry> EvaluateBinaryBitOffsetRule(
         NativeSaveAchievementRule rule,
         ReadOnlySpan<byte> rawBytes,
-        DateTimeOffset unlockTimeUtc)
+        DateTimeOffset? unlockTimeUtc)
     {
         var results = new List<ParsedAchievementEntry>(rule.Mappings.Count);
         foreach (var m in rule.Mappings)
@@ -697,7 +692,7 @@ public sealed class NativeSaveAchievementProvider : IAchievementSourceProvider
     private static List<ParsedAchievementEntry> EvaluateJsonStringArrayRule(
         NativeSaveAchievementRule rule,
         ReadOnlySpan<byte> rawBytes,
-        DateTimeOffset unlockTimeUtc)
+        DateTimeOffset? unlockTimeUtc)
     {
         if (rawBytes.IsEmpty)
         {

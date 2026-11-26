@@ -54,6 +54,10 @@
     <SolidColorBrush x:Key="WarningAmberSoftBrush" Color="#332711" />
     <SolidColorBrush x:Key="DangerTextBrush" Color="#F87171" />
     <SolidColorBrush x:Key="DangerHoverBrush" Color="#3B181E" />
+    <SolidColorBrush x:Key="DangerSolidBrush" Color="#DC2626" />
+    <SolidColorBrush x:Key="DangerSolidHoverBrush" Color="#EF4444" />
+    <SolidColorBrush x:Key="DangerSolidPressedBrush" Color="#B91C1C" />
+    <SolidColorBrush x:Key="DrawerScrimBrush" Color="#73000000" />
     <SolidColorBrush x:Key="RareBadgeForegroundBrush" Color="#C084FC" />
     <SolidColorBrush x:Key="RareBadgeBackgroundBrush" Color="#2E1B46" />
     <SolidColorBrush x:Key="RareBadgeBorderBrush" Color="#583285" />

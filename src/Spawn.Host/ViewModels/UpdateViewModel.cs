@@ -32,6 +32,13 @@ public sealed partial class UpdateViewModel : ObservableObject, IDisposable
     private int _disposed;
 
     public event Action<string>? StatusFeedbackRequested;
+    public event Action<string, bool>? StatusFeedbackWithSeverityRequested;
+
+    private void EmitStatusFeedback(string message, bool isError = false)
+    {
+        StatusFeedbackWithSeverityRequested?.Invoke(message, isError);
+        StatusFeedbackRequested?.Invoke(message);
+    }
 
     [ObservableProperty]
     private bool _isUpdateSupported;
@@ -202,13 +209,13 @@ public sealed partial class UpdateViewModel : ObservableObject, IDisposable
     {
         if (_updateService is null)
         {
-            StatusFeedbackRequested?.Invoke(DevChannelNoticeText);
+            EmitStatusFeedback(DevChannelNoticeText, isError: false);
             return;
         }
 
         if (!IsUpdateSupported)
         {
-            StatusFeedbackRequested?.Invoke(DevChannelNoticeText);
+            EmitStatusFeedback(DevChannelNoticeText, isError: false);
             return;
         }
 
@@ -220,19 +227,22 @@ public sealed partial class UpdateViewModel : ObservableObject, IDisposable
         }
         catch (OperationCanceledException)
         {
-            StatusFeedbackRequested?.Invoke("已取消本次更新检查。");
+            EmitStatusFeedback("已取消本次更新检查。", isError: false);
             return;
         }
         catch (Exception ex)
         {
             // Never let a service failure escape to the WPF Dispatcher (would crash the host).
-            StatusFeedbackRequested?.Invoke($"检查更新失败：{ex.Message}");
+            EmitStatusFeedback($"检查更新失败：{ex.Message}", isError: true);
             return;
         }
 
         if (!string.IsNullOrWhiteSpace(result.Message))
         {
-            StatusFeedbackRequested?.Invoke(result.Message);
+            bool isError = result.Outcome is UpdateCheckOutcome.VerificationFailed
+                or UpdateCheckOutcome.DownloadFailed
+                or UpdateCheckOutcome.InstallFailed;
+            EmitStatusFeedback(result.Message, isError: isError);
         }
     }
 
@@ -252,19 +262,19 @@ public sealed partial class UpdateViewModel : ObservableObject, IDisposable
         }
         catch (OperationCanceledException)
         {
-            StatusFeedbackRequested?.Invoke("已取消本次重启更新。");
+            EmitStatusFeedback("已取消本次重启更新。", isError: false);
             return;
         }
         catch (Exception ex)
         {
             // Never let a service failure escape to the WPF Dispatcher (would crash the host).
-            StatusFeedbackRequested?.Invoke($"重启更新失败：{ex.Message}");
+            EmitStatusFeedback($"重启更新失败：{ex.Message}", isError: true);
             return;
         }
 
         if (!result.Succeeded && !string.IsNullOrWhiteSpace(result.Message))
         {
-            StatusFeedbackRequested?.Invoke(result.Message);
+            EmitStatusFeedback(result.Message, isError: true);
         }
     }
 
@@ -290,7 +300,7 @@ public sealed partial class UpdateViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
-            StatusFeedbackRequested?.Invoke($"无法打开发布说明页面：{ex.Message}");
+            EmitStatusFeedback($"无法打开发布说明页面：{ex.Message}", isError: true);
         }
     }
 

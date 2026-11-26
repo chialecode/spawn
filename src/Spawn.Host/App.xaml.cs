@@ -125,9 +125,42 @@ public partial class App : Application
 
         // Re-evaluate silent idle auto-install whenever tracked games, trainers, or save/cleanup operations become idle.
         var trainerRuntime = _serviceProvider.GetRequiredService<ITrainerRuntimeService>();
+        var trainerSafetyGate = _serviceProvider.GetRequiredService<ITrainerSafetyGate>();
         var activityTracker = _serviceProvider.GetRequiredService<UpdateActivityTracker>();
+        long lastEmergencyTrayNotifyTicks = 0;
+
+        void NotifySafetyEmergencySilent(string title, string body)
+        {
+            long nowTicks = Environment.TickCount64;
+            long prevTicks = Interlocked.Read(ref lastEmergencyTrayNotifyTicks);
+            if (nowTicks - prevTicks < 1500)
+            {
+                return;
+            }
+
+            Interlocked.Exchange(ref lastEmergencyTrayNotifyTicks, nowTicks);
+            _ = Dispatcher.InvokeAsync(() => _trayService?.ShowNotification(title, body, isError: true));
+        }
+
         launchService.SessionChanged += (_, _) => TriggerIdleAutoInstallCheck(updateService);
-        trainerRuntime.StateChanged += (_, _) => TriggerIdleAutoInstallCheck(updateService);
+        trainerRuntime.StateChanged += (_, ev) =>
+        {
+            TriggerIdleAutoInstallCheck(updateService);
+            if (ev.CurrentState == TrainerRuntimeState.EmergencyStopped)
+            {
+                string detail = string.IsNullOrWhiteSpace(ev.Message)
+                    ? "已自动紧急停止修改器与隔离工作进程，确保受反作弊保护的游戏运行安全。"
+                    : ev.Message!;
+                NotifySafetyEmergencySilent("SPAWN 安全守卫急停", detail);
+            }
+        };
+        trainerSafetyGate.EmergencyStopTriggered += (_, ev) =>
+        {
+            string detail = string.IsNullOrWhiteSpace(ev.Reason)
+                ? "反作弊安全看门狗检测到受保护游戏或反作弊进程，已立即中止修改器。"
+                : ev.Reason;
+            NotifySafetyEmergencySilent("SPAWN 反作弊看门狗急停", detail);
+        };
         activityTracker.ActivityChanged += () => TriggerIdleAutoInstallCheck(updateService);
 
         _singleInstance.ActivateRequested += (incomingArgs, _ct) =>

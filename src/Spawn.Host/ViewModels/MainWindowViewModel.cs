@@ -15,6 +15,127 @@ using Spawn.Modules.Launcher;
 
 namespace Spawn.Host.ViewModels;
 
+public sealed record ShellConfirmPrompt(
+    string Title,
+    string Message,
+    string ConfirmLabel = "确认",
+    string CancelLabel = "取消",
+    bool IsDanger = false);
+
+public sealed record GamePropertiesEditRequest(
+    string GameId,
+    string Title,
+    string InstallDir,
+    string ExecutableRelPath,
+    IReadOnlyList<string> CandidateExecutables,
+    string LaunchArguments,
+    int? SteamAppId,
+    string? GogGameId,
+    string? CoverImagePath,
+    string? IconPath);
+
+public sealed record GamePropertiesEditResult(
+    string Title,
+    string ExecutableRelPath,
+    string LaunchArguments,
+    int? SteamAppId,
+    string? GogGameId,
+    string? CoverImagePath,
+    string? IconPath);
+
+public enum LibrarySortMode
+{
+    Name = 0,
+    LastPlayed = 1,
+    Playtime = 2,
+}
+
+public enum LibrarySourceFilter
+{
+    All = 0,
+    GogOffline = 1,
+    Steamrip = 2,
+    Other = 3,
+}
+
+public enum AchievementSidebarSortMode
+{
+    CompletionDesc = 0,
+    UnlockedDesc = 1,
+    Name = 2,
+}
+
+public enum AchievementSortMode
+{
+    Default = 0,
+    UnlockedFirst = 1,
+    UnlockTimeDesc = 2,
+    RarityAsc = 3,
+    NameAsc = 4,
+}
+
+public enum GameLaunchButtonPhase
+{
+    Idle = 0,
+    Launching = 1,
+    WaitingForWindow = 2,
+    Running = 3,
+    Stopping = 4,
+    GuardCooldownLocked = 5,
+}
+
+public sealed partial class AchievementSidebarItemViewModel : ObservableObject
+{
+    public GameListItemViewModel Game { get; }
+
+    [ObservableProperty]
+    private bool _isSelected;
+
+    public string GameId => Game.GameId;
+    public string Title => Game.Title;
+    public string InitialsText => Game.InitialsText;
+    public System.Windows.Media.Imaging.BitmapImage? SmallIcon => Game.SmallIcon;
+    public string AchievementRatioText => Game.AchievementRatioText;
+    public double CompletionPercent => Game.CompletionPercent;
+    public int UnlockedAchievements => Game.UnlockedAchievements;
+    public int TotalAchievements => Game.TotalAchievements;
+    public bool IsRunning => Game.IsRunning;
+
+    public AchievementSidebarItemViewModel(GameListItemViewModel game, bool isSelected)
+    {
+        Game = game ?? throw new ArgumentNullException(nameof(game));
+        _isSelected = isSelected;
+        Game.PropertyChanged += (_, e) =>
+        {
+            switch (e.PropertyName)
+            {
+                case nameof(GameListItemViewModel.Title):
+                    OnPropertyChanged(nameof(Title));
+                    OnPropertyChanged(nameof(InitialsText));
+                    break;
+                case nameof(GameListItemViewModel.SmallIcon):
+                    OnPropertyChanged(nameof(SmallIcon));
+                    break;
+                case nameof(GameListItemViewModel.AchievementRatioText):
+                    OnPropertyChanged(nameof(AchievementRatioText));
+                    break;
+                case nameof(GameListItemViewModel.CompletionPercent):
+                    OnPropertyChanged(nameof(CompletionPercent));
+                    break;
+                case nameof(GameListItemViewModel.UnlockedAchievements):
+                    OnPropertyChanged(nameof(UnlockedAchievements));
+                    break;
+                case nameof(GameListItemViewModel.TotalAchievements):
+                    OnPropertyChanged(nameof(TotalAchievements));
+                    break;
+                case nameof(GameListItemViewModel.IsRunning):
+                    OnPropertyChanged(nameof(IsRunning));
+                    break;
+            }
+        };
+    }
+}
+
 public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 {
     private readonly SpawnPaths _paths;
@@ -33,10 +154,16 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private readonly ICloudSaveSyncService? _cloudSaveSyncService;
     private readonly ISaveWatcherService? _saveWatcherService;
     private readonly Action<string> _openExternalUrl;
+    private readonly Action<string> _copyToClipboard;
     private readonly Dispatcher? _uiDispatcher;
     private readonly DispatcherTimer _uiRefreshTimer;
     private readonly List<IDisposable> _subscriptions = [];
     private readonly Lock _reloadSync = new();
+    private readonly int _achievementSearchDebounceMs;
+    private readonly HashSet<string> _launchingGameIds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _stoppingGameIds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, AchievementRowViewModel> _achievementRowCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<AchievementSidebarItemViewModel> _allAchievementSidebarGames = [];
 
     private PrimaryNavSection _lastNonSettingsSection = PrimaryNavSection.Library;
     private IReadOnlyList<GameAchievementItemDto> _currentGameRawAchievements = [];
@@ -57,6 +184,18 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private int _isDisposed;
     private int _trainerHubRefreshGeneration;
     private CancellationTokenSource? _bannerAutoHideCts;
+    private CancellationTokenSource? _achievementSearchDebounceCts;
+
+    /// <summary>
+    /// Host window confirmation dialog delegate for destructive/high-risk operations.
+    /// When unset in headless tests, defaults to confirming so legacy tests remain non-blocking.
+    /// </summary>
+    public Func<ShellConfirmPrompt, bool>? ConfirmPromptHandler { get; set; }
+
+    /// <summary>
+    /// Host window native Game Properties editor dialog delegate.
+    /// </summary>
+    public Func<GamePropertiesEditRequest, GamePropertiesEditResult?>? EditGamePropertiesHandler { get; set; }
 
     public SettingsViewModel Settings { get; }
     public TrainerWorkbenchViewModel Trainer { get; }
@@ -64,6 +203,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     public ObservableCollection<GameListItemViewModel> AllGames { get; } = [];
     public ObservableCollection<GameSourceGroupViewModel> LibraryGroups { get; } = [];
+    public ObservableCollection<GameSourceGroupViewModel> VisibleLibraryGroups { get; } = [];
+    public ObservableCollection<AchievementSidebarItemViewModel> AchievementSidebarGames { get; } = [];
     public ObservableCollection<AchievementRowViewModel> FilteredAchievements { get; } = [];
     public ObservableCollection<RecentUnlockItemViewModel> RecentUnlocks { get; } = [];
 
@@ -84,6 +225,35 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private readonly GameSourceGroupViewModel _steamripGroup = new("steamrip", "Steamrip", initiallyExpanded: true);
     private readonly GameSourceGroupViewModel _otherGroup = new("other", "Steam 本地 / 独立", initiallyExpanded: false);
 
+    private readonly GameSourceGroupViewModel _visibleLastPlayedGroup = new("sort-last-played", "最近游玩", initiallyExpanded: true);
+    private readonly GameSourceGroupViewModel _visiblePlaytimeGroup = new("sort-playtime", "游玩时长", initiallyExpanded: true);
+    private readonly GameSourceGroupViewModel _visibleGogGroup = new("gog", "GOG", initiallyExpanded: true);
+    private readonly GameSourceGroupViewModel _visibleSteamripGroup = new("steamrip", "Steamrip", initiallyExpanded: true);
+    private readonly GameSourceGroupViewModel _visibleOtherGroup = new("other", "Steam 本地 / 独立", initiallyExpanded: true);
+
+    public IReadOnlyList<NamedOption<LibrarySortMode>> LibrarySortOptions { get; } =
+    [
+        new(LibrarySortMode.Name, "按名称"),
+        new(LibrarySortMode.LastPlayed, "最近游玩"),
+        new(LibrarySortMode.Playtime, "游玩时长"),
+    ];
+
+    public IReadOnlyList<NamedOption<AchievementSidebarSortMode>> AchievementSidebarSortOptions { get; } =
+    [
+        new(AchievementSidebarSortMode.CompletionDesc, "完成度优先"),
+        new(AchievementSidebarSortMode.UnlockedDesc, "已解锁数"),
+        new(AchievementSidebarSortMode.Name, "按名称"),
+    ];
+
+    public IReadOnlyList<NamedOption<AchievementSortMode>> AchievementSortOptions { get; } =
+    [
+        new(AchievementSortMode.Default, "默认顺序"),
+        new(AchievementSortMode.UnlockedFirst, "已解锁优先"),
+        new(AchievementSortMode.UnlockTimeDesc, "最近解锁"),
+        new(AchievementSortMode.RarityAsc, "稀有度优先"),
+        new(AchievementSortMode.NameAsc, "名称 A-Z"),
+    ];
+
     [ObservableProperty]
     private PrimaryNavSection _activeSection = PrimaryNavSection.Library;
 
@@ -92,6 +262,15 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     [ObservableProperty]
     private bool _isNarrowSidebarOpen;
+
+    [ObservableProperty]
+    private string _librarySidebarSearchText = string.Empty;
+
+    [ObservableProperty]
+    private LibrarySortMode _selectedLibrarySortMode = LibrarySortMode.Name;
+
+    [ObservableProperty]
+    private LibrarySourceFilter _selectedLibrarySourceFilter = LibrarySourceFilter.All;
 
     [ObservableProperty]
     private GameListItemViewModel? _selectedGame;
@@ -104,6 +283,15 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     [ObservableProperty]
     private GameListItemViewModel? _selectedAchievementsGame;
+
+    [ObservableProperty]
+    private string _achievementSidebarSearchText = string.Empty;
+
+    [ObservableProperty]
+    private AchievementSidebarSortMode _selectedAchievementSidebarSortMode = AchievementSidebarSortMode.CompletionDesc;
+
+    [ObservableProperty]
+    private bool _hideZeroAchievementGames;
 
     // Dedicated Saves section navigation, search & aggregate overview state
     [ObservableProperty]
@@ -175,14 +363,17 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private AchievementFilterTab _selectedAchievementTab = AchievementFilterTab.All;
 
     [ObservableProperty]
+    private AchievementSortMode _selectedAchievementSortMode = AchievementSortMode.Default;
+
+    [ObservableProperty]
     private bool _revealHiddenSpoilers;
 
     [ObservableProperty]
     private string _achievementSearchText = string.Empty;
 
-    // Selected game's Game Data Management states
+    // Selected game's Game Data Management states (safe default: do NOT wipe SPAWN achievements/playtime unless opted in)
     [ObservableProperty]
-    private bool _resetSpawnStateOnClean = true;
+    private bool _resetSpawnStateOnClean;
 
     [ObservableProperty]
     private GameDataUndoSnapshotDto? _latestUndoSnapshot;
@@ -203,14 +394,47 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private int _globalRareUnlockedCount;
 
-    // Anti-Cheat Guard Rail Badge
+    // Anti-Cheat Guard Rail Badge & Popover
     [ObservableProperty]
-    private string _guardRailToolTip = "安全守卫：Tier 0 纯净就绪";
+    private AntiCheatGuardPhase _guardPhase = AntiCheatGuardPhase.IdleSafe;
+
+    [ObservableProperty]
+    private double _guardCooldownRemainingSeconds;
+
+    [ObservableProperty]
+    private string _guardRailToolTip = "安全守卫：纯净就绪";
+
+    [ObservableProperty]
+    private string _guardStatusHeadline = "安全守卫就绪";
+
+    [ObservableProperty]
+    private string _guardStatusDetail = "当前未检测到受反作弊保护的网游或残留保护进程，主程序与高敏组件物理隔离。";
 
     [ObservableProperty]
     private bool _isGuardCooldownOrProtected;
 
+    public string GuardChannelText => $"运行通道：{_paths.ChannelName}（{_paths.Identity}）";
+    public bool IsGuardIdle => GuardPhase == AntiCheatGuardPhase.IdleSafe;
+    public bool IsGuardWarning => GuardPhase is AntiCheatGuardPhase.ResidualGuardWatch or AntiCheatGuardPhase.CooldownLocked;
+    public bool IsGuardProtectedRunning => GuardPhase == AntiCheatGuardPhase.ProtectedRunning;
+
     public bool IsSidebarVisible => !IsNarrowWindow || IsNarrowSidebarOpen;
+    public bool IsDockedSidebarVisible => !IsNarrowWindow;
+    public bool IsDrawerSidebarOpen => IsNarrowWindow && IsNarrowSidebarOpen;
+
+    public bool IsAnyBusyWorking =>
+        IsBusyWorking
+        || IsInspectingGameData
+        || IsSyncingAllCloudSaves
+        || Trainer.IsBusy
+        || Settings.IsDefenderWorking
+        || Settings.Update.IsBusy;
+
+    public bool HasVisibleLibraryGames => VisibleLibraryGroups.Any(g => g.Count > 0);
+    public bool HasLibrarySearchNoMatches => AllGames.Count > 0 && !HasVisibleLibraryGames;
+    public bool HasFilteredAchievementSidebarGames => AchievementSidebarGames.Count > 0;
+    public bool HasGameDataGroups => GameDataGroups.Count > 0;
+    public bool ShowGameDataEmptyState => !IsInspectingGameData && GameDataGroups.Count == 0;
 
     public bool HasAnyRunningGame => AllGames.Any(g => g.IsRunning);
 
@@ -358,8 +582,84 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             ? "Level 2 UAC 管理员"
             : "Level 1 普通权限";
 
-    public string PrimaryLaunchButtonText =>
-        SelectedGame is { IsRunning: true } ? "运行中 · 停止" : "启动游戏";
+    public GameLaunchButtonPhase PrimaryLaunchButtonPhase
+    {
+        get
+        {
+            var game = SelectedGame;
+            if (game is null)
+            {
+                return GameLaunchButtonPhase.Idle;
+            }
+
+            if (_stoppingGameIds.Contains(game.GameId)
+                || game.ActiveSession?.State == PlaySessionActivityState.Stopping)
+            {
+                return GameLaunchButtonPhase.Stopping;
+            }
+
+            if (_launchingGameIds.Contains(game.GameId)
+                || game.ActiveSession?.State == PlaySessionActivityState.Launching)
+            {
+                return GameLaunchButtonPhase.Launching;
+            }
+
+            if (game.ActiveSession?.State == PlaySessionActivityState.ShellBreakingWatch)
+            {
+                return GameLaunchButtonPhase.WaitingForWindow;
+            }
+
+            if (game.IsRunning)
+            {
+                return GameLaunchButtonPhase.Running;
+            }
+
+            if (GuardPhase == AntiCheatGuardPhase.CooldownLocked)
+            {
+                return GameLaunchButtonPhase.GuardCooldownLocked;
+            }
+
+            return GameLaunchButtonPhase.Idle;
+        }
+    }
+
+    public string PrimaryLaunchButtonTag => PrimaryLaunchButtonPhase switch
+    {
+        GameLaunchButtonPhase.Running => "Running",
+        GameLaunchButtonPhase.Launching or GameLaunchButtonPhase.WaitingForWindow => "Launching",
+        GameLaunchButtonPhase.Stopping => "Stopping",
+        GameLaunchButtonPhase.GuardCooldownLocked => "CooldownLocked",
+        _ => "Idle",
+    };
+
+    public bool IsPrimaryLaunchButtonEnabled => SelectedGame is not null
+        && PrimaryLaunchButtonPhase is GameLaunchButtonPhase.Idle or GameLaunchButtonPhase.Running;
+
+    public string PrimaryLaunchButtonText => PrimaryLaunchButtonPhase switch
+    {
+        GameLaunchButtonPhase.Launching => "启动中…",
+        GameLaunchButtonPhase.WaitingForWindow => "等待窗口…",
+        GameLaunchButtonPhase.Running => "运行中",
+        GameLaunchButtonPhase.Stopping => "正在停止…",
+        GameLaunchButtonPhase.GuardCooldownLocked => string.Create(
+            CultureInfo.InvariantCulture,
+            $"冷却锁定 ({Math.Max(1, (int)Math.Ceiling(GuardCooldownRemainingSeconds))}s)"),
+        _ => "启动游戏",
+    };
+
+    public string PrimaryLaunchButtonToolTip => PrimaryLaunchButtonPhase switch
+    {
+        GameLaunchButtonPhase.Launching => "正在拉起游戏主程序，请稍候…",
+        GameLaunchButtonPhase.WaitingForWindow => "正在等待启动器交接游戏主窗口…",
+        GameLaunchButtonPhase.Running => "游戏正在运行；点击将二次确认后停止游戏",
+        GameLaunchButtonPhase.Stopping => "正在安全结束游戏进程…",
+        GameLaunchButtonPhase.GuardCooldownLocked => string.Create(
+            CultureInfo.InvariantCulture,
+            $"反作弊余温冷却中（剩余 {GuardCooldownRemainingSeconds:0.0} 秒），冷却结束后即可启动游戏"),
+        _ => "启动当前游戏并自动追踪游玩时长与成就进度",
+    };
+
+    public bool ShowPrimaryLaunchPlayGlyph => PrimaryLaunchButtonPhase == GameLaunchButtonPhase.Idle;
 
     public bool CanActivateGbeForkOnSelected =>
         !CanRestoreDllOnSelected
@@ -372,9 +672,55 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         CurrentAchievementSummary is { HasGbeForkActivated: true }
         || SelectedGame?.Record.AchievementCaptureMode == AchievementCaptureMode.GbeForkActivated;
 
+    public bool CanActivateGbeForkOnActiveWorkbenchGame
+    {
+        get
+        {
+            var game = ActiveWorkbenchGame;
+            if (game is null || CanRestoreDllOnActiveWorkbenchGame)
+            {
+                return false;
+            }
+
+            bool summaryMatch = CurrentAchievementSummary is not null
+                                && string.Equals(CurrentAchievementSummary.GameId, game.GameId, StringComparison.OrdinalIgnoreCase);
+            return game.Record.AntiCheatTier == AntiCheatTier.Tier0
+                   && (game.Record.PlatformSource == PlatformSource.Steamrip
+                       || game.Record.AchievementCaptureMode == AchievementCaptureMode.PendingGbeForkActivation
+                       || (summaryMatch && CurrentAchievementSummary!.CanActivateGbeFork));
+        }
+    }
+
+    public bool CanRestoreDllOnActiveWorkbenchGame
+    {
+        get
+        {
+            var game = ActiveWorkbenchGame;
+            if (game is null)
+            {
+                return false;
+            }
+
+            bool summaryMatch = CurrentAchievementSummary is not null
+                                && string.Equals(CurrentAchievementSummary.GameId, game.GameId, StringComparison.OrdinalIgnoreCase);
+            return (summaryMatch && CurrentAchievementSummary!.HasGbeForkActivated)
+                   || game.Record.AchievementCaptureMode == AchievementCaptureMode.GbeForkActivated;
+        }
+    }
+
     public int CurrentGameUnlockedCount => CurrentAchievementSummary?.UnlockedCount ?? 0;
     public int CurrentGameTotalCount => CurrentAchievementSummary?.TotalCount ?? 0;
     public double CurrentGameCompletionPercent => CurrentAchievementSummary?.CompletionPercent ?? 0.0;
+
+    public int AchievementTabAllCount => _currentGameRawAchievements.Count;
+    public int AchievementTabUnlockedCount => _currentGameRawAchievements.Count(a => a.IsUnlocked);
+    public int AchievementTabLockedCount => _currentGameRawAchievements.Count(a => !a.IsUnlocked);
+    public int AchievementTabHiddenCount => _currentGameRawAchievements.Count(a => a.Definition.IsHidden);
+
+    public string AchievementTabAllLabel => string.Create(CultureInfo.InvariantCulture, $"全部 ({AchievementTabAllCount})");
+    public string AchievementTabUnlockedLabel => string.Create(CultureInfo.InvariantCulture, $"已解锁 ({AchievementTabUnlockedCount})");
+    public string AchievementTabLockedLabel => string.Create(CultureInfo.InvariantCulture, $"未解锁 ({AchievementTabLockedCount})");
+    public string AchievementTabHiddenLabel => string.Create(CultureInfo.InvariantCulture, $"隐藏成就 ({AchievementTabHiddenCount})");
 
     public string AchievementsSubTabHeaderText =>
         string.Create(CultureInfo.InvariantCulture, $"成就 ({CurrentGameUnlockedCount}/{CurrentGameTotalCount})");
@@ -382,7 +728,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     public string CurrentGameProgressSummaryText =>
         CurrentGameTotalCount > 0
             ? string.Create(CultureInfo.InvariantCulture, $"已解锁 {CurrentGameUnlockedCount} / {CurrentGameTotalCount}（{CurrentGameCompletionPercent:0.0}%）")
-            : "暂未发现该游戏的成就元数据（可在右上角 ⋯ 点击「刷新中文成就元数据」）";
+            : "暂未发现该游戏的成就元数据（可在成就栏右上角 ⋯ 点击「刷新成就元数据」）";
 
     public bool HasUndoSnapshot => LatestUndoSnapshot is not null;
 
@@ -416,7 +762,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         SaveWorkbenchViewModel? saveWorkbench = null,
         ISaveTimeMachineService? saveTimeMachineService = null,
         ICloudSaveSyncService? cloudSaveSyncService = null,
-        ISaveWatcherService? saveWatcherService = null)
+        ISaveWatcherService? saveWatcherService = null,
+        Func<ShellConfirmPrompt, bool>? confirmPromptHandler = null,
+        Func<GamePropertiesEditRequest, GamePropertiesEditResult?>? editGamePropertiesHandler = null,
+        Action<string>? copyToClipboard = null,
+        int achievementSearchDebounceMs = 150)
     {
         _paths = paths;
         _db = db;
@@ -434,7 +784,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         _cloudSaveSyncService = cloudSaveSyncService;
         _saveWatcherService = saveWatcherService;
         _openExternalUrl = openExternalUrl ?? OpenUrlWithShell;
+        _copyToClipboard = copyToClipboard ?? Clipboard.SetText;
         _uiDispatcher = uiDispatcher;
+        _achievementSearchDebounceMs = Math.Clamp(achievementSearchDebounceMs, 0, 1000);
+        ConfirmPromptHandler = confirmPromptHandler;
+        EditGamePropertiesHandler = editGamePropertiesHandler;
         Settings = settingsViewModel;
         Trainer = trainerWorkbench;
         Saves = saveWorkbench ?? new SaveWorkbenchViewModel(
@@ -454,12 +808,40 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             {
                 OnPropertyChanged(nameof(TopBarTitle));
             }
+            else if (args.PropertyName == nameof(SettingsViewModel.SelectedCategory))
+            {
+                if (IsNarrowWindow)
+                {
+                    IsNarrowSidebarOpen = false;
+                }
+            }
+            else if (args.PropertyName == nameof(SettingsViewModel.IsDefenderWorking))
+            {
+                OnPropertyChanged(nameof(IsAnyBusyWorking));
+            }
         };
-        Settings.StatusFeedbackRequested += msg => ShowStatusBanner(msg, isError: false);
+        Settings.Update.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(UpdateViewModel.IsBusy))
+            {
+                OnPropertyChanged(nameof(IsAnyBusyWorking));
+            }
+        };
+        Settings.StatusFeedbackWithSeverityRequested += ShowStatusBanner;
         Settings.ScanDirectoriesRequested += ScanDirectoriesBatchAsync;
         Settings.ManualGameImportRequested += ImportManualGameFromSettingsAsync;
+        Settings.ManualGameImportWithResultRequested += ImportManualGameFromSettingsWithResultAsync;
+        Settings.OpenLastImportedGameRequested += JumpToGameInLibrary;
         Settings.GlobalSpoilerPreferenceChanged += reveal => RevealHiddenSpoilers = reveal;
+        Settings.TrainerSafetySettingsChanged += () => _ = HandleTrainerSafetySettingsChangedAsync();
 
+        Trainer.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(TrainerWorkbenchViewModel.IsBusy))
+            {
+                OnPropertyChanged(nameof(IsAnyBusyWorking));
+            }
+        };
         Trainer.StatusFeedbackRequested += (msg, isError) => ShowStatusBanner(msg, isError);
         Trainer.OpenTrainerSettingsRequested += OpenTrainerSandboxSettings;
         Trainer.GameRecordUpdatedRequested += async gameId =>
@@ -546,6 +928,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             }
 
             OnPropertyChanged(nameof(IsSidebarVisible));
+            OnPropertyChanged(nameof(IsDockedSidebarVisible));
+            OnPropertyChanged(nameof(IsDrawerSidebarOpen));
         }
     }
 
@@ -558,11 +942,16 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
         OnPropertyChanged(nameof(TopBarTitle));
         OnPropertyChanged(nameof(ActiveWorkbenchGame));
+        NotifyGbeForkWorkbenchFlags();
         NotifyMainPanelViewFlags();
 
         if (value == PrimaryNavSection.Achievements)
         {
             _ = RefreshAchievementsCenterOverviewAsync();
+            if (!IsAchievementsOverviewSelected && SelectedAchievementsGame is not null)
+            {
+                _ = LoadAchievementsForGameAsync(SelectedAchievementsGame.GameId);
+            }
         }
         else if (value == PrimaryNavSection.Saves)
         {
@@ -598,7 +987,31 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         }
     }
 
-    partial void OnIsNarrowSidebarOpenChanged(bool value) => OnPropertyChanged(nameof(IsSidebarVisible));
+    partial void OnIsNarrowSidebarOpenChanged(bool value)
+    {
+        OnPropertyChanged(nameof(IsSidebarVisible));
+        OnPropertyChanged(nameof(IsDrawerSidebarOpen));
+    }
+
+    partial void OnIsBusyWorkingChanged(bool value) => OnPropertyChanged(nameof(IsAnyBusyWorking));
+
+    partial void OnIsInspectingGameDataChanged(bool value)
+    {
+        OnPropertyChanged(nameof(IsAnyBusyWorking));
+        OnPropertyChanged(nameof(ShowGameDataEmptyState));
+    }
+
+    partial void OnLibrarySidebarSearchTextChanged(string value) => RebuildVisibleLibraryGroups();
+
+    partial void OnSelectedLibrarySortModeChanged(LibrarySortMode value) => RebuildVisibleLibraryGroups();
+
+    partial void OnSelectedLibrarySourceFilterChanged(LibrarySourceFilter value) => RebuildVisibleLibraryGroups();
+
+    partial void OnAchievementSidebarSearchTextChanged(string value) => RebuildFilteredAchievementSidebarGames();
+
+    partial void OnSelectedAchievementSidebarSortModeChanged(AchievementSidebarSortMode value) => RebuildFilteredAchievementSidebarGames();
+
+    partial void OnHideZeroAchievementGamesChanged(bool value) => RebuildFilteredAchievementSidebarGames();
 
     partial void OnSelectedGameChanged(GameListItemViewModel? oldValue, GameListItemViewModel? newValue)
     {
@@ -610,6 +1023,12 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         if (oldValue is not null)
         {
             oldValue.IsSelected = false;
+        }
+
+        bool gameIdChanged = !string.Equals(oldValue?.GameId, newValue?.GameId, StringComparison.OrdinalIgnoreCase);
+        if (gameIdChanged && !string.IsNullOrEmpty(AchievementSearchText))
+        {
+            ClearAchievementSearchImmediately();
         }
 
         if (newValue is not null)
@@ -637,11 +1056,15 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         {
             _loadedAchievementRowsGameId = null;
             _loadedAchievementRowsGameTitle = null;
+            _achievementRowCache.Clear();
             CurrentAchievementSummary = null;
             _currentGameRawAchievements = [];
             FilteredAchievements.Clear();
+            NotifyAchievementTabCountLabels();
             GameDataGroups.Clear();
             AllGameDataItems.Clear();
+            OnPropertyChanged(nameof(HasGameDataGroups));
+            OnPropertyChanged(nameof(ShowGameDataEmptyState));
             LatestUndoSnapshot = null;
             if (ActiveSection == PrimaryNavSection.Library)
             {
@@ -657,9 +1080,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
         OnPropertyChanged(nameof(TopBarTitle));
         OnPropertyChanged(nameof(ActiveWorkbenchGame));
-        OnPropertyChanged(nameof(PrimaryLaunchButtonText));
-        OnPropertyChanged(nameof(CanActivateGbeForkOnSelected));
-        OnPropertyChanged(nameof(CanRestoreDllOnSelected));
+        NotifyPrimaryLaunchButtonProperties();
+        NotifyGbeForkWorkbenchFlags();
         NotifyMainPanelViewFlags();
     }
 
@@ -692,19 +1114,29 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     partial void OnIsAchievementsOverviewSelectedChanged(bool value)
     {
+        SyncAchievementSidebarSelectionFlags();
         OnPropertyChanged(nameof(TopBarTitle));
         OnPropertyChanged(nameof(ActiveWorkbenchGame));
+        NotifyGbeForkWorkbenchFlags();
         NotifyMainPanelViewFlags();
     }
 
-    partial void OnSelectedAchievementsGameChanged(GameListItemViewModel? value)
+    partial void OnSelectedAchievementsGameChanged(GameListItemViewModel? oldValue, GameListItemViewModel? newValue)
     {
+        if (!string.Equals(oldValue?.GameId, newValue?.GameId, StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrEmpty(AchievementSearchText))
+        {
+            ClearAchievementSearchImmediately();
+        }
+
+        SyncAchievementSidebarSelectionFlags();
         OnPropertyChanged(nameof(TopBarTitle));
         OnPropertyChanged(nameof(ActiveWorkbenchGame));
+        NotifyGbeForkWorkbenchFlags();
         NotifyMainPanelViewFlags();
-        if (value is not null && !IsAchievementsOverviewSelected)
+        if (newValue is not null && !IsAchievementsOverviewSelected)
         {
-            _ = LoadAchievementsForGameAsync(value.GameId);
+            _ = LoadAchievementsForGameAsync(newValue.GameId);
         }
     }
 
@@ -736,7 +1168,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     partial void OnHasAnySaveWatcherActiveChanged(bool value) => OnPropertyChanged(nameof(SavesRailToolTip));
 
-    partial void OnIsSyncingAllCloudSavesChanged(bool value) => OnPropertyChanged(nameof(CanSyncAllCloudSaves));
+    partial void OnIsSyncingAllCloudSavesChanged(bool value)
+    {
+        OnPropertyChanged(nameof(CanSyncAllCloudSaves));
+        OnPropertyChanged(nameof(IsAnyBusyWorking));
+    }
 
     partial void OnIsTrainerOverviewSelectedChanged(bool value)
     {
@@ -769,22 +1205,100 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(CurrentGameCompletionPercent));
         OnPropertyChanged(nameof(AchievementsSubTabHeaderText));
         OnPropertyChanged(nameof(CurrentGameProgressSummaryText));
-        OnPropertyChanged(nameof(CanActivateGbeForkOnSelected));
-        OnPropertyChanged(nameof(CanRestoreDllOnSelected));
+        NotifyGbeForkWorkbenchFlags();
     }
 
     partial void OnSelectedAchievementTabChanged(AchievementFilterTab value) => RebuildFilteredAchievementRows();
 
+    partial void OnSelectedAchievementSortModeChanged(AchievementSortMode value) => RebuildFilteredAchievementRows();
+
     partial void OnRevealHiddenSpoilersChanged(bool value)
     {
         Settings.GlobalRevealSpoilers = value;
+        foreach (var row in _achievementRowCache.Values)
+        {
+            row.GlobalRevealSpoilers = value;
+        }
+
         foreach (var row in FilteredAchievements)
         {
             row.GlobalRevealSpoilers = value;
         }
     }
 
-    partial void OnAchievementSearchTextChanged(string value) => RebuildFilteredAchievementRows();
+    partial void OnAchievementSearchTextChanged(string value)
+    {
+        _achievementSearchDebounceCts?.Cancel();
+        _achievementSearchDebounceCts?.Dispose();
+        _achievementSearchDebounceCts = null;
+
+        if (_achievementSearchDebounceMs <= 0 || string.IsNullOrWhiteSpace(value))
+        {
+            RebuildFilteredAchievementRows();
+            return;
+        }
+
+        var cts = new CancellationTokenSource();
+        _achievementSearchDebounceCts = cts;
+        _ = DebounceRebuildFilteredAchievementsAsync(cts.Token);
+    }
+
+    private async Task DebounceRebuildFilteredAchievementsAsync(CancellationToken token)
+    {
+        try
+        {
+            await Task.Delay(_achievementSearchDebounceMs, token).ConfigureAwait(true);
+            if (!token.IsCancellationRequested && Volatile.Read(ref _isDisposed) == 0)
+            {
+                RebuildFilteredAchievementRows();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Superseded by newer keystroke.
+        }
+    }
+
+    private void ClearAchievementSearchImmediately()
+    {
+        _achievementSearchDebounceCts?.Cancel();
+        _achievementSearchDebounceCts?.Dispose();
+        _achievementSearchDebounceCts = null;
+        AchievementSearchText = string.Empty;
+    }
+
+    private void NotifyPrimaryLaunchButtonProperties()
+    {
+        OnPropertyChanged(nameof(PrimaryLaunchButtonPhase));
+        OnPropertyChanged(nameof(PrimaryLaunchButtonTag));
+        OnPropertyChanged(nameof(PrimaryLaunchButtonText));
+        OnPropertyChanged(nameof(IsPrimaryLaunchButtonEnabled));
+        OnPropertyChanged(nameof(PrimaryLaunchButtonToolTip));
+        OnPropertyChanged(nameof(ShowPrimaryLaunchPlayGlyph));
+    }
+
+    private void NotifyGbeForkWorkbenchFlags()
+    {
+        OnPropertyChanged(nameof(CanActivateGbeForkOnSelected));
+        OnPropertyChanged(nameof(CanRestoreDllOnSelected));
+        OnPropertyChanged(nameof(CanActivateGbeForkOnActiveWorkbenchGame));
+        OnPropertyChanged(nameof(CanRestoreDllOnActiveWorkbenchGame));
+    }
+
+    private void NotifyAchievementTabCountLabels()
+    {
+        OnPropertyChanged(nameof(AchievementTabAllCount));
+        OnPropertyChanged(nameof(AchievementTabUnlockedCount));
+        OnPropertyChanged(nameof(AchievementTabLockedCount));
+        OnPropertyChanged(nameof(AchievementTabHiddenCount));
+        OnPropertyChanged(nameof(AchievementTabAllLabel));
+        OnPropertyChanged(nameof(AchievementTabUnlockedLabel));
+        OnPropertyChanged(nameof(AchievementTabLockedLabel));
+        OnPropertyChanged(nameof(AchievementTabHiddenLabel));
+    }
+
+    private bool ConfirmAction(ShellConfirmPrompt prompt) =>
+        ConfirmPromptHandler is null || ConfirmPromptHandler(prompt);
 
     [RelayCommand]
     private void NavigateSection(PrimaryNavSection section) => ActiveSection = section;
@@ -796,10 +1310,21 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private void ToggleNarrowSidebar() => IsNarrowSidebarOpen = !IsNarrowSidebarOpen;
 
     [RelayCommand]
+    private void CloseNarrowSidebar() => IsNarrowSidebarOpen = false;
+
+    [RelayCommand]
+    private void ClearLibrarySidebarSearch() => LibrarySidebarSearchText = string.Empty;
+
+    [RelayCommand]
     private void SelectLibraryGame(GameListItemViewModel? item)
     {
         Interlocked.Increment(ref _userSelectionVersion);
         SelectedGame = item;
+        if (IsNarrowWindow)
+        {
+            IsNarrowSidebarOpen = false;
+        }
+
         if (ActiveSection != PrimaryNavSection.Library)
         {
             ActiveSection = PrimaryNavSection.Library;
@@ -854,6 +1379,13 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private void OpenSavesSettings()
     {
         Settings.SelectedCategory = SettingsCategory.SavesAndCloudSync;
+        ActiveSection = PrimaryNavSection.Settings;
+    }
+
+    [RelayCommand]
+    private void OpenOverlaySettings()
+    {
+        Settings.SelectedCategory = SettingsCategory.OverlayAndSound;
         ActiveSection = PrimaryNavSection.Settings;
     }
 
@@ -1156,6 +1688,17 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     }
 
     [RelayCommand]
+    private void SelectAchievementSidebarGame(AchievementSidebarItemViewModel? item)
+    {
+        if (item is null)
+        {
+            return;
+        }
+
+        SelectAchievementsGameItem(item.Game);
+    }
+
+    [RelayCommand]
     private void SelectAchievementsGameItem(GameListItemViewModel? item)
     {
         if (item is null)
@@ -1163,6 +1706,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             return;
         }
 
+        bool sectionChanged = ActiveSection != PrimaryNavSection.Achievements;
         SelectedAchievementsGame = item;
         IsAchievementsOverviewSelected = false;
         if (IsNarrowWindow)
@@ -1170,7 +1714,44 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             IsNarrowSidebarOpen = false;
         }
 
-        _ = LoadAchievementsForGameAsync(item.GameId);
+        if (sectionChanged)
+        {
+            ActiveSection = PrimaryNavSection.Achievements;
+        }
+        else
+        {
+            _ = LoadAchievementsForGameAsync(item.GameId);
+        }
+    }
+
+    [RelayCommand]
+    private void ClearAchievementSidebarSearch() => AchievementSidebarSearchText = string.Empty;
+
+    [RelayCommand]
+    private async Task RefreshAchievementsHubAsync()
+    {
+        await RefreshAchievementsCenterOverviewAsync().ConfigureAwait(true);
+        if (!IsAchievementsOverviewSelected && SelectedAchievementsGame is not null)
+        {
+            await LoadAchievementsForGameAsync(SelectedAchievementsGame.GameId).ConfigureAwait(true);
+        }
+
+        ShowStatusBanner($"已刷新成就进度（累计已解锁 {GlobalTotalUnlockedCount} / {GlobalTotalAchievementCount}）", isError: false);
+    }
+
+    [RelayCommand]
+    private void OpenRecentUnlockGame(string? gameId)
+    {
+        if (string.IsNullOrWhiteSpace(gameId))
+        {
+            return;
+        }
+
+        var match = AllGames.FirstOrDefault(g => string.Equals(g.GameId, gameId, StringComparison.OrdinalIgnoreCase));
+        if (match is not null)
+        {
+            SelectAchievementsGameItem(match);
+        }
     }
 
     [RelayCommand]
@@ -1192,26 +1773,78 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     }
 
     [RelayCommand]
+    private void JumpToGameInLibraryTrainers(string? gameId)
+    {
+        if (string.IsNullOrWhiteSpace(gameId))
+        {
+            return;
+        }
+
+        var match = AllGames.FirstOrDefault(g => string.Equals(g.GameId, gameId, StringComparison.OrdinalIgnoreCase));
+        if (match is not null)
+        {
+            Interlocked.Increment(ref _userSelectionVersion);
+            SelectedGame = match;
+            SelectedGameSubTab = GameDetailSubTab.Trainers;
+            ActiveSection = PrimaryNavSection.Library;
+            _ = Trainer.LoadForGameAsync(match);
+        }
+    }
+
+    [RelayCommand]
     private void SetAchievementFilterTab(AchievementFilterTab tab) => SelectedAchievementTab = tab;
 
     [RelayCommand]
-    private void DismissStatusBanner() => StatusBannerMessage = string.Empty;
+    private void ClearAchievementSearch() => ClearAchievementSearchImmediately();
+
+    [RelayCommand]
+    private void DismissStatusBanner()
+    {
+        _bannerAutoHideCts?.Cancel();
+        _bannerAutoHideCts?.Dispose();
+        _bannerAutoHideCts = null;
+        StatusBannerMessage = string.Empty;
+        IsStatusBannerError = false;
+    }
+
+    [RelayCommand]
+    private void CopyStatusBanner()
+    {
+        if (string.IsNullOrWhiteSpace(StatusBannerMessage))
+        {
+            return;
+        }
+
+        try
+        {
+            _copyToClipboard(StatusBannerMessage);
+        }
+        catch
+        {
+            // Ignore clipboard contention.
+        }
+    }
 
     public async Task ImportManualGameFromSettingsAsync(string rawInput)
     {
+        _ = await ImportManualGameFromSettingsWithResultAsync(rawInput).ConfigureAwait(true);
+    }
+
+    public async Task<ManualImportOutcome> ImportManualGameFromSettingsWithResultAsync(string rawInput)
+    {
         if (IsBusyWorking || string.IsNullOrWhiteSpace(rawInput))
         {
-            return;
+            return new ManualImportOutcome(false);
         }
 
         string resolvedPath = ResolveUserEnteredPath(rawInput.Trim().Trim('"'));
         if (!Directory.Exists(resolvedPath) && !File.Exists(resolvedPath))
         {
             ShowStatusBanner($"未找到路径：{rawInput}", isError: true);
-            return;
+            return new ManualImportOutcome(false);
         }
 
-        await ImportOrScanSinglePathAsync(resolvedPath).ConfigureAwait(true);
+        return await ImportOrScanSinglePathAsync(resolvedPath, stayInCurrentSection: true).ConfigureAwait(true);
     }
 
     [RelayCommand]
@@ -1376,46 +2009,107 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     }
 
     [RelayCommand]
-    private async Task PrimaryLaunchOrStopAsync()
+    private Task PrimaryLaunchOrStopAsync() => LaunchOrStopSpecificGameAsync(SelectedGame);
+
+    [RelayCommand]
+    private async Task LaunchOrStopSpecificGameAsync(GameListItemViewModel? game)
     {
-        if (SelectedGame is null)
+        if (game is null)
         {
             return;
         }
 
-        string targetGameId = SelectedGame.GameId;
-        if (SelectedGame.IsRunning)
+        string targetGameId = game.GameId;
+        if (_launchingGameIds.Contains(targetGameId) || _stoppingGameIds.Contains(targetGameId))
         {
-            bool stopped = await _launchService.StopGameAsync(targetGameId).ConfigureAwait(true);
+            return;
+        }
+
+        if (game.IsRunning)
+        {
+            if (game.ActiveSession?.State is PlaySessionActivityState.Launching or PlaySessionActivityState.ShellBreakingWatch or PlaySessionActivityState.Stopping)
+            {
+                return;
+            }
+
+            bool confirmed = ConfirmAction(new ShellConfirmPrompt(
+                Title: $"停止《{game.Title}》？",
+                Message: $"确定要结束正在运行的《{game.Title}》吗？\n\n未保存的游戏进度可能会丢失，建议先在游戏内保存后再停止。",
+                ConfirmLabel: "停止游戏",
+                CancelLabel: "继续游玩",
+                IsDanger: true));
+            if (!confirmed)
+            {
+                return;
+            }
+
+            _stoppingGameIds.Add(targetGameId);
+            NotifyPrimaryLaunchButtonProperties();
+            try
+            {
+                bool stopped = await _launchService.StopGameAsync(targetGameId).ConfigureAwait(true);
+                ShowStatusBanner(
+                    stopped ? $"已请求停止《{game.Title}》" : $"未能停止《{game.Title}》，可能已自行退出",
+                    isError: !stopped);
+            }
+            finally
+            {
+                _stoppingGameIds.Remove(targetGameId);
+                NotifyPrimaryLaunchButtonProperties();
+            }
+
+            return;
+        }
+
+        if (GuardPhase == AntiCheatGuardPhase.CooldownLocked)
+        {
             ShowStatusBanner(
-                stopped ? $"已请求停止《{SelectedGame.Title}》" : $"未能停止《{SelectedGame.Title}》，可能已自行退出",
-                isError: !stopped);
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"反作弊安全守卫余温冷却中（剩余 {GuardCooldownRemainingSeconds:0.0} 秒），请稍候再启动游戏"),
+                isError: true);
             return;
         }
 
-        GameLaunchResult result = await _launchService.LaunchGameAsync(targetGameId).ConfigureAwait(true);
-        if (!result.Succeeded)
+        _launchingGameIds.Add(targetGameId);
+        NotifyPrimaryLaunchButtonProperties();
+        try
         {
-            ShowStatusBanner(result.ErrorMessage ?? "启动游戏失败", isError: true);
-            return;
-        }
+            GameLaunchResult result = await _launchService.LaunchGameAsync(targetGameId).ConfigureAwait(true);
+            if (!result.Succeeded)
+            {
+                ShowStatusBanner(result.ErrorMessage ?? "启动游戏失败", isError: true);
+                return;
+            }
 
-        if (result.Session is not null && SelectedGame.GameId == targetGameId)
+            if (result.Session is not null)
+            {
+                game.UpdateSession(result.Session);
+                RebuildGroupsPreservingSelection();
+                OnPropertyChanged(nameof(HasAnyRunningGame));
+                OnPropertyChanged(nameof(CanSyncAllCloudSaves));
+                OnPropertyChanged(nameof(LibraryRailToolTip));
+            }
+
+            ShowStatusBanner($"已启动《{game.Title}》 · 进程追踪与实时跳杯监控已激活", isError: false);
+        }
+        catch (Exception ex)
         {
-            SelectedGame.UpdateSession(result.Session);
-            RebuildGroupsPreservingSelection();
-            OnPropertyChanged(nameof(HasAnyRunningGame));
-            OnPropertyChanged(nameof(LibraryRailToolTip));
-            OnPropertyChanged(nameof(PrimaryLaunchButtonText));
+            ShowStatusBanner($"启动《{game.Title}》失败：{ex.Message}", isError: true);
         }
-
-        ShowStatusBanner($"已启动《{SelectedGame.Title}》 · 进程追踪与实时跳杯监控已激活", isError: false);
+        finally
+        {
+            _launchingGameIds.Remove(targetGameId);
+            NotifyPrimaryLaunchButtonProperties();
+        }
     }
 
     [RelayCommand]
-    private void OpenSelectedGameFolder()
+    private void OpenSelectedGameFolder() => OpenSpecificGameFolder(ActiveWorkbenchGame);
+
+    [RelayCommand]
+    private void OpenSpecificGameFolder(GameListItemViewModel? game)
     {
-        var game = ActiveWorkbenchGame;
         if (game is null || !Directory.Exists(game.Record.InstallDir))
         {
             ShowStatusBanner("游戏安装目录不存在", isError: true);
@@ -1436,6 +2130,211 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             ShowStatusBanner($"打开文件夹失败：{ex.Message}", isError: true);
         }
     }
+
+    [RelayCommand]
+    private async Task EditGamePropertiesAsync(GameListItemViewModel? targetGame = null)
+    {
+        var game = targetGame ?? ActiveWorkbenchGame ?? SelectedGame;
+        if (game is null || IsBusyWorking)
+        {
+            return;
+        }
+
+        if (EditGamePropertiesHandler is null)
+        {
+            ShowStatusBanner("当前环境不支持打开属性编辑面板", isError: true);
+            return;
+        }
+
+        IReadOnlyList<string> candidates = EnumerateCandidateExecutables(
+            game.Record.InstallDir,
+            game.Record.ExecutableRelPath);
+
+        var request = new GamePropertiesEditRequest(
+            GameId: game.GameId,
+            Title: game.Record.Title,
+            InstallDir: game.Record.InstallDir,
+            ExecutableRelPath: game.Record.ExecutableRelPath,
+            CandidateExecutables: candidates,
+            LaunchArguments: game.Record.LaunchArguments ?? string.Empty,
+            SteamAppId: game.Record.SteamAppId,
+            GogGameId: game.Record.GogGameId,
+            CoverImagePath: game.Record.CoverImagePath,
+            IconPath: game.Record.IconPath);
+
+        GamePropertiesEditResult? edited = EditGamePropertiesHandler(request);
+        if (edited is null)
+        {
+            return;
+        }
+
+        string trimmedTitle = edited.Title.Trim();
+        if (string.IsNullOrWhiteSpace(trimmedTitle))
+        {
+            ShowStatusBanner("游戏名称不能为空", isError: true);
+            return;
+        }
+
+        string trimmedExe = edited.ExecutableRelPath.Trim();
+        if (string.IsNullOrWhiteSpace(trimmedExe))
+        {
+            ShowStatusBanner("游戏主程序路径不能为空", isError: true);
+            return;
+        }
+
+        bool idChanged = edited.SteamAppId != game.Record.SteamAppId
+                         || !string.Equals(
+                             edited.GogGameId?.Trim() ?? string.Empty,
+                             game.Record.GogGameId?.Trim() ?? string.Empty,
+                             StringComparison.OrdinalIgnoreCase);
+
+        IsBusyWorking = true;
+        try
+        {
+            var update = new GameMetadataUpdate
+            {
+                Title = trimmedTitle,
+                SortTitle = trimmedTitle,
+                ExecutableRelPath = trimmedExe,
+                LaunchArguments = edited.LaunchArguments.Trim(),
+                SteamAppId = edited.SteamAppId,
+                GogGameId = edited.GogGameId?.Trim() ?? string.Empty,
+                CoverImagePath = edited.CoverImagePath?.Trim() ?? string.Empty,
+                IconPath = edited.IconPath?.Trim() ?? string.Empty,
+            };
+
+            GameRecord? updated = await _libraryService.UpdateGameMetadataAsync(game.GameId, update).ConfigureAwait(true);
+            if (updated is null)
+            {
+                ShowStatusBanner("保存游戏属性失败：未找到该游戏记录", isError: true);
+                return;
+            }
+
+            if (idChanged)
+            {
+                try
+                {
+                    _ = await _achievementService.SyncGameSchemaAsync(game.GameId, forceRefresh: true).ConfigureAwait(true);
+                }
+                catch
+                {
+                    // Offline or rate-limited schema sync must not block metadata save.
+                }
+            }
+
+            await EnqueueLibraryReloadAsync(
+                LibraryReloadRequest.PreserveCurrent(dirtyAchievementGameId: game.GameId)).ConfigureAwait(true);
+            ShowStatusBanner($"已更新《{updated.Title}》的游戏属性与启动设置", isError: false);
+        }
+        catch (Exception ex)
+        {
+            ShowStatusBanner($"保存游戏属性失败：{ex.Message}", isError: true);
+        }
+        finally
+        {
+            IsBusyWorking = false;
+        }
+    }
+
+    public static IReadOnlyList<string> EnumerateCandidateExecutables(string installDir, string currentRelPath)
+    {
+        var results = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        if (!string.IsNullOrWhiteSpace(currentRelPath))
+        {
+            string normalizedCurrent = currentRelPath.Trim().Replace('/', '\\');
+            if (seen.Add(normalizedCurrent))
+            {
+                results.Add(normalizedCurrent);
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(installDir) || !Directory.Exists(installDir))
+        {
+            return results;
+        }
+
+        try
+        {
+            var queue = new Queue<(string Dir, int Depth)>();
+            queue.Enqueue((installDir, 0));
+
+            while (queue.Count > 0 && results.Count < 80)
+            {
+                (string dir, int depth) = queue.Dequeue();
+                IEnumerable<string> files;
+                try
+                {
+                    files = Directory.EnumerateFiles(dir, "*.exe", SearchOption.TopDirectoryOnly);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                foreach (string file in files)
+                {
+                    string fileName = Path.GetFileName(file);
+                    if (IsIgnoredAuxiliaryExecutable(fileName))
+                    {
+                        continue;
+                    }
+
+                    string rel = Path.GetRelativePath(installDir, file).Replace('/', '\\');
+                    if (seen.Add(rel))
+                    {
+                        results.Add(rel);
+                        if (results.Count >= 80)
+                        {
+                            break;
+                        }
+                    }
+                }
+
+                if (depth >= 3)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    foreach (string subDir in Directory.EnumerateDirectories(dir))
+                    {
+                        string dirName = Path.GetFileName(subDir);
+                        if (dirName.StartsWith('.')
+                            || dirName.Equals("_CommonRedist", StringComparison.OrdinalIgnoreCase)
+                            || dirName.Equals("Redist", StringComparison.OrdinalIgnoreCase)
+                            || dirName.Equals("DirectX", StringComparison.OrdinalIgnoreCase))
+                        {
+                            continue;
+                        }
+
+                        queue.Enqueue((subDir, depth + 1));
+                    }
+                }
+                catch
+                {
+                    // Ignore restricted subdirectories.
+                }
+            }
+        }
+        catch
+        {
+            // Fall back to current executable only.
+        }
+
+        return results;
+    }
+
+    private static bool IsIgnoredAuxiliaryExecutable(string fileName) =>
+        fileName.StartsWith("unins", StringComparison.OrdinalIgnoreCase)
+        || fileName.Contains("uninstall", StringComparison.OrdinalIgnoreCase)
+        || fileName.Contains("crashreporter", StringComparison.OrdinalIgnoreCase)
+        || fileName.Contains("crashhandler", StringComparison.OrdinalIgnoreCase)
+        || fileName.Contains("unitycrashhandler", StringComparison.OrdinalIgnoreCase)
+        || fileName.Contains("vc_redist", StringComparison.OrdinalIgnoreCase)
+        || fileName.Contains("dxsetup", StringComparison.OrdinalIgnoreCase);
 
     [RelayCommand]
     private async Task RefreshChineseSchemaAsync()
@@ -1515,6 +2414,23 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             return;
         }
 
+        if (game.IsRunning)
+        {
+            ShowStatusBanner($"《{game.Title}》正在运行中，请先退出游戏后再激活离线成就补丁", isError: true);
+            return;
+        }
+
+        bool confirmed = ConfirmAction(new ShellConfirmPrompt(
+            Title: $"为《{game.Title}》激活离线成就补丁？",
+            Message: $"激活后将自动备份游戏目录中的原始 steam_api DLL 文件（.spawn_vanilla_bak），并启用 Goldberg GSE 离线成就记录。\n\n注意：启用后游戏默认存档位置可能会切换至 GSE Saves 目录，建议提前确认或备份当前存档；后续随时可在菜单中无损还原原始 DLL。",
+            ConfirmLabel: "确认激活",
+            CancelLabel: "取消",
+            IsDanger: false));
+        if (!confirmed)
+        {
+            return;
+        }
+
         IsBusyWorking = true;
         try
         {
@@ -1542,6 +2458,23 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             return;
         }
 
+        if (game.IsRunning)
+        {
+            ShowStatusBanner($"《{game.Title}》正在运行中，请先退出游戏后再还原原始 DLL", isError: true);
+            return;
+        }
+
+        bool confirmed = ConfirmAction(new ShellConfirmPrompt(
+            Title: $"还原《{game.Title}》的原始 DLL？",
+            Message: $"将按 SHA-256 校验并还原原始 steam_api DLL，同时退出 Goldberg GSE 离线成就补丁模式。\n\n注意：若您在 GSE Saves 目录下产生过新进度，请确认是否需要先备份存档。",
+            ConfirmLabel: "确认还原",
+            CancelLabel: "取消",
+            IsDanger: false));
+        if (!confirmed)
+        {
+            return;
+        }
+
         IsBusyWorking = true;
         try
         {
@@ -1561,10 +2494,12 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     }
 
     [RelayCommand]
-    private async Task RemoveSelectedGameFromLibraryAsync()
+    private Task RemoveSelectedGameFromLibraryAsync() => RemoveSpecificGameFromLibraryAsync(SelectedGame);
+
+    [RelayCommand]
+    private async Task RemoveSpecificGameFromLibraryAsync(GameListItemViewModel? game)
     {
-        var game = SelectedGame;
-        if (game is null)
+        if (game is null || IsBusyWorking)
         {
             return;
         }
@@ -1575,12 +2510,90 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             return;
         }
 
+        int snapshotCount = 0;
+        int branchCount = 0;
+        if (_saveTimeMachineService is not null)
+        {
+            try
+            {
+                SaveTreeGraphDto graph = await _saveTimeMachineService.GetSaveTreeGraphAsync(game.GameId).ConfigureAwait(true);
+                snapshotCount = graph.Nodes.Count;
+                branchCount = graph.Branches.Count;
+            }
+            catch
+            {
+                // Non-fatal: still show confirmation with 0 counts.
+            }
+        }
+
+        int boundTrainerCount = 0;
+        try
+        {
+            var trainers = await _trainerCatalogService.ListForGameAsync(game.GameId).ConfigureAwait(true);
+            boundTrainerCount = trainers.Count;
+        }
+        catch
+        {
+            // Non-fatal.
+        }
+
+        bool hasGbeFork = game.Record.AchievementCaptureMode == AchievementCaptureMode.GbeForkActivated
+                          || (CurrentAchievementSummary is { HasGbeForkActivated: true }
+                              && string.Equals(CurrentAchievementSummary.GameId, game.GameId, StringComparison.OrdinalIgnoreCase));
+
+        string gbeWarning = hasGbeFork
+            ? "\n\n⚠ 该游戏当前已激活 gbe_fork 离线成就补丁，建议先点击「还原原始 DLL」再从游戏库移除。"
+            : string.Empty;
+
+        string promptBody = string.Create(
+            CultureInfo.InvariantCulture,
+            $"将从 SPAWN 游戏库移除《{game.Title}》，并级联清除以下 SPAWN 管理记录：\n"
+            + $"• 游玩时长：{game.PlaytimeSummaryText}\n"
+            + $"• 存档时间机器：{snapshotCount} 份快照 · {branchCount} 条分支\n"
+            + $"• 已绑定修改器：{boundTrainerCount} 项\n\n"
+            + $"磁盘上的游戏本体与原始存档文件将完好保留，不会被删除。{gbeWarning}");
+
+        bool confirmed = ConfirmAction(new ShellConfirmPrompt(
+            Title: $"从游戏库移除《{game.Title}》？",
+            Message: promptBody,
+            ConfirmLabel: "确认移除",
+            CancelLabel: "取消",
+            IsDanger: true));
+        if (!confirmed)
+        {
+            return;
+        }
+
         string title = game.Title;
-        bool removed = await _libraryService.RemoveGameAsync(game.GameId).ConfigureAwait(true);
+        string removedGameId = game.GameId;
+        bool removed = await _libraryService.RemoveGameAsync(removedGameId).ConfigureAwait(true);
         if (removed)
         {
             Interlocked.Increment(ref _userSelectionVersion);
-            SelectedGame = null;
+            if (SelectedGame is not null && string.Equals(SelectedGame.GameId, removedGameId, StringComparison.OrdinalIgnoreCase))
+            {
+                SelectedGame = null;
+            }
+
+            if (SelectedSaveGame is not null && string.Equals(SelectedSaveGame.GameId, removedGameId, StringComparison.OrdinalIgnoreCase))
+            {
+                SelectedSaveGame = null;
+                IsSaveOverviewSelected = true;
+                _ = Saves.LoadForGameAsync(null);
+            }
+
+            if (SelectedAchievementsGame is not null && string.Equals(SelectedAchievementsGame.GameId, removedGameId, StringComparison.OrdinalIgnoreCase))
+            {
+                SelectedAchievementsGame = null;
+                IsAchievementsOverviewSelected = true;
+            }
+
+            if (SelectedTrainerGame is not null && string.Equals(SelectedTrainerGame.GameId, removedGameId, StringComparison.OrdinalIgnoreCase))
+            {
+                SelectedTrainerGame = null;
+                IsTrainerOverviewSelected = true;
+            }
+
             await EnqueueLibraryReloadAsync(LibraryReloadRequest.PreserveCurrent()).ConfigureAwait(true);
             RefreshUnimportedLocalGamesHint();
             ShowStatusBanner($"已从游戏库移除《{title}》（游戏本体与存档文件完好保留）", isError: false);
@@ -1643,14 +2656,48 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             return;
         }
 
-        var selectedIds = AllGameDataItems
+        var selectedItems = AllGameDataItems
             .Where(i => i.IsSelected && i.IsSafeToClean)
+            .ToList();
+        var selectedIds = selectedItems
             .Select(i => i.EntryId)
             .ToList();
 
         if (selectedIds.Count == 0 && !ResetSpawnStateOnClean)
         {
             ShowStatusBanner("请至少勾选一项要清理的数据，或开启「同时重置 SPAWN 成就进度与游玩时长」", isError: true);
+            return;
+        }
+
+        int existingFileCount = selectedItems
+            .Where(i => !i.IsRegistryEntry && i.Exists)
+            .Sum(i => Math.Max(i.Entry.FileCount, 1));
+        int existingFileLocationCount = selectedItems.Count(i => !i.IsRegistryEntry && i.Exists);
+        long totalBytes = selectedItems
+            .Where(i => !i.IsRegistryEntry && i.Exists)
+            .Sum(i => i.Entry.TotalBytes);
+        int existingRegistryCount = selectedItems.Count(i => i.IsRegistryEntry && i.Exists);
+
+        string resetLine = ResetSpawnStateOnClean
+            ? "• 同时重置 SPAWN 记录：是（将清空该游戏在 SPAWN 中的成就解锁记录与游玩时长）"
+            : "• 同时重置 SPAWN 记录：否（保留成就进度与游玩时长）";
+
+        string confirmMessage = string.Create(
+            CultureInfo.InvariantCulture,
+            $"即将清理《{game.Title}》选中的 {selectedItems.Count} 项数据路径：\n"
+            + $"• 实际已存在文件：{existingFileCount} 个（分布在 {existingFileLocationCount} 处目录/文件，共 {UiFormatters.FormatByteSize(totalBytes)}）\n"
+            + $"• 实际已存在注册表项：{existingRegistryCount} 项\n"
+            + $"{resetLine}\n\n"
+            + $"清理前会自动创建可恢复备份，如误清可随时点击「恢复上次清理」。");
+
+        bool confirmed = ConfirmAction(new ShellConfirmPrompt(
+            Title: $"确认清理《{game.Title}》的游戏数据？",
+            Message: confirmMessage,
+            ConfirmLabel: "确认清理",
+            CancelLabel: "取消",
+            IsDanger: true));
+        if (!confirmed)
+        {
             return;
         }
 
@@ -1666,7 +2713,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             };
 
             GameDataCleanResult result = await _gameDataService.CleanGameDataAsync(req).ConfigureAwait(true);
-            if (result.Succeeded && ResetSpawnStateOnClean)
+            if (result.Succeeded && ResetSpawnStateOnClean && !result.SpawnStateReset)
             {
                 await _achievementService.ResetGameAchievementStateAsync(game.GameId).ConfigureAwait(true);
             }
@@ -1774,6 +2821,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             }
 
             LatestUndoSnapshot = latestUndo;
+            OnPropertyChanged(nameof(HasGameDataGroups));
+            OnPropertyChanged(nameof(ShowGameDataEmptyState));
             NotifyGameDataSelectionChanged();
         }
         catch (Exception ex)
@@ -1783,6 +2832,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         finally
         {
             IsInspectingGameData = false;
+            OnPropertyChanged(nameof(HasGameDataGroups));
+            OnPropertyChanged(nameof(ShowGameDataEmptyState));
         }
     }
 
@@ -1870,7 +2921,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     // Core Library & Achievement Sync
     // -------------------------------------------------------------------------
 
-    private async Task ImportOrScanSinglePathAsync(string resolvedPath)
+    private async Task<ManualImportOutcome> ImportOrScanSinglePathAsync(
+        string resolvedPath,
+        bool stayInCurrentSection = false)
     {
         int selectionVersionAtStart = Volatile.Read(ref _userSelectionVersion);
         IsBusyWorking = true;
@@ -1895,13 +2948,17 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
                         selectionVersionAtStart,
                         dirtyAchievementGameId: directGame.GameId)).ConfigureAwait(true);
                 RefreshUnimportedLocalGamesHint();
-                if (Volatile.Read(ref _userSelectionVersion) == selectionVersionAtStart)
+                if (!stayInCurrentSection && Volatile.Read(ref _userSelectionVersion) == selectionVersionAtStart)
                 {
                     ActiveSection = PrimaryNavSection.Library;
                 }
 
                 ShowStatusBanner($"已添加游戏《{directGame.Title}》并自动同步成就库", isError: false);
-                return;
+                return new ManualImportOutcome(
+                    Succeeded: true,
+                    GameId: directGame.GameId,
+                    GameTitle: directGame.Title,
+                    ImportedCount: 1);
             }
 
             if (Directory.Exists(resolvedPath))
@@ -1918,20 +2975,34 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
                 }
 
                 string? firstId = scanned.Count > 0 ? scanned[0].GameId : null;
+                string? firstTitle = scanned.Count > 0 ? scanned[0].Title : null;
                 await EnqueueLibraryReloadAsync(
                     LibraryReloadRequest.PreserveOrFallback(firstId, selectionVersionAtStart)).ConfigureAwait(true);
                 RefreshUnimportedLocalGamesHint();
-                ActiveSection = PrimaryNavSection.Library;
+                if (!stayInCurrentSection && scanned.Count > 0)
+                {
+                    ActiveSection = PrimaryNavSection.Library;
+                }
+
                 ShowStatusBanner(
                     scanned.Count > 0
                         ? $"扫描完成，共发现并同步 {scanned.Count} 款单机游戏"
                         : "扫描完成，该目录下未发现包含可执行游戏主程序的子目录",
                     isError: scanned.Count == 0);
+                return new ManualImportOutcome(
+                    Succeeded: scanned.Count > 0,
+                    GameId: firstId,
+                    GameTitle: firstTitle,
+                    ImportedCount: scanned.Count);
             }
+
+            ShowStatusBanner("未识别到可导入的游戏主程序或目录", isError: true);
+            return new ManualImportOutcome(false);
         }
         catch (Exception ex)
         {
             ShowStatusBanner($"导入或扫描失败：{ex.Message}", isError: true);
+            return new ManualImportOutcome(false);
         }
         finally
         {
@@ -2104,6 +3175,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         int liveSelectionVersion = Volatile.Read(ref _userSelectionVersion);
         string? liveSelectedId = SelectedGame?.GameId;
         string? liveAchSelectedId = SelectedAchievementsGame?.GameId;
+        string? liveSaveSelectedId = SelectedSaveGame?.GameId;
         string? liveTrainerSelectedId = SelectedTrainerGame?.GameId;
 
         string? targetSelectedId;
@@ -2195,6 +3267,20 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             }
         }
 
+        if (!string.IsNullOrWhiteSpace(liveSaveSelectedId))
+        {
+            var resolvedSaveVm = AllGames.FirstOrDefault(g => string.Equals(g.GameId, liveSaveSelectedId, StringComparison.OrdinalIgnoreCase));
+            if (!ReferenceEquals(SelectedSaveGame, resolvedSaveVm))
+            {
+                SelectedSaveGame = resolvedSaveVm;
+                if (SelectedSaveGame is null)
+                {
+                    IsSaveOverviewSelected = true;
+                    _ = Saves.LoadForGameAsync(null);
+                }
+            }
+        }
+
         if (!string.IsNullOrWhiteSpace(liveTrainerSelectedId))
         {
             var resolvedTrainerVm = AllGames.FirstOrDefault(g => string.Equals(g.GameId, liveTrainerSelectedId, StringComparison.OrdinalIgnoreCase));
@@ -2220,8 +3306,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         ApplyAchievementsCenterAggregates(AllGames, summariesByGameId, recentUnlocks);
         RefreshUnimportedLocalGamesHint();
         OnPropertyChanged(nameof(HasAnyRunningGame));
+        OnPropertyChanged(nameof(CanSyncAllCloudSaves));
         OnPropertyChanged(nameof(LibraryRailToolTip));
+        NotifyPrimaryLaunchButtonProperties();
 
+        await RefreshSaveHubStateAsync().ConfigureAwait(true);
         await RefreshTrainerHubStateAsync().ConfigureAwait(true);
     }
 
@@ -2243,7 +3332,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         GameAchievementSummaryDto summary,
         bool forceRebuild)
     {
-        bool sameGameAndTitle = string.Equals(_loadedAchievementRowsGameId, summary.GameId, StringComparison.OrdinalIgnoreCase)
+        bool sameGameId = string.Equals(_loadedAchievementRowsGameId, summary.GameId, StringComparison.OrdinalIgnoreCase);
+        bool sameGameAndTitle = sameGameId
                                 && string.Equals(_loadedAchievementRowsGameTitle, activeGame.Title, StringComparison.Ordinal);
         bool itemsEqual = sameGameAndTitle
                           && _currentGameRawAchievements.Count == summary.Items.Count
@@ -2259,9 +3349,15 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
         if (forceRebuild || !sameGameAndTitle || !itemsEqual)
         {
+            if (!sameGameId)
+            {
+                _achievementRowCache.Clear();
+            }
+
             _loadedAchievementRowsGameId = summary.GameId;
             _loadedAchievementRowsGameTitle = activeGame.Title;
             _currentGameRawAchievements = summary.Items;
+            NotifyAchievementTabCountLabels();
             RebuildFilteredAchievementRows();
         }
     }
@@ -2279,14 +3375,19 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     private void RebuildFilteredAchievementRows()
     {
-        FilteredAchievements.Clear();
         var gameVm = ActiveWorkbenchGame;
         if (gameVm is null || _currentGameRawAchievements.Count == 0)
         {
+            if (FilteredAchievements.Count > 0)
+            {
+                FilteredAchievements.Clear();
+            }
+
             return;
         }
 
         string keyword = AchievementSearchText.Trim();
+        var matchingDtos = new List<GameAchievementItemDto>(_currentGameRawAchievements.Count);
 
         foreach (var dto in _currentGameRawAchievements)
         {
@@ -2305,9 +3406,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
             if (!string.IsNullOrEmpty(keyword))
             {
+                bool rowRevealed = _achievementRowCache.TryGetValue(dto.Definition.ApiName, out var existingRow)
+                                   && existingRow.IsRowSpoilerRevealed;
                 bool nameHit = dto.Definition.DisplayName.Contains(keyword, StringComparison.OrdinalIgnoreCase)
                                || dto.Definition.ApiName.Contains(keyword, StringComparison.OrdinalIgnoreCase);
-                string visibleDesc = dto.GetEffectiveDescription(RevealHiddenSpoilers);
+                string visibleDesc = dto.GetEffectiveDescription(RevealHiddenSpoilers || rowRevealed);
                 bool descHit = visibleDesc.Contains(keyword, StringComparison.OrdinalIgnoreCase);
                 if (!nameHit && !descHit)
                 {
@@ -2315,14 +3418,61 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
                 }
             }
 
-            FilteredAchievements.Add(new AchievementRowViewModel(
-                gameVm.GameId,
-                gameVm.Title,
-                dto,
-                RevealHiddenSpoilers,
-                HandleManualSetAchievementUnlockedAsync,
-                HandlePreviewSingleAchievementToastAsync));
+            matchingDtos.Add(dto);
         }
+
+        IEnumerable<GameAchievementItemDto> orderedDtos = SelectedAchievementSortMode switch
+        {
+            AchievementSortMode.UnlockedFirst => matchingDtos
+                .OrderByDescending(d => d.IsUnlocked)
+                .ThenByDescending(d => d.UnlockedUtc ?? DateTimeOffset.MinValue)
+                .ThenBy(d => d.Definition.DisplayName, StringComparer.CurrentCultureIgnoreCase),
+            AchievementSortMode.UnlockTimeDesc => matchingDtos
+                .OrderByDescending(d => d.UnlockedUtc ?? DateTimeOffset.MinValue)
+                .ThenByDescending(d => d.IsUnlocked)
+                .ThenBy(d => d.Definition.DisplayName, StringComparer.CurrentCultureIgnoreCase),
+            AchievementSortMode.RarityAsc => matchingDtos
+                .OrderBy(d => d.Definition.GlobalPercent ?? double.MaxValue)
+                .ThenBy(d => d.Definition.DisplayName, StringComparer.CurrentCultureIgnoreCase),
+            AchievementSortMode.NameAsc => matchingDtos
+                .OrderBy(d => d.Definition.DisplayName, StringComparer.CurrentCultureIgnoreCase),
+            _ => matchingDtos,
+        };
+
+        var desiredRows = new List<AchievementRowViewModel>(matchingDtos.Count);
+        foreach (var dto in orderedDtos)
+        {
+            if (_achievementRowCache.TryGetValue(dto.Definition.ApiName, out var cached)
+                && string.Equals(cached.GameId, gameVm.GameId, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(cached.GameTitle, gameVm.Title, StringComparison.Ordinal)
+                && Equals(cached.Item, dto))
+            {
+                cached.GlobalRevealSpoilers = RevealHiddenSpoilers;
+                desiredRows.Add(cached);
+            }
+            else
+            {
+                bool preservedSpoilerState = cached is not null
+                                             && string.Equals(cached.GameId, gameVm.GameId, StringComparison.OrdinalIgnoreCase)
+                                             && cached.IsRowSpoilerRevealed;
+                var row = new AchievementRowViewModel(
+                    gameVm.GameId,
+                    gameVm.Title,
+                    dto,
+                    RevealHiddenSpoilers,
+                    HandleManualSetAchievementUnlockedAsync,
+                    HandlePreviewSingleAchievementToastAsync);
+                if (preservedSpoilerState)
+                {
+                    row.IsRowSpoilerRevealed = true;
+                }
+
+                _achievementRowCache[dto.Definition.ApiName] = row;
+                desiredRows.Add(row);
+            }
+        }
+
+        SyncCollectionInPlace(FilteredAchievements, desiredRows);
     }
 
     private async Task HandleManualSetAchievementUnlockedAsync(AchievementRowViewModel row, bool unlocked)
@@ -2438,6 +3588,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
                 : (AllGames.FirstOrDefault(g => g.GameId == unlock.GameId)?.Title ?? "本地游戏");
             RecentUnlocks.Add(new RecentUnlockItemViewModel(unlock.GameId, gameTitle, meta.Def, unlock));
         }
+
+        SyncAchievementSidebarPoolFromAllGames();
     }
 
     private async Task HandleSchemaUpdatedAsync(AchievementSchemaUpdatedEvent ev)
@@ -2457,11 +3609,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             }
 
             target.UpdateAchievementCounts(ev.UnlockedCount, ev.TotalCount, ev.ChannelStatusText);
-            if (ReferenceEquals(SelectedGame, target))
-            {
-                OnPropertyChanged(nameof(CanActivateGbeForkOnSelected));
-                OnPropertyChanged(nameof(CanRestoreDllOnSelected));
-            }
+            RebuildFilteredAchievementSidebarGames();
+            NotifyGbeForkWorkbenchFlags();
         }
 
         if (ActiveWorkbenchGame is not null && string.Equals(ActiveWorkbenchGame.GameId, ev.GameId, StringComparison.OrdinalIgnoreCase))
@@ -2482,6 +3631,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         {
             if (ev.CurrentState == PlaySessionActivityState.Stopped)
             {
+                _launchingGameIds.Remove(ev.GameId);
+                _stoppingGameIds.Remove(ev.GameId);
                 gameVm.UpdateSession(null);
                 var refreshedRecord = await _libraryService.GetGameByIdAsync(ev.GameId).ConfigureAwait(true);
                 if (refreshedRecord is not null)
@@ -2506,6 +3657,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             }
             else
             {
+                if (ev.CurrentState is PlaySessionActivityState.Active or PlaySessionActivityState.Background or PlaySessionActivityState.Afk)
+                {
+                    _launchingGameIds.Remove(ev.GameId);
+                }
+
                 gameVm.UpdateSession(ev.Session);
                 if (string.Equals(Trainer.CurrentGameId, ev.GameId, StringComparison.OrdinalIgnoreCase))
                 {
@@ -2524,7 +3680,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(HasAnyRunningGame));
         OnPropertyChanged(nameof(CanSyncAllCloudSaves));
         OnPropertyChanged(nameof(LibraryRailToolTip));
-        OnPropertyChanged(nameof(PrimaryLaunchButtonText));
+        NotifyPrimaryLaunchButtonProperties();
     }
 
     private void OnAchievementUnlocked(object? sender, AchievementUnlockedNotification notification)
@@ -2540,19 +3696,31 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     private void OnUiRefreshTick(object? sender, EventArgs e)
     {
+        bool anySessionChanged = false;
         foreach (var gameVm in AllGames)
         {
             var live = _launchService.GetActiveSession(gameVm.GameId);
             if (live is not null || gameVm.IsRunning)
             {
+                if (!Equals(gameVm.ActiveSession, live))
+                {
+                    anySessionChanged = true;
+                }
+
                 gameVm.UpdateSession(live);
                 gameVm.NotifyPlaytimeTick();
             }
         }
 
-        if (_antiCheatGuard.CurrentSnapshot.Phase != AntiCheatGuardPhase.IdleSafe)
+        if (anySessionChanged)
         {
-            UpdateGuardBadge(_antiCheatGuard.CurrentSnapshot);
+            NotifyPrimaryLaunchButtonProperties();
+        }
+
+        var snap = _antiCheatGuard.CurrentSnapshot;
+        if (snap.Phase != AntiCheatGuardPhase.IdleSafe || GuardPhase != AntiCheatGuardPhase.IdleSafe)
+        {
+            UpdateGuardBadge(snap);
         }
     }
 
@@ -2564,6 +3732,164 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         SyncCollectionInPlace(_gogGroup.Items, sorted.Where(g => g.PlatformSource == PlatformSource.GogOffline).ToList());
         SyncCollectionInPlace(_steamripGroup.Items, sorted.Where(g => g.PlatformSource == PlatformSource.Steamrip).ToList());
         SyncCollectionInPlace(_otherGroup.Items, sorted.Where(g => g.PlatformSource is PlatformSource.SteamLocal or PlatformSource.Standalone).ToList());
+
+        RebuildVisibleLibraryGroups();
+        SyncAchievementSidebarPoolFromAllGames();
+    }
+
+    private void RebuildVisibleLibraryGroups()
+    {
+        string keyword = LibrarySidebarSearchText.Trim();
+        IEnumerable<GameListItemViewModel> filtered = AllGames;
+
+        if (!string.IsNullOrEmpty(keyword))
+        {
+            filtered = filtered.Where(g =>
+                g.Title.Contains(keyword, StringComparison.OrdinalIgnoreCase)
+                || g.PlatformFullLabel.Contains(keyword, StringComparison.OrdinalIgnoreCase)
+                || g.PlatformShortLabel.Contains(keyword, StringComparison.OrdinalIgnoreCase));
+        }
+
+        filtered = SelectedLibrarySourceFilter switch
+        {
+            LibrarySourceFilter.GogOffline => filtered.Where(g => g.PlatformSource == PlatformSource.GogOffline),
+            LibrarySourceFilter.Steamrip => filtered.Where(g => g.PlatformSource == PlatformSource.Steamrip),
+            LibrarySourceFilter.Other => filtered.Where(g => g.PlatformSource is PlatformSource.SteamLocal or PlatformSource.Standalone),
+            _ => filtered,
+        };
+
+        List<GameListItemViewModel> ordered = SelectedLibrarySortMode switch
+        {
+            LibrarySortMode.LastPlayed => filtered
+                .OrderByDescending(g => g.IsRunning)
+                .ThenByDescending(g => g.Record.LastPlayedUtc ?? DateTimeOffset.MinValue)
+                .ThenBy(g => g.Record.EffectiveSortTitle, StringComparer.CurrentCultureIgnoreCase)
+                .ToList(),
+            LibrarySortMode.Playtime => filtered
+                .OrderByDescending(g => g.IsRunning)
+                .ThenByDescending(g => g.Record.TotalActiveSec + (g.ActiveSession?.SessionActiveSec ?? 0))
+                .ThenBy(g => g.Record.EffectiveSortTitle, StringComparer.CurrentCultureIgnoreCase)
+                .ToList(),
+            _ => SortGamesRunningFirst(filtered),
+        };
+
+        var desiredGroups = new List<GameSourceGroupViewModel>(3);
+
+        if (SelectedLibrarySourceFilter == LibrarySourceFilter.All && SelectedLibrarySortMode != LibrarySortMode.Name)
+        {
+            var sortGroup = SelectedLibrarySortMode == LibrarySortMode.LastPlayed
+                ? _visibleLastPlayedGroup
+                : _visiblePlaytimeGroup;
+            SyncCollectionInPlace(sortGroup.Items, ordered);
+            if (sortGroup.Items.Count > 0)
+            {
+                desiredGroups.Add(sortGroup);
+            }
+        }
+        else
+        {
+            var gogItems = ordered.Where(g => g.PlatformSource == PlatformSource.GogOffline).ToList();
+            var steamripItems = ordered.Where(g => g.PlatformSource == PlatformSource.Steamrip).ToList();
+            var otherItems = ordered.Where(g => g.PlatformSource is PlatformSource.SteamLocal or PlatformSource.Standalone).ToList();
+
+            SyncCollectionInPlace(_visibleGogGroup.Items, gogItems);
+            SyncCollectionInPlace(_visibleSteamripGroup.Items, steamripItems);
+            SyncCollectionInPlace(_visibleOtherGroup.Items, otherItems);
+
+            if (_visibleGogGroup.Items.Count > 0)
+            {
+                desiredGroups.Add(_visibleGogGroup);
+            }
+
+            if (_visibleSteamripGroup.Items.Count > 0)
+            {
+                desiredGroups.Add(_visibleSteamripGroup);
+            }
+
+            if (_visibleOtherGroup.Items.Count > 0)
+            {
+                desiredGroups.Add(_visibleOtherGroup);
+            }
+        }
+
+        SyncCollectionInPlace(VisibleLibraryGroups, desiredGroups);
+        OnPropertyChanged(nameof(HasVisibleLibraryGames));
+        OnPropertyChanged(nameof(HasLibrarySearchNoMatches));
+    }
+
+    private void SyncAchievementSidebarPoolFromAllGames()
+    {
+        var existingById = _allAchievementSidebarGames.ToDictionary(x => x.GameId, StringComparer.OrdinalIgnoreCase);
+        string? selectedId = IsAchievementsOverviewSelected ? null : SelectedAchievementsGame?.GameId;
+        var nextPool = new List<AchievementSidebarItemViewModel>(AllGames.Count);
+
+        foreach (var gameVm in AllGames)
+        {
+            bool isSelected = !string.IsNullOrWhiteSpace(selectedId)
+                              && string.Equals(selectedId, gameVm.GameId, StringComparison.OrdinalIgnoreCase);
+            if (existingById.TryGetValue(gameVm.GameId, out var existing) && ReferenceEquals(existing.Game, gameVm))
+            {
+                existing.IsSelected = isSelected;
+                nextPool.Add(existing);
+            }
+            else
+            {
+                nextPool.Add(new AchievementSidebarItemViewModel(gameVm, isSelected));
+            }
+        }
+
+        _allAchievementSidebarGames.Clear();
+        _allAchievementSidebarGames.AddRange(nextPool);
+        RebuildFilteredAchievementSidebarGames();
+    }
+
+    private void RebuildFilteredAchievementSidebarGames()
+    {
+        string keyword = AchievementSidebarSearchText.Trim();
+        IEnumerable<AchievementSidebarItemViewModel> filtered = _allAchievementSidebarGames;
+
+        if (HideZeroAchievementGames)
+        {
+            filtered = filtered.Where(g => g.TotalAchievements > 0);
+        }
+
+        if (!string.IsNullOrEmpty(keyword))
+        {
+            filtered = filtered.Where(g =>
+                g.Title.Contains(keyword, StringComparison.OrdinalIgnoreCase)
+                || g.Game.PlatformShortLabel.Contains(keyword, StringComparison.OrdinalIgnoreCase));
+        }
+
+        List<AchievementSidebarItemViewModel> ordered = SelectedAchievementSidebarSortMode switch
+        {
+            AchievementSidebarSortMode.UnlockedDesc => filtered
+                .OrderByDescending(g => g.UnlockedAchievements)
+                .ThenByDescending(g => g.CompletionPercent)
+                .ThenBy(g => g.Game.Record.EffectiveSortTitle, StringComparer.CurrentCultureIgnoreCase)
+                .ToList(),
+            AchievementSidebarSortMode.Name => filtered
+                .OrderBy(g => g.Game.Record.EffectiveSortTitle, StringComparer.CurrentCultureIgnoreCase)
+                .ToList(),
+            _ => filtered
+                .OrderByDescending(g => g.TotalAchievements > 0)
+                .ThenByDescending(g => g.CompletionPercent)
+                .ThenByDescending(g => g.UnlockedAchievements)
+                .ThenBy(g => g.Game.Record.EffectiveSortTitle, StringComparer.CurrentCultureIgnoreCase)
+                .ToList(),
+        };
+
+        SyncCollectionInPlace(AchievementSidebarGames, ordered);
+        OnPropertyChanged(nameof(HasFilteredAchievementSidebarGames));
+    }
+
+    private void SyncAchievementSidebarSelectionFlags()
+    {
+        string? selectedId = IsAchievementsOverviewSelected ? null : SelectedAchievementsGame?.GameId;
+        foreach (var item in _allAchievementSidebarGames)
+        {
+            item.IsSelected = !string.IsNullOrWhiteSpace(selectedId)
+                              && string.Equals(item.GameId, selectedId, StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     private static List<GameListItemViewModel> SortGamesRunningFirst(IEnumerable<GameListItemViewModel> source) =>
@@ -2671,21 +3997,50 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     private void UpdateGuardBadge(AntiCheatGuardSnapshot snap)
     {
+        GuardPhase = snap.Phase;
+        GuardCooldownRemainingSeconds = Math.Max(0, snap.RemainingCooldownSeconds);
         IsGuardCooldownOrProtected = snap.Phase != AntiCheatGuardPhase.IdleSafe;
+
+        string residualSummary = snap.DetectedResidualProcesses.Count > 0
+            ? $"（检测到：{string.Join("、", snap.DetectedResidualProcesses.Take(3))}）"
+            : string.Empty;
+
         GuardRailToolTip = snap.Phase switch
         {
             AntiCheatGuardPhase.ProtectedRunning => $"安全守卫：受保护网游运行中 · 高敏模块已锁定 ({_paths.ChannelName})",
-            AntiCheatGuardPhase.ResidualGuardWatch => "安全守卫：监测反作弊守护残影退出中…",
-            AntiCheatGuardPhase.CooldownLocked => $"安全守卫：15s 余温冷却锁定中（剩余 {snap.RemainingCooldownSeconds:0.0}s）",
-            _ => $"安全守卫：Tier 0 纯净就绪 · 通道 {_paths.ChannelName}",
+            AntiCheatGuardPhase.ResidualGuardWatch => $"安全守卫：等待反作弊守护进程完全退出{residualSummary}",
+            AntiCheatGuardPhase.CooldownLocked => string.Create(CultureInfo.InvariantCulture, $"安全守卫：15 秒余温冷却锁定中（剩余 {snap.RemainingCooldownSeconds:0.0} 秒）"),
+            _ => $"安全守卫：纯净就绪 · 通道 {_paths.ChannelName}",
         };
+
+        GuardStatusHeadline = snap.Phase switch
+        {
+            AntiCheatGuardPhase.ProtectedRunning => "受保护网游运行中 · 已锁定",
+            AntiCheatGuardPhase.ResidualGuardWatch => "检测到反作弊守护残留",
+            AntiCheatGuardPhase.CooldownLocked => string.Create(CultureInfo.InvariantCulture, $"余温冷却锁定（剩余 {snap.RemainingCooldownSeconds:0.0} 秒）"),
+            _ => "安全守卫纯净就绪",
+        };
+
+        GuardStatusDetail = snap.Phase switch
+        {
+            AntiCheatGuardPhase.ProtectedRunning => "已自动清场并锁定修改器与高敏组件，确保受保护网游零干扰运行。",
+            AntiCheatGuardPhase.ResidualGuardWatch => $"正在等待反作弊守护进程完全退出{residualSummary}，随后自动进入 15 秒安全冷却期。",
+            AntiCheatGuardPhase.CooldownLocked => string.Create(CultureInfo.InvariantCulture, $"为确保反作弊环境彻底干净，将在 {snap.RemainingCooldownSeconds:0.0} 秒后解除启动与修改器锁定。"),
+            _ => "主程序不含敏感内存或钩子接口，当前未检测到受反作弊保护的网游或守护进程。",
+        };
+
+        Settings.RefreshAntiCheatSummary(snap);
         Trainer.UpdateGuardSnapshot(snap);
         foreach (var row in ManagedTrainers)
         {
             row.IsGuardLocked = IsGuardCooldownOrProtected;
         }
 
+        OnPropertyChanged(nameof(IsGuardIdle));
+        OnPropertyChanged(nameof(IsGuardWarning));
+        OnPropertyChanged(nameof(IsGuardProtectedRunning));
         OnPropertyChanged(nameof(TrainerOverviewRuntimeStatusText));
+        NotifyPrimaryLaunchButtonProperties();
     }
 
     private void ShowStatusBanner(string message, bool isError)
@@ -2697,12 +4052,32 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         StatusBannerMessage = message;
         IsStatusBannerError = isError;
 
-        if (!string.IsNullOrWhiteSpace(message))
+        // Only auto-dismiss non-error info banners; error banners remain visible until dismissed or superseded.
+        if (!string.IsNullOrWhiteSpace(message) && !isError)
         {
             var cts = new CancellationTokenSource();
             _bannerAutoHideCts = cts;
             _ = AutoDismissBannerAsync(cts.Token);
         }
+    }
+
+    private async Task HandleTrainerSafetySettingsChangedAsync()
+    {
+        if (Volatile.Read(ref _isDisposed) != 0)
+        {
+            return;
+        }
+
+        _trainerSidebarSafetyCache.Clear();
+        GameListItemViewModel? activeTrainerTarget = ActiveSection == PrimaryNavSection.Trainers
+            ? SelectedTrainerGame
+            : (ActiveSection == PrimaryNavSection.Library && SelectedGameSubTab == GameDetailSubTab.Trainers ? SelectedGame : null);
+        if (activeTrainerTarget is not null)
+        {
+            await Trainer.LoadForGameAsync(activeTrainerTarget).ConfigureAwait(true);
+        }
+
+        await RefreshTrainerHubStateAsync().ConfigureAwait(true);
     }
 
     private async Task AutoDismissBannerAsync(CancellationToken token)
@@ -3622,6 +4997,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
         Trainer.Dispose();
         Saves.Dispose();
+        Settings.Dispose();
         foreach (var sub in _subscriptions)
         {
             sub.Dispose();
@@ -3639,5 +5015,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
         _bannerAutoHideCts?.Cancel();
         _bannerAutoHideCts?.Dispose();
+        _achievementSearchDebounceCts?.Cancel();
+        _achievementSearchDebounceCts?.Dispose();
     }
 }

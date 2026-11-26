@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Text.RegularExpressions;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -20,9 +21,40 @@ public sealed record NamedOption<T>(T Value, string Label);
 
 public sealed record ScanDirectoryEntry(string Path, string SourceNote, bool IsRemovable);
 
-public sealed partial class SettingsViewModel : ObservableObject
+public enum UiThemePreferenceMode
+{
+    System = 0,
+    Light = 1,
+    Dark = 2,
+}
+
+public sealed record WindowPlacementDto(
+    double Left,
+    double Top,
+    double Width,
+    double Height,
+    bool IsMaximized);
+
+public sealed record ManualImportOutcome(
+    bool Succeeded,
+    string? GameId = null,
+    string? GameTitle = null,
+    int ImportedCount = 0);
+
+public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 {
     public const string SettingKeyCloseToTray = "ui.close_to_tray";
+    public const string SettingKeyOverlayEnabled = "overlay.enabled";
+    public const string SettingKeyStartWithWindowsTray = "ui.start_with_windows_tray";
+    public const string SettingKeyFirstMinimizeToTrayNotified = "ui.tray_first_minimize_notified";
+    public const string SettingKeyWindowPlacement = "ui.window_placement";
+    public const string SteamApiKeyRegistrationUrl = "https://steamcommunity.com/dev/apikey";
+
+    private const string WindowsRunRegistrySubKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+    private const string WindowsPersonalizeSubKey = @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
+
+    [GeneratedRegex("^[0-9a-fA-F]{32}$", RegexOptions.CultureInvariant)]
+    private static partial Regex SteamApiKeyHexRegex();
 
     private readonly SpawnPaths _paths;
     private readonly SpawnBuildMetadataSnapshot _buildSnapshot;
@@ -38,12 +70,22 @@ public sealed partial class SettingsViewModel : ObservableObject
     private readonly ICloudSaveSyncService? _cloudSyncService;
     private readonly ILudusaviRuleResolver? _ruleResolver;
     private readonly Action<string> _openExternalUrl;
+    private readonly Func<SpawnUiThemeKind> _detectSystemTheme;
+    private readonly Action<bool> _applyAutoStart;
+    private readonly int _volumeDebounceMs;
     private bool _suppressAutoSave;
+    private CancellationTokenSource? _overlayVolumeDebounceCts;
+    private CancellationTokenSource? _trainerCueVolumeDebounceCts;
+    private int _disposed;
 
     public event Action<string>? StatusFeedbackRequested;
+    public event Action<string, bool>? StatusFeedbackWithSeverityRequested;
     public event Func<IReadOnlyList<string>, Task>? ScanDirectoriesRequested;
     public event Func<string, Task>? ManualGameImportRequested;
+    public event Func<string, Task<ManualImportOutcome>>? ManualGameImportWithResultRequested;
+    public event Action<string>? OpenLastImportedGameRequested;
     public event Action<bool>? GlobalSpoilerPreferenceChanged;
+    public event Action? TrainerSafetySettingsChanged;
 
     [ObservableProperty]
     private SettingsCategory _selectedCategory = SettingsCategory.GeneralAndLibrary;
@@ -52,10 +94,24 @@ public sealed partial class SettingsViewModel : ObservableObject
     private string _manualGameImportPathText = string.Empty;
 
     [ObservableProperty]
+    private string? _lastImportedGameId;
+
+    [ObservableProperty]
+    private string? _lastImportedGameTitle;
+
+    [ObservableProperty]
     private int _selectedAfkTimeoutSec = 300;
 
     [ObservableProperty]
     private bool _closeWindowToTray = true;
+
+    [ObservableProperty]
+    private bool _startWithWindowsMinimizedToTray;
+
+    [ObservableProperty]
+    private bool _hasShownFirstMinimizeToTrayNotice;
+
+    public WindowPlacementDto? SavedWindowPlacement { get; private set; }
 
     [ObservableProperty]
     private bool _isSteamApiKeyConfigured;
@@ -67,7 +123,16 @@ public sealed partial class SettingsViewModel : ObservableObject
     private string _customSteamApiKeyInput = string.Empty;
 
     [ObservableProperty]
+    private bool _showCustomSteamApiKey;
+
+    [ObservableProperty]
+    private string _selectedAchievementLanguage = "schinese";
+
+    [ObservableProperty]
     private bool _globalRevealSpoilers;
+
+    [ObservableProperty]
+    private bool _overlayEnabled = true;
 
     [ObservableProperty]
     private OverlayThemeKind _selectedOverlayTheme = OverlayThemeKind.Steam;
@@ -100,10 +165,16 @@ public sealed partial class SettingsViewModel : ObservableObject
     private bool _overlayMuteSound;
 
     [ObservableProperty]
+    private UiThemePreferenceMode _selectedUiThemeMode = UiThemePreferenceMode.Light;
+
+    [ObservableProperty]
     private SpawnUiThemeKind _selectedUiTheme = SpawnUiThemeKind.Light;
 
     [ObservableProperty]
-    private string _antiCheatStatusSummary = "Tier 0 安全就绪 · 零敏感导入表";
+    private AntiCheatGuardPhase _antiCheatGuardPhase = AntiCheatGuardPhase.IdleSafe;
+
+    [ObservableProperty]
+    private string _antiCheatStatusSummary = "安全就绪 · 主进程与高敏组件物理隔离";
 
     // Trainer & Security Sandbox Settings (Category 6: SettingsCategory.TrainerAndSandbox)
     [ObservableProperty]
@@ -229,9 +300,17 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     public IReadOnlyList<NamedOption<TrainerAudioMode>> TrainerAudioModeOptions { get; } =
     [
-        new(TrainerAudioMode.FullMute, "完全静音（默认推荐：A0 + WASAPI 静音）"),
-        new(TrainerAudioMode.KeepCuesExperimental, "实验性：保留提示音（仅新版 FLiNG A0 生效）"),
+        new(TrainerAudioMode.FullMute, "完全静音（默认推荐）"),
+        new(TrainerAudioMode.KeepCuesExperimental, "实验性：尽量保留提示音（仅新版 FLiNG 生效）"),
         new(TrainerAudioMode.Passthrough, "不干预修改器音频"),
+    ];
+
+    public IReadOnlyList<NamedOption<string>> AchievementLanguageOptions { get; } =
+    [
+        new("schinese", "简体中文（默认）"),
+        new("tchinese", "繁體中文"),
+        new("english", "English"),
+        new("japanese", "日本語"),
     ];
 
     public IReadOnlyList<NamedOption<int>> TrainerSnapshotRetentionOptions { get; } =
@@ -288,9 +367,34 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     public bool ShowCustomWavPicker => SelectedOverlaySoundPreset == OverlaySoundPreset.CustomWav;
 
+    public bool ShowSteamSoundStatus => SelectedOverlaySoundPreset == OverlaySoundPreset.SteamAuthentic;
+
+    public double OverlayVolumeSliderOpacity => OverlayMuteSound ? 0.45 : 1.0;
+
+    public bool HasLastImportedGame => !string.IsNullOrWhiteSpace(LastImportedGameId);
+
+    public string LastImportedGameHintText => HasLastImportedGame
+        ? $"已导入《{LastImportedGameTitle}》"
+        : string.Empty;
+
+    public bool IsAntiCheatGuardIdle => AntiCheatGuardPhase == AntiCheatGuardPhase.IdleSafe;
+    public bool IsAntiCheatGuardWarning => AntiCheatGuardPhase is AntiCheatGuardPhase.ResidualGuardWatch or AntiCheatGuardPhase.CooldownLocked;
+    public bool IsAntiCheatGuardLocked => AntiCheatGuardPhase == AntiCheatGuardPhase.ProtectedRunning;
+
+    public string ScanDirectoriesSubtitleText => IsDevOrSourceBuild
+        ? "管理持久化多目录扫描源（含开发工作区自动发现目录），自动识别 GOG 离线版与本地单机游戏"
+        : "管理持久化多目录扫描源，自动识别 GOG 离线版、Steam 本地与免安装单机游戏";
+
+    public bool ShowDevWorkspaceBridge => IsDevOrSourceBuild;
+
+    public bool HasNonAsciiTrainerSandboxPath => !SpawnPaths.IsPureAsciiPath(EffectiveTrainerSandboxRoot);
+
+    public string NonAsciiTrainerSandboxNoticeText =>
+        $"当前沙箱目录（{EffectiveTrainerSandboxRoot}）包含中文或非英文字符，部分旧版修改器可能无法正常加载；建议在下方改设为纯英文目录（如 D:\\SpawnSandbox\\Trainers）。";
+
     public string CustomWavDisplayStatus =>
         !string.IsNullOrWhiteSpace(CustomOverlaySoundPath) && File.Exists(CustomOverlaySoundPath)
-            ? $"已载入自定义音效：{Path.GetFileName(CustomOverlaySoundPath)}（已存入 config 目录）"
+            ? $"已载入自定义音效：{Path.GetFileName(CustomOverlaySoundPath)}（已存入配置目录）"
             : "尚未选择自定义 .wav 音频（未配置时将自动回退主题合成和弦音）";
 
     public string CurrentCategoryTitle => SelectedCategory switch
@@ -342,9 +446,10 @@ public sealed partial class SettingsViewModel : ObservableObject
         : UiFormatters.FormatDefenderStatusBadge(DefenderStatusReport.Status);
 
     public string DefenderStatusMessage => DefenderStatusReport?.Message
-        ?? "仅在您点击下方按钮时才会触发单次 UAC，且仅排除单一修改器沙箱目录（绝不排除游戏目录、%LOCALAPPDATA% 或 Downloads）。";
+        ?? "仅在您主动点击下方按钮时才会请求单次管理员确认，且只排除单一修改器沙箱目录（绝不排除游戏目录、系统目录或下载目录）。";
 
     public bool IsDefenderExcluded => DefenderStatusReport?.IsExcluded == true;
+    public bool IsDefenderNotExcluded => !IsDefenderExcluded;
 
     public bool ShowSmartAppControlCard =>
         DefenderStatusReport?.IsSmartAppControlEnforced == true
@@ -372,6 +477,7 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     public string InstallDirectoryPath => _buildSnapshot.InstallDirectory;
     public string DataRootPath => _paths.DataRoot;
+    public string LogsDirectoryPath => _paths.LogsDirectory;
     public string TrashDirectoryPath => _paths.TrashDir;
 
     public string WorkspaceBridgeSummaryText => !string.IsNullOrWhiteSpace(_paths.LocalWorkspaceRoot)
@@ -396,7 +502,10 @@ public sealed partial class SettingsViewModel : ObservableObject
         UpdateViewModel? updateViewModel = null,
         ISaveTimeMachineService? saveService = null,
         ICloudSaveSyncService? cloudSyncService = null,
-        ILudusaviRuleResolver? ruleResolver = null)
+        ILudusaviRuleResolver? ruleResolver = null,
+        Func<SpawnUiThemeKind>? detectSystemTheme = null,
+        Action<bool>? applyAutoStart = null,
+        int volumeDebounceMs = 250)
     {
         _paths = paths;
         _buildSnapshot = SpawnBuildInfo.GetSnapshot(paths.Identity);
@@ -412,11 +521,87 @@ public sealed partial class SettingsViewModel : ObservableObject
         _cloudSyncService = cloudSyncService;
         _ruleResolver = ruleResolver;
         _openExternalUrl = openExternalUrl ?? OpenExternalUriDefault;
+        _detectSystemTheme = detectSystemTheme ?? DetectWindowsSystemTheme;
+        _applyAutoStart = applyAutoStart ?? ApplyWindowsAutoStartRegistry;
+        _volumeDebounceMs = Math.Clamp(volumeDebounceMs, 0, 2000);
         Update = updateViewModel ?? new UpdateViewModel(updateService: null, openExternalUrl: _openExternalUrl);
-        Update.StatusFeedbackRequested += msg => StatusFeedbackRequested?.Invoke(msg);
+        Update.StatusFeedbackWithSeverityRequested += EmitStatusFeedback;
 
         RefreshAntiCheatSummary(_antiCheatGuard.CurrentSnapshot);
-        _antiCheatGuard.StateChanged += (_, snap) => RefreshAntiCheatSummary(snap);
+        _antiCheatGuard.StateChanged += OnAntiCheatGuardStateChanged;
+        SystemEvents.UserPreferenceChanged += OnSystemUserPreferenceChanged;
+    }
+
+    private void EmitStatusFeedback(string message, bool isError = false)
+    {
+        StatusFeedbackWithSeverityRequested?.Invoke(message, isError);
+        StatusFeedbackRequested?.Invoke(message);
+    }
+
+    private void OnAntiCheatGuardStateChanged(object? sender, AntiCheatGuardSnapshot snap)
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            return;
+        }
+
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is not null && !dispatcher.CheckAccess())
+        {
+            _ = dispatcher.InvokeAsync(() =>
+            {
+                if (Volatile.Read(ref _disposed) == 0)
+                {
+                    RefreshAntiCheatSummary(snap);
+                }
+            });
+            return;
+        }
+
+        RefreshAntiCheatSummary(snap);
+    }
+
+    private void OnSystemUserPreferenceChanged(object? sender, UserPreferenceChangedEventArgs e)
+    {
+        if (Volatile.Read(ref _disposed) != 0
+            || e.Category != UserPreferenceCategory.General
+            || SelectedUiThemeMode != UiThemePreferenceMode.System)
+        {
+            return;
+        }
+
+        void ApplyFollowSystem()
+        {
+            if (Volatile.Read(ref _disposed) != 0 || SelectedUiThemeMode != UiThemePreferenceMode.System)
+            {
+                return;
+            }
+
+            SpawnUiThemeKind resolved = _detectSystemTheme();
+            if (SelectedUiTheme != resolved)
+            {
+                bool prev = _suppressAutoSave;
+                _suppressAutoSave = true;
+                try
+                {
+                    SelectedUiTheme = resolved;
+                }
+                finally
+                {
+                    _suppressAutoSave = prev;
+                }
+            }
+        }
+
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is not null && !dispatcher.CheckAccess())
+        {
+            _ = dispatcher.InvokeAsync(ApplyFollowSystem);
+        }
+        else
+        {
+            ApplyFollowSystem();
+        }
     }
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
@@ -425,13 +610,36 @@ public sealed partial class SettingsViewModel : ObservableObject
         try
         {
             string? rawUiTheme = await _db.GetSettingAsync(AppSettingKeys.UiTheme, cancellationToken).ConfigureAwait(true);
-            SelectedUiTheme = Enum.TryParse<SpawnUiThemeKind>(rawUiTheme, ignoreCase: true, out var uiTheme)
-                ? uiTheme
-                : SpawnUiThemeKind.Light;
+            if (string.Equals(rawUiTheme, nameof(UiThemePreferenceMode.System), StringComparison.OrdinalIgnoreCase))
+            {
+                SelectedUiThemeMode = UiThemePreferenceMode.System;
+                SelectedUiTheme = _detectSystemTheme();
+            }
+            else if (Enum.TryParse<SpawnUiThemeKind>(rawUiTheme, ignoreCase: true, out var uiTheme))
+            {
+                SelectedUiThemeMode = uiTheme == SpawnUiThemeKind.Dark
+                    ? UiThemePreferenceMode.Dark
+                    : UiThemePreferenceMode.Light;
+                SelectedUiTheme = uiTheme;
+            }
+            else
+            {
+                SelectedUiThemeMode = UiThemePreferenceMode.Light;
+                SelectedUiTheme = SpawnUiThemeKind.Light;
+            }
+
             _themeManager.ApplyTheme(SelectedUiTheme);
 
             string? rawCloseTray = await _db.GetSettingAsync(SettingKeyCloseToTray, cancellationToken).ConfigureAwait(true);
             CloseWindowToTray = string.IsNullOrWhiteSpace(rawCloseTray) || (!bool.TryParse(rawCloseTray, out bool closeTray) || closeTray);
+
+            string? rawAutoStart = await _db.GetSettingAsync(SettingKeyStartWithWindowsTray, cancellationToken).ConfigureAwait(true);
+            StartWithWindowsMinimizedToTray = bool.TryParse(rawAutoStart, out bool autoStart) && autoStart;
+
+            string? rawFirstTrayNotice = await _db.GetSettingAsync(SettingKeyFirstMinimizeToTrayNotified, cancellationToken).ConfigureAwait(true);
+            HasShownFirstMinimizeToTrayNotice = bool.TryParse(rawFirstTrayNotice, out bool shownTrayNotice) && shownTrayNotice;
+
+            SavedWindowPlacement = await _db.GetSettingJsonAsync<WindowPlacementDto?>(SettingKeyWindowPlacement, null, cancellationToken).ConfigureAwait(true);
 
             string? rawAfk = await _db.GetSettingAsync(AppSettingKeys.LauncherAfkTimeoutSec, cancellationToken).ConfigureAwait(true);
             if (int.TryParse(rawAfk, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedAfk) && parsedAfk >= 60)
@@ -441,6 +649,17 @@ public sealed partial class SettingsViewModel : ObservableObject
 
             string? rawSpoilers = await _db.GetSettingAsync(AppSettingKeys.AchievementRevealSpoilers, cancellationToken).ConfigureAwait(true);
             GlobalRevealSpoilers = bool.TryParse(rawSpoilers, out bool spoilers) && spoilers;
+
+            string? rawLang = await _db.GetSettingAsync(AppSettingKeys.AchievementLanguage, cancellationToken).ConfigureAwait(true);
+            SelectedAchievementLanguage = !string.IsNullOrWhiteSpace(rawLang)
+                && AchievementLanguageOptions.Any(o => string.Equals(o.Value, rawLang.Trim(), StringComparison.OrdinalIgnoreCase))
+                ? rawLang.Trim().ToLowerInvariant()
+                : "schinese";
+
+            string? rawOverlayEnabled = await _db.GetSettingAsync(SettingKeyOverlayEnabled, cancellationToken).ConfigureAwait(true);
+            OverlayEnabled = string.IsNullOrWhiteSpace(rawOverlayEnabled)
+                || !bool.TryParse(rawOverlayEnabled, out bool ovEnabled)
+                || ovEnabled;
 
             OverlaySettingsDto overlaySettings = await _db.GetOverlaySettingsAsync(cancellationToken).ConfigureAwait(true);
             SelectedOverlayTheme = overlaySettings.Theme;
@@ -473,9 +692,12 @@ public sealed partial class SettingsViewModel : ObservableObject
             TrainerStrictVanguardMode = trainerSettings.StrictVanguardMode;
             OnPropertyChanged(nameof(EffectiveTrainerSandboxRoot));
             OnPropertyChanged(nameof(HasCustomTrainerSandboxRoot));
+            OnPropertyChanged(nameof(HasNonAsciiTrainerSandboxPath));
             OnPropertyChanged(nameof(ShowTrainerCueVolumeSlider));
             OnPropertyChanged(nameof(TrainerCueVolumeDisplayText));
             OnPropertyChanged(nameof(TrainerHotkeyHoldMsDisplayText));
+            OnPropertyChanged(nameof(ShowSteamSoundStatus));
+            OnPropertyChanged(nameof(OverlayVolumeSliderOpacity));
 
             await ReloadScanDirectoriesAsync(cancellationToken).ConfigureAwait(true);
             await RefreshSteamApiKeyStatusAsync(cancellationToken).ConfigureAwait(true);
@@ -488,11 +710,104 @@ public sealed partial class SettingsViewModel : ObservableObject
         }
     }
 
+    public Task SaveWindowPlacementAsync(WindowPlacementDto placement, CancellationToken cancellationToken = default)
+    {
+        SavedWindowPlacement = placement;
+        return _db.SetSettingJsonAsync(SettingKeyWindowPlacement, placement, cancellationToken);
+    }
+
+    public Task MarkFirstMinimizeToTrayNotifiedAsync(CancellationToken cancellationToken = default)
+    {
+        HasShownFirstMinimizeToTrayNotice = true;
+        return _db.SetSettingAsync(SettingKeyFirstMinimizeToTrayNotified, "true", cancellationToken);
+    }
+
+    public static bool IsValidSteamWebApiKeyFormat(string? key) =>
+        !string.IsNullOrWhiteSpace(key) && SteamApiKeyHexRegex().IsMatch(key.Trim());
+
+    public static SpawnUiThemeKind DetectWindowsSystemTheme()
+    {
+        try
+        {
+            using RegistryKey? key = Registry.CurrentUser.OpenSubKey(WindowsPersonalizeSubKey, writable: false);
+            if (key?.GetValue("AppsUseLightTheme") is int appsUseLight && appsUseLight == 0)
+            {
+                return SpawnUiThemeKind.Dark;
+            }
+        }
+        catch
+        {
+            // Fall back to default Light theme on registry access failure.
+        }
+
+        return SpawnUiThemeKind.Light;
+    }
+
+    private void ApplyWindowsAutoStartRegistry(bool enabled)
+    {
+        if (_paths.IsIsolatedOverride || StartupWindowPolicy.IsHeadlessTestEnvironment(SpawnBuildInfo.IsReleaseChannel))
+        {
+            return;
+        }
+
+        string valueName = _paths.IsDevelopment ? "SPAWN-Dev" : "SPAWN";
+        try
+        {
+            using RegistryKey? runKey = Registry.CurrentUser.CreateSubKey(WindowsRunRegistrySubKey, writable: true);
+            if (runKey is null)
+            {
+                return;
+            }
+
+            if (enabled)
+            {
+                string? exePath = Environment.ProcessPath;
+                if (!string.IsNullOrWhiteSpace(exePath) && File.Exists(exePath))
+                {
+                    runKey.SetValue(valueName, $"\"{Path.GetFullPath(exePath)}\" --background", RegistryValueKind.String);
+                }
+            }
+            else
+            {
+                runKey.DeleteValue(valueName, throwOnMissingValue: false);
+            }
+        }
+        catch (Exception ex)
+        {
+            EmitStatusFeedback($"更新 Windows 开机自启注册表失败：{ex.Message}", isError: true);
+        }
+    }
+
     public IReadOnlyList<string> GetAllEffectiveScanDirectories() =>
         ScanDirectories.Select(d => d.Path).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
-    partial void OnSelectedCategoryChanged(SettingsCategory value) =>
+    partial void OnSelectedCategoryChanged(SettingsCategory value)
+    {
         OnPropertyChanged(nameof(CurrentCategoryTitle));
+        if (value == SettingsCategory.TrainerAndSandbox
+            && _defenderAssistant is not null
+            && DefenderStatusReport is null
+            && !IsDefenderWorking)
+        {
+            _ = InspectDefenderExclusionCoreAsync(emitFeedback: false);
+        }
+    }
+
+    partial void OnLastImportedGameIdChanged(string? value)
+    {
+        OnPropertyChanged(nameof(HasLastImportedGame));
+        OnPropertyChanged(nameof(LastImportedGameHintText));
+    }
+
+    partial void OnLastImportedGameTitleChanged(string? value) =>
+        OnPropertyChanged(nameof(LastImportedGameHintText));
+
+    partial void OnAntiCheatGuardPhaseChanged(AntiCheatGuardPhase value)
+    {
+        OnPropertyChanged(nameof(IsAntiCheatGuardIdle));
+        OnPropertyChanged(nameof(IsAntiCheatGuardWarning));
+        OnPropertyChanged(nameof(IsAntiCheatGuardLocked));
+    }
 
     partial void OnCloseWindowToTrayChanged(bool value)
     {
@@ -504,6 +819,20 @@ public sealed partial class SettingsViewModel : ObservableObject
         _ = _db.SetSettingAsync(SettingKeyCloseToTray, value ? "true" : "false");
     }
 
+    partial void OnStartWithWindowsMinimizedToTrayChanged(bool value)
+    {
+        if (_suppressAutoSave)
+        {
+            return;
+        }
+
+        _ = _db.SetSettingAsync(SettingKeyStartWithWindowsTray, value ? "true" : "false");
+        _applyAutoStart(value);
+        EmitStatusFeedback(
+            value ? "已开启开机静默启动到系统托盘" : "已关闭开机静默启动",
+            isError: false);
+    }
+
     partial void OnSelectedAfkTimeoutSecChanged(int value)
     {
         if (_suppressAutoSave)
@@ -512,6 +841,17 @@ public sealed partial class SettingsViewModel : ObservableObject
         }
 
         _ = _db.SetSettingAsync(AppSettingKeys.LauncherAfkTimeoutSec, value.ToString(CultureInfo.InvariantCulture));
+    }
+
+    partial void OnSelectedAchievementLanguageChanged(string value)
+    {
+        if (_suppressAutoSave || string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+
+        _ = _db.SetSettingAsync(AppSettingKeys.AchievementLanguage, value.Trim().ToLowerInvariant());
+        EmitStatusFeedback("已保存成就语言偏好，刷新游戏成就元数据后生效", isError: false);
     }
 
     partial void OnGlobalRevealSpoilersChanged(bool value)
@@ -525,6 +865,19 @@ public sealed partial class SettingsViewModel : ObservableObject
         GlobalSpoilerPreferenceChanged?.Invoke(value);
     }
 
+    partial void OnOverlayEnabledChanged(bool value)
+    {
+        if (_suppressAutoSave)
+        {
+            return;
+        }
+
+        _ = _db.SetSettingAsync(SettingKeyOverlayEnabled, value ? "true" : "false");
+        EmitStatusFeedback(
+            value ? "已启用游戏内成就跳杯弹窗" : "已开启游戏内弹窗免打扰（后台仍正常记录解锁进度）",
+            isError: false);
+    }
+
     partial void OnSelectedOverlayThemeChanged(OverlayThemeKind value) => PersistOverlaySettingsIfReady();
 
     partial void OnSelectedOverlayPositionChanged(OverlayPositionKind value) => PersistOverlaySettingsIfReady();
@@ -532,6 +885,7 @@ public sealed partial class SettingsViewModel : ObservableObject
     partial void OnSelectedOverlaySoundPresetChanged(OverlaySoundPreset value)
     {
         OnPropertyChanged(nameof(ShowCustomWavPicker));
+        OnPropertyChanged(nameof(ShowSteamSoundStatus));
         RefreshSteamClientSoundStatus();
         PersistOverlaySettingsIfReady();
     }
@@ -555,14 +909,63 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     partial void OnOverlayVolumePercentChanged(double value)
     {
+        if (!_suppressAutoSave && value > 0.0 && OverlayMuteSound)
+        {
+            OverlayMuteSound = false;
+        }
+
         OnPropertyChanged(nameof(OverlayVolumeDisplayText));
-        PersistOverlaySettingsIfReady();
+        ScheduleDebouncedOverlaySettingsPersist();
     }
 
     partial void OnOverlayMuteSoundChanged(bool value)
     {
         OnPropertyChanged(nameof(OverlayVolumeDisplayText));
+        OnPropertyChanged(nameof(OverlayVolumeSliderOpacity));
         PersistOverlaySettingsIfReady();
+    }
+
+    partial void OnSelectedUiThemeModeChanged(UiThemePreferenceMode value)
+    {
+        SpawnUiThemeKind resolved = value switch
+        {
+            UiThemePreferenceMode.Dark => SpawnUiThemeKind.Dark,
+            UiThemePreferenceMode.Light => SpawnUiThemeKind.Light,
+            _ => _detectSystemTheme(),
+        };
+
+        bool prevSuppress = _suppressAutoSave;
+        _suppressAutoSave = true;
+        try
+        {
+            if (SelectedUiTheme != resolved)
+            {
+                SelectedUiTheme = resolved;
+            }
+            else
+            {
+                _themeManager.ApplyTheme(resolved);
+            }
+        }
+        finally
+        {
+            _suppressAutoSave = prevSuppress;
+        }
+
+        if (!_suppressAutoSave)
+        {
+            string persisted = value == UiThemePreferenceMode.System
+                ? nameof(UiThemePreferenceMode.System)
+                : resolved.ToString();
+            _ = _db.SetSettingAsync(AppSettingKeys.UiTheme, persisted);
+            string msg = value switch
+            {
+                UiThemePreferenceMode.System => $"已切换为跟随 Windows 系统（当前：{(resolved == SpawnUiThemeKind.Dark ? "深色" : "浅色")}）",
+                UiThemePreferenceMode.Dark => "已切换为极客深色主题",
+                _ => "已切换为清透浅色主题",
+            };
+            EmitStatusFeedback(msg, isError: false);
+        }
     }
 
     partial void OnSelectedUiThemeChanged(SpawnUiThemeKind value)
@@ -570,24 +973,40 @@ public sealed partial class SettingsViewModel : ObservableObject
         _themeManager.ApplyTheme(value);
         if (!_suppressAutoSave)
         {
+            UiThemePreferenceMode targetMode = value == SpawnUiThemeKind.Dark
+                ? UiThemePreferenceMode.Dark
+                : UiThemePreferenceMode.Light;
+            if (SelectedUiThemeMode != targetMode)
+            {
+                _suppressAutoSave = true;
+                try
+                {
+                    SelectedUiThemeMode = targetMode;
+                }
+                finally
+                {
+                    _suppressAutoSave = false;
+                }
+            }
+
             _ = _db.SetSettingAsync(AppSettingKeys.UiTheme, value.ToString());
-            StatusFeedbackRequested?.Invoke(value == SpawnUiThemeKind.Dark ? "已切换为极客深色主题" : "已切换为清透浅色主题");
+            EmitStatusFeedback(value == SpawnUiThemeKind.Dark ? "已切换为极客深色主题" : "已切换为清透浅色主题", isError: false);
         }
     }
 
     partial void OnSelectedTrainerAudioModeChanged(TrainerAudioMode value)
     {
         OnPropertyChanged(nameof(ShowTrainerCueVolumeSlider));
-        PersistTrainerSettingsIfReady();
+        PersistTrainerSettingsIfReady(applyAudioPolicy: true);
     }
 
     partial void OnTrainerCueVolumePercentChanged(double value)
     {
         OnPropertyChanged(nameof(TrainerCueVolumeDisplayText));
-        PersistTrainerSettingsIfReady();
+        ScheduleDebouncedTrainerCueVolumePersist();
     }
 
-    partial void OnTrainerEnableA0PreMuteChanged(bool value) => PersistTrainerSettingsIfReady();
+    partial void OnTrainerEnableA0PreMuteChanged(bool value) => PersistTrainerSettingsIfReady(applyAudioPolicy: true);
 
     partial void OnTrainerHotkeyHoldMsChanged(int value)
     {
@@ -609,12 +1028,20 @@ public sealed partial class SettingsViewModel : ObservableObject
     partial void OnSelectedTrainerSnapshotRetentionCountChanged(int value) => PersistTrainerSettingsIfReady();
     partial void OnSelectedTrainerSnapshotMaxSizeMbChanged(int value) => PersistTrainerSettingsIfReady();
     partial void OnTrainerIncludeFlingArchiveChanged(bool value) => PersistTrainerSettingsIfReady();
-    partial void OnTrainerStrictVanguardModeChanged(bool value) => PersistTrainerSettingsIfReady();
+    partial void OnTrainerStrictVanguardModeChanged(bool value)
+    {
+        PersistTrainerSettingsIfReady();
+        if (!_suppressAutoSave)
+        {
+            TrainerSafetySettingsChanged?.Invoke();
+        }
+    }
 
     partial void OnAppliedCustomTrainerSandboxRootChanged(string? value)
     {
         OnPropertyChanged(nameof(EffectiveTrainerSandboxRoot));
         OnPropertyChanged(nameof(HasCustomTrainerSandboxRoot));
+        OnPropertyChanged(nameof(HasNonAsciiTrainerSandboxPath));
     }
 
     partial void OnDefenderStatusReportChanged(DefenderExclusionStatusReport? value)
@@ -622,6 +1049,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(DefenderStatusBadgeText));
         OnPropertyChanged(nameof(DefenderStatusMessage));
         OnPropertyChanged(nameof(IsDefenderExcluded));
+        OnPropertyChanged(nameof(IsDefenderNotExcluded));
         OnPropertyChanged(nameof(ShowSmartAppControlCard));
         OnPropertyChanged(nameof(ShowDefenderManualGuidance));
     }
@@ -743,7 +1171,23 @@ public sealed partial class SettingsViewModel : ObservableObject
         string raw = ManualGameImportPathText.Trim().Trim('"');
         if (string.IsNullOrWhiteSpace(raw))
         {
-            StatusFeedbackRequested?.Invoke("请输入或浏览选择游戏文件夹 / 主程序 (.exe) 路径");
+            EmitStatusFeedback("请输入或浏览选择游戏文件夹 / 主程序 (.exe) 路径", isError: true);
+            return;
+        }
+
+        if (ManualGameImportWithResultRequested is not null)
+        {
+            ManualImportOutcome outcome = await ManualGameImportWithResultRequested(raw).ConfigureAwait(true);
+            if (outcome.Succeeded)
+            {
+                ManualGameImportPathText = string.Empty;
+                if (!string.IsNullOrWhiteSpace(outcome.GameId))
+                {
+                    LastImportedGameId = outcome.GameId;
+                    LastImportedGameTitle = outcome.GameTitle ?? "新导入游戏";
+                }
+            }
+
             return;
         }
 
@@ -751,6 +1195,31 @@ public sealed partial class SettingsViewModel : ObservableObject
         {
             await ManualGameImportRequested(raw).ConfigureAwait(true);
             ManualGameImportPathText = string.Empty;
+        }
+    }
+
+    [RelayCommand]
+    private void OpenLastImportedGame()
+    {
+        if (!string.IsNullOrWhiteSpace(LastImportedGameId))
+        {
+            OpenLastImportedGameRequested?.Invoke(LastImportedGameId!);
+        }
+    }
+
+    [RelayCommand]
+    private void ToggleShowCustomSteamApiKey() => ShowCustomSteamApiKey = !ShowCustomSteamApiKey;
+
+    [RelayCommand]
+    private void OpenSteamApiKeyRegistration()
+    {
+        try
+        {
+            _openExternalUrl(SteamApiKeyRegistrationUrl);
+        }
+        catch (Exception ex)
+        {
+            EmitStatusFeedback($"无法打开 Steam Web API Key 申请页面：{ex.Message}", isError: true);
         }
     }
 
@@ -778,7 +1247,7 @@ public sealed partial class SettingsViewModel : ObservableObject
     {
         if (_trainerRuntime?.ActiveSession is not null)
         {
-            StatusFeedbackRequested?.Invoke("当前有修改器正在运行，请先停止修改器后再切换或迁移沙箱根目录。");
+            EmitStatusFeedback("当前有修改器正在运行，请先停止修改器后再切换或迁移沙箱根目录。", isError: true);
             return;
         }
 
@@ -794,7 +1263,7 @@ public sealed partial class SettingsViewModel : ObservableObject
 
         if (!DefenderExclusionAssistant.TryValidateCustomAsciiSandboxRoot(raw, _paths, gameDirs, out string normalized, out string? rejectReason))
         {
-            StatusFeedbackRequested?.Invoke(rejectReason ?? "自定义沙箱目录校验未通过");
+            EmitStatusFeedback(rejectReason ?? "自定义沙箱目录校验未通过", isError: true);
             return;
         }
 
@@ -804,7 +1273,7 @@ public sealed partial class SettingsViewModel : ObservableObject
             var (succeeded, _, message) = await DefenderExclusionAssistant.MigrateSandboxContentsAsync(previousRoot, normalized).ConfigureAwait(true);
             if (!succeeded)
             {
-                StatusFeedbackRequested?.Invoke(message);
+                EmitStatusFeedback(message, isError: true);
                 return;
             }
 
@@ -812,11 +1281,11 @@ public sealed partial class SettingsViewModel : ObservableObject
             TrainerCustomSandboxRootInput = normalized;
             DefenderStatusReport = null;
             PersistTrainerSettingsIfReady();
-            StatusFeedbackRequested?.Invoke(message);
+            EmitStatusFeedback(message, isError: false);
         }
         catch (Exception ex)
         {
-            StatusFeedbackRequested?.Invoke($"迁移修改器沙箱目录失败：{ex.Message}");
+            EmitStatusFeedback($"迁移修改器沙箱目录失败：{ex.Message}", isError: true);
         }
     }
 
@@ -825,7 +1294,7 @@ public sealed partial class SettingsViewModel : ObservableObject
     {
         if (_trainerRuntime?.ActiveSession is not null)
         {
-            StatusFeedbackRequested?.Invoke("当前有修改器正在运行，请先停止修改器后再恢复默认沙箱根目录。");
+            EmitStatusFeedback("当前有修改器正在运行，请先停止修改器后再恢复默认沙箱根目录。", isError: true);
             return;
         }
 
@@ -839,7 +1308,7 @@ public sealed partial class SettingsViewModel : ObservableObject
                 var (succeeded, _, message) = await DefenderExclusionAssistant.MigrateSandboxContentsAsync(previousRoot, defaultRoot, destinationIsSpawnOwnedDefaultRoot: true).ConfigureAwait(true);
                 if (!succeeded)
                 {
-                    StatusFeedbackRequested?.Invoke(message);
+                    EmitStatusFeedback(message, isError: true);
                     return;
                 }
             }
@@ -848,16 +1317,18 @@ public sealed partial class SettingsViewModel : ObservableObject
             TrainerCustomSandboxRootInput = string.Empty;
             DefenderStatusReport = null;
             PersistTrainerSettingsIfReady();
-            StatusFeedbackRequested?.Invoke($"已恢复默认修改器沙箱根目录：{defaultRoot}");
+            EmitStatusFeedback($"已恢复默认修改器沙箱根目录：{defaultRoot}", isError: false);
         }
         catch (Exception ex)
         {
-            StatusFeedbackRequested?.Invoke($"恢复默认修改器沙箱目录失败：{ex.Message}");
+            EmitStatusFeedback($"恢复默认修改器沙箱目录失败：{ex.Message}", isError: true);
         }
     }
 
     [RelayCommand]
-    public async Task InspectDefenderExclusionAsync()
+    public Task InspectDefenderExclusionAsync() => InspectDefenderExclusionCoreAsync(emitFeedback: true);
+
+    private async Task InspectDefenderExclusionCoreAsync(bool emitFeedback)
     {
         if (_defenderAssistant is null || IsDefenderWorking)
         {
@@ -868,11 +1339,18 @@ public sealed partial class SettingsViewModel : ObservableObject
         try
         {
             DefenderStatusReport = await _defenderAssistant.InspectStatusAsync(EffectiveTrainerSandboxRoot).ConfigureAwait(true);
-            StatusFeedbackRequested?.Invoke(DefenderStatusReport.Message);
+            if (emitFeedback)
+            {
+                bool isErr = DefenderStatusReport.Status is DefenderExclusionStatus.Failed or DefenderExclusionStatus.VerificationReadbackFailed;
+                EmitStatusFeedback(DefenderStatusReport.Message, isError: isErr);
+            }
         }
         catch (Exception ex)
         {
-            StatusFeedbackRequested?.Invoke($"检测 Defender 状态失败：{ex.Message}");
+            if (emitFeedback)
+            {
+                EmitStatusFeedback($"检测 Defender 状态失败：{ex.Message}", isError: true);
+            }
         }
         finally
         {
@@ -892,11 +1370,13 @@ public sealed partial class SettingsViewModel : ObservableObject
         try
         {
             DefenderStatusReport = await _defenderAssistant.RequestExclusionAsync(EffectiveTrainerSandboxRoot).ConfigureAwait(true);
-            StatusFeedbackRequested?.Invoke(DefenderStatusReport.Message);
+            bool isErr = !DefenderStatusReport.IsExcluded
+                && DefenderStatusReport.Status != DefenderExclusionStatus.UacCancelledByUser;
+            EmitStatusFeedback(DefenderStatusReport.Message, isError: isErr);
         }
         catch (Exception ex)
         {
-            StatusFeedbackRequested?.Invoke($"配置 Defender 沙箱排除失败：{ex.Message}");
+            EmitStatusFeedback($"配置 Defender 沙箱排除失败：{ex.Message}", isError: true);
         }
         finally
         {
@@ -910,11 +1390,11 @@ public sealed partial class SettingsViewModel : ObservableObject
         try
         {
             Clipboard.SetText(EffectiveTrainerSandboxRoot);
-            StatusFeedbackRequested?.Invoke($"已复制单一沙箱目录路径：{EffectiveTrainerSandboxRoot}");
+            EmitStatusFeedback($"已复制单一沙箱目录路径：{EffectiveTrainerSandboxRoot}", isError: false);
         }
         catch (Exception ex)
         {
-            StatusFeedbackRequested?.Invoke($"复制沙箱路径失败：{ex.Message}");
+            EmitStatusFeedback($"复制沙箱路径失败：{ex.Message}", isError: true);
         }
     }
 
@@ -924,18 +1404,18 @@ public sealed partial class SettingsViewModel : ObservableObject
         try
         {
             _openExternalUrl(DefenderExclusionAssistant.DefenderExclusionsSettingsUri);
-            StatusFeedbackRequested?.Invoke("已尝试打开 Windows 安全中心排除项页面，请粘贴刚刚复制的单一沙箱路径");
+            EmitStatusFeedback("已尝试打开 Windows 安全中心排除项页面，请粘贴刚刚复制的单一沙箱路径", isError: false);
         }
         catch
         {
             try
             {
                 _openExternalUrl(DefenderExclusionAssistant.DefenderSettingsFallbackUri);
-                StatusFeedbackRequested?.Invoke("已打开 Windows 安全中心设置（ms-settings:windowsdefender），请进入病毒和威胁防护 → 管理设置 → 排除项");
+                EmitStatusFeedback("已打开 Windows 安全中心设置，请进入病毒和威胁防护 → 管理设置 → 排除项", isError: false);
             }
             catch (Exception ex)
             {
-                StatusFeedbackRequested?.Invoke($"无法打开 Windows 安全中心：{ex.Message}");
+                EmitStatusFeedback($"无法打开 Windows 安全中心：{ex.Message}", isError: true);
             }
         }
     }
@@ -949,7 +1429,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         }
         catch (Exception ex)
         {
-            StatusFeedbackRequested?.Invoke($"无法打开微软说明页面：{ex.Message}");
+            EmitStatusFeedback($"无法打开微软说明页面：{ex.Message}", isError: true);
         }
     }
 
@@ -958,18 +1438,18 @@ public sealed partial class SettingsViewModel : ObservableObject
     {
         if (_trainerAudioController is null)
         {
-            StatusFeedbackRequested?.Invoke("当前运行环境未挂载修改器音频控制器");
+            EmitStatusFeedback("当前运行环境未挂载修改器音频控制器", isError: true);
             return;
         }
 
         try
         {
             await _trainerAudioController.RestoreA0BackupsAsync().ConfigureAwait(true);
-            StatusFeedbackRequested?.Invoke("已还原所有 FLiNG 修改器 A0 音频预写备份（.spawn_bak）并清理 SPAWN 新建配置");
+            EmitStatusFeedback("已还原修改器静音配置备份并清理 SPAWN 新建配置", isError: false);
         }
         catch (Exception ex)
         {
-            StatusFeedbackRequested?.Invoke($"还原 A0 备份失败：{ex.Message}");
+            EmitStatusFeedback($"还原静音配置备份失败：{ex.Message}", isError: true);
         }
     }
 
@@ -988,7 +1468,7 @@ public sealed partial class SettingsViewModel : ObservableObject
             StringComparison.OrdinalIgnoreCase));
         await _db.SetSettingJsonAsync(AppSettingKeys.LibraryScanDirectories, customDirs).ConfigureAwait(true);
         await ReloadScanDirectoriesAsync().ConfigureAwait(true);
-        StatusFeedbackRequested?.Invoke($"已移除扫描目录：{entry.Path}");
+        EmitStatusFeedback($"已移除扫描目录：{entry.Path}", isError: false);
     }
 
     [RelayCommand]
@@ -997,7 +1477,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         var dirs = GetAllEffectiveScanDirectories();
         if (dirs.Count == 0)
         {
-            StatusFeedbackRequested?.Invoke("尚未配置默认游戏库目录，请先点击「添加目录」");
+            EmitStatusFeedback("尚未配置默认游戏库目录，请先点击「添加目录」", isError: true);
             return;
         }
 
@@ -1008,43 +1488,44 @@ public sealed partial class SettingsViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private void OpenDataDirectory()
-    {
-        try
-        {
-            _paths.EnsureDirectoriesExist();
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = "explorer.exe",
-                Arguments = $"\"{_paths.DataRoot}\"",
-                UseShellExecute = true,
-            });
-        }
-        catch (Exception ex)
-        {
-            StatusFeedbackRequested?.Invoke($"打开数据目录失败：{ex.Message}");
-        }
-    }
+    private void OpenDataDirectory() => OpenFolderInExplorer(_paths.DataRoot, "数据目录", ensureCreated: true);
 
     [RelayCommand]
-    private void OpenInstallDirectory()
+    private void OpenLogsDirectory() => OpenFolderInExplorer(_paths.LogsDirectory, "日志目录", ensureCreated: true);
+
+    [RelayCommand]
+    private void OpenTrashDirectory() => OpenFolderInExplorer(_paths.TrashDir, "回收站目录", ensureCreated: true);
+
+    [RelayCommand]
+    private void OpenInstallDirectory() => OpenFolderInExplorer(SpawnBuildInfo.InstallDirectory, "安装目录", ensureCreated: false);
+
+    private void OpenFolderInExplorer(string dirPath, string label, bool ensureCreated)
     {
         try
         {
-            string dir = SpawnBuildInfo.InstallDirectory;
-            if (Directory.Exists(dir))
+            if (ensureCreated)
+            {
+                _paths.EnsureDirectoriesExist();
+                Directory.CreateDirectory(dirPath);
+            }
+
+            if (Directory.Exists(dirPath))
             {
                 Process.Start(new ProcessStartInfo
                 {
                     FileName = "explorer.exe",
-                    Arguments = $"\"{dir}\"",
+                    Arguments = $"\"{dirPath}\"",
                     UseShellExecute = true,
                 });
+            }
+            else
+            {
+                EmitStatusFeedback($"{label}尚不存在：{dirPath}", isError: true);
             }
         }
         catch (Exception ex)
         {
-            StatusFeedbackRequested?.Invoke($"打开安装目录失败：{ex.Message}");
+            EmitStatusFeedback($"打开{label}失败：{ex.Message}", isError: true);
         }
     }
 
@@ -1055,11 +1536,11 @@ public sealed partial class SettingsViewModel : ObservableObject
         {
             string info = $"{BuildProductName} | Version={BuildVersionText} | Channel={SpawnBuildInfo.Channel} | Identity={_paths.Identity} | Commit={BuildCommitShaText} | Built={BuildTimeUtcText}";
             Clipboard.SetText(info);
-            StatusFeedbackRequested?.Invoke("已复制版本与通道诊断信息到剪贴板");
+            EmitStatusFeedback("已复制版本与通道诊断信息到剪贴板", isError: false);
         }
         catch (Exception ex)
         {
-            StatusFeedbackRequested?.Invoke($"复制失败：{ex.Message}");
+            EmitStatusFeedback($"复制失败：{ex.Message}", isError: true);
         }
     }
 
@@ -1069,14 +1550,20 @@ public sealed partial class SettingsViewModel : ObservableObject
         string trimmed = CustomSteamApiKeyInput.Trim();
         if (string.IsNullOrWhiteSpace(trimmed))
         {
-            StatusFeedbackRequested?.Invoke("请输入有效的 Steam Web API Key 后再点击保存");
+            EmitStatusFeedback("请输入有效的 32 位 Steam Web API Key 后再点击保存", isError: true);
+            return;
+        }
+
+        if (!IsValidSteamWebApiKeyFormat(trimmed))
+        {
+            EmitStatusFeedback("Steam Web API Key 格式无效：必须为 32 位十六进制字符（0-9、A-F），请检查后重试", isError: true);
             return;
         }
 
         await _steamApiKeyProvider.SaveCustomApiKeyAsync(trimmed).ConfigureAwait(true);
         CustomSteamApiKeyInput = string.Empty;
         await RefreshSteamApiKeyStatusAsync().ConfigureAwait(true);
-        StatusFeedbackRequested?.Invoke("已通过当前 Windows 用户 DPAPI 加密保存 Steam Web API Key");
+        EmitStatusFeedback("已通过当前 Windows 用户安全加密保存 Steam Web API Key", isError: false);
     }
 
     [RelayCommand]
@@ -1085,7 +1572,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         await _steamApiKeyProvider.SaveCustomApiKeyAsync(null).ConfigureAwait(true);
         CustomSteamApiKeyInput = string.Empty;
         await RefreshSteamApiKeyStatusAsync().ConfigureAwait(true);
-        StatusFeedbackRequested?.Invoke("已清除本机自定义密钥，已恢复默认密钥解析链");
+        EmitStatusFeedback("已清除本机自定义密钥，已恢复默认密钥解析链", isError: false);
     }
 
     [RelayCommand]
@@ -1110,7 +1597,7 @@ public sealed partial class SettingsViewModel : ObservableObject
             var sourceInfo = new FileInfo(sourcePath);
             if (!sourceInfo.Exists || sourceInfo.Length is <= 44 or > 20 * 1024 * 1024)
             {
-                StatusFeedbackRequested?.Invoke("请选择有效且体积不超过 20 MB 的标准 WAV 音频文件");
+                EmitStatusFeedback("请选择有效且体积不超过 20 MB 的标准 WAV 音频文件", isError: true);
                 return;
             }
 
@@ -1121,7 +1608,7 @@ public sealed partial class SettingsViewModel : ObservableObject
                     || !header[..4].SequenceEqual("RIFF"u8)
                     || !header.Slice(8, 4).SequenceEqual("WAVE"u8))
                 {
-                    StatusFeedbackRequested?.Invoke("所选文件不是标准 RIFF WAV 音频格式，请选择未压缩 PCM/Float .wav 文件");
+                    EmitStatusFeedback("所选文件不是标准 RIFF WAV 音频格式，请选择未压缩 PCM/Float .wav 文件", isError: true);
                     return;
                 }
             }
@@ -1146,12 +1633,13 @@ public sealed partial class SettingsViewModel : ObservableObject
 
             OnPropertyChanged(nameof(CustomWavDisplayStatus));
             OnPropertyChanged(nameof(ShowCustomWavPicker));
+            OnPropertyChanged(nameof(ShowSteamSoundStatus));
             PersistOverlaySettingsIfReady();
-            StatusFeedbackRequested?.Invoke($"已导入自定义跳杯音效（{Path.GetFileName(sourcePath)} -> config\\custom_toast.wav）");
+            EmitStatusFeedback($"已导入自定义跳杯音效（{Path.GetFileName(sourcePath)}）", isError: false);
         }
         catch (Exception ex)
         {
-            StatusFeedbackRequested?.Invoke($"导入自定义 WAV 音效失败：{ex.Message}");
+            EmitStatusFeedback($"导入自定义 WAV 音效失败：{ex.Message}", isError: true);
         }
     }
 
@@ -1183,9 +1671,12 @@ public sealed partial class SettingsViewModel : ObservableObject
         };
 
         bool ok = await _overlayIpcClient.SendToastAsync(req).ConfigureAwait(true);
-        StatusFeedbackRequested?.Invoke(ok
-            ? "已向 OverlayHost 发送实时测试成就弹窗（不抢夺当前焦点）"
-            : "未能连接 OverlayHost 管道，请确认编译产物就绪");
+        string disabledSuffix = OverlayEnabled ? string.Empty : "（当前处于免打扰模式，实际游戏中已静默）";
+        EmitStatusFeedback(
+            ok
+                ? $"已发送实时测试成就弹窗（不抢夺当前焦点）{disabledSuffix}"
+                : "未能连接游戏内弹窗服务，请稍后重试或重启 SPAWN",
+            isError: !ok);
     }
 
     [RelayCommand]
@@ -1211,9 +1702,11 @@ public sealed partial class SettingsViewModel : ObservableObject
         };
 
         bool ok = await _overlayIpcClient.SendToastAsync(req).ConfigureAwait(true);
-        StatusFeedbackRequested?.Invoke(ok
-            ? "已触发 PS5 金杯 + 100% 白金奖杯双连发预览！"
-            : "未能连接 OverlayHost 管道");
+        EmitStatusFeedback(
+            ok
+                ? "已触发 PS5 金杯 + 100% 白金奖杯双连发预览！"
+                : "未能连接游戏内弹窗服务，请稍后重试或重启 SPAWN",
+            isError: !ok);
     }
 
     public async Task RefreshSteamApiKeyStatusAsync(CancellationToken cancellationToken = default)
@@ -1229,9 +1722,10 @@ public sealed partial class SettingsViewModel : ObservableObject
     {
         ScanDirectories.Clear();
 
+        string builtInNote = IsDevOrSourceBuild ? "开发工作区默认扫描目录（自动发现）" : "系统默认游戏库目录";
         foreach (string builtIn in _paths.GetDefaultScanDirectories())
         {
-            ScanDirectories.Add(new ScanDirectoryEntry(builtIn, "工作区 .local\\games（自动发现）", IsRemovable: false));
+            ScanDirectories.Add(new ScanDirectoryEntry(builtIn, builtInNote, IsRemovable: false));
         }
 
         var customDirs = await _db.GetSettingJsonAsync<List<string>>(AppSettingKeys.LibraryScanDirectories, [], cancellationToken).ConfigureAwait(true);
@@ -1248,6 +1742,66 @@ public sealed partial class SettingsViewModel : ObservableObject
             }
 
             ScanDirectories.Add(new ScanDirectoryEntry(custom, "用户自定义游戏库目录", IsRemovable: true));
+        }
+    }
+
+    private void ScheduleDebouncedOverlaySettingsPersist()
+    {
+        if (_suppressAutoSave)
+        {
+            return;
+        }
+
+        _overlayVolumeDebounceCts?.Cancel();
+        _overlayVolumeDebounceCts?.Dispose();
+        _overlayVolumeDebounceCts = null;
+
+        if (_volumeDebounceMs <= 0)
+        {
+            PersistOverlaySettingsIfReady();
+            return;
+        }
+
+        var cts = new CancellationTokenSource();
+        _overlayVolumeDebounceCts = cts;
+        _ = RunDebouncedAsync(_volumeDebounceMs, PersistOverlaySettingsIfReady, cts.Token);
+    }
+
+    private void ScheduleDebouncedTrainerCueVolumePersist()
+    {
+        if (_suppressAutoSave)
+        {
+            return;
+        }
+
+        _trainerCueVolumeDebounceCts?.Cancel();
+        _trainerCueVolumeDebounceCts?.Dispose();
+        _trainerCueVolumeDebounceCts = null;
+
+        if (_volumeDebounceMs <= 0)
+        {
+            PersistTrainerSettingsIfReady(applyAudioPolicy: true);
+            return;
+        }
+
+        var cts = new CancellationTokenSource();
+        _trainerCueVolumeDebounceCts = cts;
+        _ = RunDebouncedAsync(_volumeDebounceMs, () => PersistTrainerSettingsIfReady(applyAudioPolicy: true), cts.Token);
+    }
+
+    private async Task RunDebouncedAsync(int delayMs, Action action, CancellationToken token)
+    {
+        try
+        {
+            await Task.Delay(delayMs, token).ConfigureAwait(true);
+            if (!token.IsCancellationRequested && Volatile.Read(ref _disposed) == 0)
+            {
+                action();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Superseded by newer slider change.
         }
     }
 
@@ -1272,7 +1826,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         _ = _db.SaveOverlaySettingsAsync(dto);
     }
 
-    private void PersistTrainerSettingsIfReady()
+    private void PersistTrainerSettingsIfReady(bool applyAudioPolicy = false)
     {
         if (_suppressAutoSave)
         {
@@ -1299,6 +1853,10 @@ public sealed partial class SettingsViewModel : ObservableObject
         };
 
         _ = _db.SaveTrainerSettingsAsync(dto);
+        if (applyAudioPolicy && _trainerAudioController is not null)
+        {
+            _ = _trainerAudioController.ApplyPolicyAsync(dto.ToAudioPolicy());
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -1395,7 +1953,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         string url = NewCloudEndpointUrl.Trim();
         if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(url))
         {
-            StatusFeedbackRequested?.Invoke("请填写云同步端点名称以及本地目录或远程 URL");
+            EmitStatusFeedback("请填写云同步端点名称以及本地目录或远程 URL", isError: true);
             return false;
         }
 
@@ -1438,12 +1996,12 @@ public sealed partial class SettingsViewModel : ObservableObject
             NewCloudBucketOrRoot = string.Empty;
             NewCloudUsernameOrAccessKey = string.Empty;
             await RefreshSaveAndCloudSettingsAsync().ConfigureAwait(true);
-            StatusFeedbackRequested?.Invoke($"已保存云同步端点「{name}」");
+            EmitStatusFeedback($"已保存云同步端点「{name}」", isError: false);
             return true;
         }
         catch (Exception ex)
         {
-            StatusFeedbackRequested?.Invoke($"保存云同步端点失败：{ex.Message}");
+            EmitStatusFeedback($"保存云同步端点失败：{ex.Message}", isError: true);
             return false;
         }
     }
@@ -1460,6 +2018,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         {
             item.LastTestSucceeded = false;
             item.LastTestResultText = "云同步服务尚未挂载";
+            EmitStatusFeedback(item.LastTestResultText, isError: true);
             return;
         }
 
@@ -1470,13 +2029,13 @@ public sealed partial class SettingsViewModel : ObservableObject
             item.LastTestResultText = res.Succeeded
                 ? $"连接正常（{res.LatencyMs} ms）· {res.Message}"
                 : $"连接失败 · {res.Message}";
-            StatusFeedbackRequested?.Invoke(item.LastTestResultText);
+            EmitStatusFeedback(item.LastTestResultText, isError: !res.Succeeded);
         }
         catch (Exception ex)
         {
             item.LastTestSucceeded = false;
             item.LastTestResultText = $"测试异常：{ex.Message}";
-            StatusFeedbackRequested?.Invoke(item.LastTestResultText);
+            EmitStatusFeedback(item.LastTestResultText, isError: true);
         }
     }
 
@@ -1500,11 +2059,11 @@ public sealed partial class SettingsViewModel : ObservableObject
             }
 
             await RefreshSaveAndCloudSettingsAsync().ConfigureAwait(true);
-            StatusFeedbackRequested?.Invoke($"已删除云同步端点「{item.DisplayName}」");
+            EmitStatusFeedback($"已删除云同步端点「{item.DisplayName}」", isError: false);
         }
         catch (Exception ex)
         {
-            StatusFeedbackRequested?.Invoke($"删除云同步端点失败：{ex.Message}");
+            EmitStatusFeedback($"删除云同步端点失败：{ex.Message}", isError: true);
         }
     }
 
@@ -1513,7 +2072,7 @@ public sealed partial class SettingsViewModel : ObservableObject
     {
         if (_ruleResolver is null)
         {
-            StatusFeedbackRequested?.Invoke("Ludusavi 规则解析器尚未挂载");
+            EmitStatusFeedback("Ludusavi 规则解析器尚未挂载", isError: true);
             return;
         }
 
@@ -1535,11 +2094,11 @@ public sealed partial class SettingsViewModel : ObservableObject
             string json = await File.ReadAllTextAsync(dialog.FileName).ConfigureAwait(true);
             int count = await _ruleResolver.ImportRulesJsonAsync(json).ConfigureAwait(true);
             await RefreshSaveAndCloudSettingsAsync().ConfigureAwait(true);
-            StatusFeedbackRequested?.Invoke($"已导入 {count} 条 Ludusavi 存档路径规则");
+            EmitStatusFeedback($"已导入 {count} 条 Ludusavi 存档路径规则", isError: false);
         }
         catch (Exception ex)
         {
-            StatusFeedbackRequested?.Invoke($"导入 Ludusavi 规则失败：{ex.Message}");
+            EmitStatusFeedback($"导入 Ludusavi 规则失败：{ex.Message}", isError: true);
         }
     }
 
@@ -1548,7 +2107,7 @@ public sealed partial class SettingsViewModel : ObservableObject
     {
         if (_saveService is null)
         {
-            StatusFeedbackRequested?.Invoke("存档时间机器服务尚未挂载");
+            EmitStatusFeedback("存档时间机器服务尚未挂载", isError: true);
             return;
         }
 
@@ -1556,14 +2115,15 @@ public sealed partial class SettingsViewModel : ObservableObject
         {
             SaveGcReport report = await _saveService.RunCasGarbageCollectionAsync(TimeSpan.Zero).ConfigureAwait(true);
             await RefreshSaveAndCloudSettingsAsync().ConfigureAwait(true);
-            StatusFeedbackRequested?.Invoke(
+            EmitStatusFeedback(
                 report.DeletedChunkCount > 0
-                    ? $"已清理 {report.DeletedChunkCount} 个未引用 CAS 块，回收空间 {UiFormatters.FormatByteSize(report.ReclaimedBytes)}"
-                    : "本地 CAS 块库已处于最紧凑状态，暂无可回收块");
+                    ? $"已清理 {report.DeletedChunkCount} 个未引用去重块，回收空间 {UiFormatters.FormatByteSize(report.ReclaimedBytes)}"
+                    : "本地存档块库已处于最紧凑状态，暂无可回收空间",
+                isError: false);
         }
         catch (Exception ex)
         {
-            StatusFeedbackRequested?.Invoke($"清理 CAS 块失败：{ex.Message}");
+            EmitStatusFeedback($"清理存档块库失败：{ex.Message}", isError: true);
         }
     }
 
@@ -1625,7 +2185,7 @@ public sealed partial class SettingsViewModel : ObservableObject
 
         if (notifyFeedback)
         {
-            StatusFeedbackRequested?.Invoke($"已刷新音频播放设备列表（共发现 {snap.ActiveEndpoints.Count} 个活跃输出端点）");
+            EmitStatusFeedback($"已刷新音频播放设备列表（共发现 {snap.ActiveEndpoints.Count} 个活跃输出端点）", isError: false);
         }
     }
 
@@ -1655,14 +2215,36 @@ public sealed partial class SettingsViewModel : ObservableObject
         SteamSoundStatusText = probe.StatusMessage;
     }
 
-    private void RefreshAntiCheatSummary(AntiCheatGuardSnapshot snap)
+    public void RefreshAntiCheatSummary(AntiCheatGuardSnapshot snap)
     {
+        AntiCheatGuardPhase = snap.Phase;
         AntiCheatStatusSummary = snap.Phase switch
         {
-            AntiCheatGuardPhase.ProtectedRunning => "受保护网游运行中 · 高敏子系统已物理熔断",
-            AntiCheatGuardPhase.ResidualGuardWatch => "等待反作弊伴生守护进程完全退出…",
-            AntiCheatGuardPhase.CooldownLocked => $"反作弊 15s 余温安全冷却中（剩余 {snap.RemainingCooldownSeconds:0.0}s）",
-            _ => "Tier 0 安全就绪 · 纯净宿主零敏感导入表",
+            AntiCheatGuardPhase.ProtectedRunning => "受保护网游运行中 · 高敏组件已自动锁定",
+            AntiCheatGuardPhase.ResidualGuardWatch => "等待反作弊守护进程完全退出…",
+            AntiCheatGuardPhase.CooldownLocked => string.Create(CultureInfo.InvariantCulture, $"反作弊 15 秒安全冷却中（剩余 {snap.RemainingCooldownSeconds:0.0} 秒）"),
+            _ => "安全就绪 · 主进程与高敏组件物理隔离",
         };
+    }
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
+        _antiCheatGuard.StateChanged -= OnAntiCheatGuardStateChanged;
+        SystemEvents.UserPreferenceChanged -= OnSystemUserPreferenceChanged;
+        Update.StatusFeedbackWithSeverityRequested -= EmitStatusFeedback;
+        Update.Dispose();
+
+        _overlayVolumeDebounceCts?.Cancel();
+        _overlayVolumeDebounceCts?.Dispose();
+        _overlayVolumeDebounceCts = null;
+
+        _trainerCueVolumeDebounceCts?.Cancel();
+        _trainerCueVolumeDebounceCts?.Dispose();
+        _trainerCueVolumeDebounceCts = null;
     }
 }

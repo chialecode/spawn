@@ -215,6 +215,7 @@ public enum PreTrainerSnapshotSkipReason
     FileLockedSharingViolation = 4,
     ConcurrentModificationDetected = 5,
     SafetyFenceBlocked = 6,
+    Timeout = 7,
 }
 
 /// <summary>

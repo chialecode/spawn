@@ -156,11 +156,82 @@ public sealed class AntiCheatGuardService : IAntiCheatGuardService, IDisposable
         if (snapshot.IsHighRiskLocked)
         {
             throw new AntiCheatLockdownException(
-                $"反作弊安全守卫处于锁定状态 [{snapshot.Phase}]（剩余冷却 {snapshot.RemainingCooldownSeconds:0.0}s），已熔断操作 [{operationName}]。",
+                $"反作弊安全守卫处于锁定状态（{FormatPhaseLabel(snapshot.Phase)}，剩余冷却 {snapshot.RemainingCooldownSeconds:0.0}s），已熔断操作 [{operationName}]。",
                 snapshot.Phase,
                 snapshot.RemainingCooldownSeconds);
         }
     }
+
+    /// <summary>
+    /// Performs an immediate live residual-process &amp; session-driver re-check without ever shortening
+    /// the mandatory 15-second cooldown window or bypassing <see cref="AntiCheatGuardPhase.ProtectedRunning"/>.
+    /// </summary>
+    public AntiCheatGuardSnapshot RecheckLiveResiduals()
+    {
+        var residuals = SafeProbeResiduals();
+        bool changed = false;
+        CancellationToken? newWatchToken = null;
+
+        lock (_stateLock)
+        {
+            RefreshCooldownExpirationNoLock();
+
+            if (_phase == AntiCheatGuardPhase.ProtectedRunning)
+            {
+                return BuildSnapshotNoLock();
+            }
+
+            if (residuals.Count > 0)
+            {
+                if (_phase == AntiCheatGuardPhase.ResidualGuardWatch && _cooldownCts is not null)
+                {
+                    if (!_detectedResidualProcesses.SequenceEqual(residuals, StringComparer.OrdinalIgnoreCase))
+                    {
+                        _detectedResidualProcesses = residuals;
+                        changed = true;
+                    }
+                }
+                else
+                {
+                    CancelCooldownCtsNoLock();
+                    _cooldownCts = new CancellationTokenSource();
+                    newWatchToken = _cooldownCts.Token;
+                    _phase = AntiCheatGuardPhase.ResidualGuardWatch;
+                    _cooldownEndsAtUtc = null;
+                    _detectedResidualProcesses = residuals;
+                    PersistStateNoLock();
+                    changed = true;
+                }
+            }
+            else if (_phase == AntiCheatGuardPhase.ResidualGuardWatch && _detectedResidualProcesses.Count > 0)
+            {
+                // Update diagnostic residual list; the watch loop still enforces the full mandatory 15s cooldown.
+                _detectedResidualProcesses = [];
+                changed = true;
+            }
+        }
+
+        if (changed)
+        {
+            PublishCurrentSnapshot();
+        }
+
+        if (newWatchToken.HasValue)
+        {
+            StartBackgroundWatch(resumeCooldownEndUtc: null, newWatchToken.Value);
+        }
+
+        return CurrentSnapshot;
+    }
+
+    private static string FormatPhaseLabel(AntiCheatGuardPhase phase) => phase switch
+    {
+        AntiCheatGuardPhase.IdleSafe => "安全空闲",
+        AntiCheatGuardPhase.ProtectedRunning => "受保护游戏运行中",
+        AntiCheatGuardPhase.ResidualGuardWatch => "等待反作弊残影退出",
+        AntiCheatGuardPhase.CooldownLocked => "15 秒余温冷却锁定",
+        _ => "安全锁定",
+    };
 
     public void NotifyProtectedGameStarted(string gameId, AntiCheatTier tier)
     {

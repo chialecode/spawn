@@ -121,7 +121,8 @@ public static class ProgressServiceCollectionExtensions
             backend: sp.GetRequiredService<ITrainerBackend>(),
             gameLaunchService: sp.GetRequiredService<IGameLaunchService>(),
             elevationAdvisor: sp.GetRequiredService<ITrainerElevationAdvisor>(),
-            logger: sp.GetService<ILogger<TrainerRuntimeService>>()));
+            logger: sp.GetService<ILogger<TrainerRuntimeService>>(),
+            saveTimeMachineService: sp.GetService<ISaveTimeMachineService>()));
         services.TryAddSingleton<ITrainerRuntimeService>(sp => sp.GetRequiredService<TrainerRuntimeService>());
 
         services.TryAddSingleton<SensitiveWorkerShutdownHook>(sp => new SensitiveWorkerShutdownHook(

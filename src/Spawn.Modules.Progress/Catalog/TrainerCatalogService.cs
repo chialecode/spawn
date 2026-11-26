@@ -91,15 +91,25 @@ public sealed class TrainerCatalogService : ITrainerCatalogService
         TrainerCandidate candidate,
         CancellationToken ct = default)
     {
+        TrainerCandidateDetailsResult result = await LoadCandidateDetailsWithDiagnosticsAsync(gameId, candidate, ct)
+            .ConfigureAwait(false);
+        return result.Candidate;
+    }
+
+    public async Task<TrainerCandidateDetailsResult> LoadCandidateDetailsWithDiagnosticsAsync(
+        string gameId,
+        TrainerCandidate candidate,
+        CancellationToken ct = default)
+    {
         ArgumentException.ThrowIfNullOrWhiteSpace(gameId);
         ArgumentNullException.ThrowIfNull(candidate);
 
         GameRecord? game = await _database.GetGameByIdAsync(gameId, ct).ConfigureAwait(false);
         GameVersionFingerprint? fingerprint = game is not null ? GameVersionFingerprintService.CaptureFingerprint(game) : null;
 
-        var (enriched, _, _) = await _discoveryClient.LoadCandidateDetailsAsync(candidate, fingerprint, ct).ConfigureAwait(false);
+        var (enriched, challengeDetected, errMsg) = await _discoveryClient.LoadCandidateDetailsAsync(candidate, fingerprint, ct).ConfigureAwait(false);
 
-        if (game is not null && !string.IsNullOrWhiteSpace(enriched.PageUrl))
+        if (!challengeDetected && game is not null && !string.IsNullOrWhiteSpace(enriched.PageUrl))
         {
             var existingMap = await _database.GetTrainerTitleMapAsync(gameId, ct).ConfigureAwait(false);
             if (existingMap is not null)
@@ -114,7 +124,14 @@ public sealed class TrainerCatalogService : ITrainerCatalogService
             }
         }
 
-        return enriched;
+        return new TrainerCandidateDetailsResult
+        {
+            Candidate = enriched,
+            Succeeded = !challengeDetected && string.IsNullOrWhiteSpace(errMsg),
+            ChallengeDetected = challengeDetected,
+            FallbackBrowserUrl = challengeDetected ? (enriched.PageUrl ?? candidate.PageUrl) : null,
+            ErrorMessage = errMsg,
+        };
     }
 
     public Task<TrainerImportResult> DownloadAsync(
@@ -222,6 +239,91 @@ public sealed class TrainerCatalogService : ITrainerCatalogService
         string userSelectedPath,
         CancellationToken ct = default) =>
         ImportLocalWithExecutableSelectionAsync(gameId, userSelectedPath, selectedExecutableRelPath: null, ct);
+
+    public async Task<TrainerImportResult> ImportLocalReplacingAsync(
+        string gameId,
+        string userSelectedPath,
+        string? replaceTrainerId,
+        bool inheritManualHotkeys = true,
+        string? selectedExecutableRelPath = null,
+        CancellationToken ct = default)
+    {
+        List<TrainerHotkeyBindingRecord> inheritedManualHotkeys = [];
+        TrainerCatalogRecord? oldTrainer = null;
+        if (!string.IsNullOrWhiteSpace(replaceTrainerId))
+        {
+            oldTrainer = await _database.GetTrainerByIdAsync(replaceTrainerId, ct).ConfigureAwait(false);
+            if (oldTrainer is not null
+                && string.Equals(oldTrainer.GameId, gameId, StringComparison.OrdinalIgnoreCase)
+                && inheritManualHotkeys)
+            {
+                IReadOnlyList<TrainerHotkeyBindingRecord> oldBindings = await _database
+                    .GetTrainerHotkeyBindingsAsync(oldTrainer.TrainerId, ct)
+                    .ConfigureAwait(false);
+                inheritedManualHotkeys = oldBindings
+                    .Where(static b => b.EntryId.StartsWith("manual-", StringComparison.OrdinalIgnoreCase))
+                    .OrderBy(static b => b.SortOrder)
+                    .ToList();
+            }
+        }
+
+        // Import & verify the replacement BEFORE removing the previous trainer so failures never leave the game unbound.
+        TrainerImportResult importResult = await ImportLocalWithExecutableSelectionAsync(
+            gameId,
+            userSelectedPath,
+            selectedExecutableRelPath,
+            ct).ConfigureAwait(false);
+
+        if (!importResult.Succeeded || importResult.Trainer is null)
+        {
+            return importResult;
+        }
+
+        string newTrainerId = importResult.Trainer.TrainerId;
+        IReadOnlyList<TrainerHotkeyBindingRecord> finalHotkeys = importResult.Hotkeys;
+
+        if (inheritedManualHotkeys.Count > 0)
+        {
+            var merged = new List<TrainerHotkeyBindingRecord>(importResult.Hotkeys.Count + inheritedManualHotkeys.Count);
+            merged.AddRange(importResult.Hotkeys);
+            var existingIds = new HashSet<string>(merged.Select(static h => h.EntryId), StringComparer.OrdinalIgnoreCase);
+
+            foreach (TrainerHotkeyBindingRecord manual in inheritedManualHotkeys)
+            {
+                string nextEntryId = existingIds.Add(manual.EntryId)
+                    ? manual.EntryId
+                    : $"manual-{SpawnId.NewUlid()}";
+                merged.Add(manual with
+                {
+                    TrainerId = newTrainerId,
+                    EntryId = nextEntryId,
+                    ProxyState = false,
+                    SortOrder = merged.Count,
+                });
+            }
+
+            await _database.ReplaceTrainerHotkeyBindingsAsync(newTrainerId, merged, ct).ConfigureAwait(false);
+            finalHotkeys = merged;
+        }
+
+        if (oldTrainer is not null
+            && !string.Equals(oldTrainer.TrainerId, newTrainerId, StringComparison.OrdinalIgnoreCase))
+        {
+            await RemoveAsync(oldTrainer.TrainerId, ct).ConfigureAwait(false);
+        }
+
+        string replaceSuffix = oldTrainer is not null
+            ? (inheritedManualHotkeys.Count > 0
+                ? $"（已覆盖旧版本并继承 {inheritedManualHotkeys.Count} 条手动热键）"
+                : "（已覆盖旧版本）")
+            : string.Empty;
+
+        return importResult with
+        {
+            Hotkeys = finalHotkeys,
+            Message = $"{importResult.Message}{replaceSuffix}",
+        };
+    }
 
     public async Task<TrainerImportResult> ImportLocalWithExecutableSelectionAsync(
         string gameId,

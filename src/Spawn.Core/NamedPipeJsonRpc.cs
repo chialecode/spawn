@@ -717,6 +717,7 @@ public sealed class OverlayIpcServer : IOverlayIpcServer
     public const string MethodToastBatch = "overlay.toastBatch";
     public const string MethodPing = "overlay.ping";
     public const string MethodShutdown = "overlay.shutdown";
+    public const string MethodClearQueue = "overlay.clearQueue";
 
     private readonly NamedPipeJsonRpcServer _server;
 
@@ -725,6 +726,8 @@ public sealed class OverlayIpcServer : IOverlayIpcServer
     public Func<OverlayHeartbeatReply>? HeartbeatProvider { get; set; }
 
     public event Func<OverlayToastRequest, CancellationToken, Task>? ToastReceived;
+    public event Func<IReadOnlyList<OverlayToastRequest>, CancellationToken, Task>? ToastBatchReceived;
+    public event Func<CancellationToken, Task>? ClearQueueRequested;
     public event Func<CancellationToken, Task>? ShutdownRequested;
 
     public OverlayIpcServer(SpawnPaths paths)
@@ -759,6 +762,13 @@ public sealed class OverlayIpcServer : IOverlayIpcServer
                 return 0;
             }
 
+            var batchHandler = ToastBatchReceived;
+            if (batchHandler is not null)
+            {
+                await batchHandler(batch, ct).ConfigureAwait(false);
+                return batch.Count;
+            }
+
             var handler = ToastReceived;
             int count = 0;
             foreach (var item in batch)
@@ -782,6 +792,17 @@ public sealed class OverlayIpcServer : IOverlayIpcServer
                 ServerTimeUtc = DateTimeOffset.UtcNow,
             };
             return Task.FromResult(reply);
+        });
+
+        _server.RegisterHandler<object?, bool>(MethodClearQueue, async (_, ct) =>
+        {
+            var handler = ClearQueueRequested;
+            if (handler is not null)
+            {
+                await handler(ct).ConfigureAwait(false);
+            }
+
+            return true;
         });
 
         _server.RegisterHandler<object?, bool>(MethodShutdown, async (_, ct) =>
@@ -874,6 +895,22 @@ public sealed class OverlayIpcClient : IOverlayIpcClient
         catch
         {
             return null;
+        }
+    }
+
+    public async Task<bool> ClearQueueAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            return await _client.InvokeAsync<object?, bool>(
+                OverlayIpcServer.MethodClearQueue,
+                null,
+                connectTimeout: TimeSpan.FromMilliseconds(500),
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            return false;
         }
     }
 

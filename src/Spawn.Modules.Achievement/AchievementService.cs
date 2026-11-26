@@ -16,6 +16,9 @@ namespace Spawn.Modules.Achievement;
 /// </summary>
 public sealed class AchievementService : IAchievementService, IAsyncDisposable, IDisposable
 {
+    public const int BulkUnlockSummaryThreshold = 8;
+    public const string BulkSummaryToastApiName = "__SPAWN_BATCH_SUMMARY__";
+
     private readonly SpawnPaths _paths;
     private readonly SpawnDatabase _database;
     private readonly ISpawnEventBus _eventBus;
@@ -44,6 +47,11 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
     public event EventHandler<AchievementUnlockedNotification>? AchievementUnlocked;
 
     public bool IsMonitoring => _isMonitoring;
+
+    /// <summary>
+    /// Diagnostic message produced by the most recent manual achievement mark/reset call.
+    /// </summary>
+    public string? LastManualToggleMessage { get; private set; }
 
     public AchievementService(
         SpawnPaths paths,
@@ -124,7 +132,7 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
 
         if (forceRefresh || existingDefs.Count == 0)
         {
-            var resolved = await _schemaService.FetchAndBuildSchemaAsync(game, preferredLang, cancellationToken).ConfigureAwait(false);
+            var resolved = await _schemaService.FetchAndBuildSchemaAsync(game, preferredLang, forceRefresh, cancellationToken).ConfigureAwait(false);
 
             // Persist resolved SteamAppId / GogGameId and detected capture channel onto GameRecord
             var updatedGame = await RefreshGameCaptureChannelRecordAsync(
@@ -168,7 +176,11 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var (newlyUnlockedCount, _) = await ScanLocalUnlocksInternalAsync(gameId, silentSeed, cancellationToken).ConfigureAwait(false);
+            var (newlyUnlockedCount, _) = await ScanLocalUnlocksInternalAsync(
+                gameId,
+                silentSeed,
+                isRealtimeMonitor: false,
+                cancellationToken).ConfigureAwait(false);
             return newlyUnlockedCount;
         }
         finally
@@ -183,13 +195,33 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
         bool unlocked,
         CancellationToken cancellationToken = default)
     {
+        ManualAchievementToggleResult result = await SetAchievementUnlockedDetailedAsync(
+            gameId,
+            apiName,
+            unlocked,
+            cancellationToken).ConfigureAwait(false);
+        return result.Succeeded;
+    }
+
+    /// <summary>
+    /// Manually marks or resets an achievement and honestly reports whether a local Goldberg/GSE JSON save file
+    /// was also updated versus only updating SPAWN's display record.
+    /// </summary>
+    public async Task<ManualAchievementToggleResult> SetAchievementUnlockedDetailedAsync(
+        string gameId,
+        string apiName,
+        bool unlocked,
+        CancellationToken cancellationToken = default)
+    {
         ArgumentException.ThrowIfNullOrWhiteSpace(gameId);
         ArgumentException.ThrowIfNullOrWhiteSpace(apiName);
 
         var game = await _database.GetGameByIdAsync(gameId, cancellationToken).ConfigureAwait(false);
         if (game is null)
         {
-            return false;
+            const string missingMsg = "未找到指定游戏记录，未能更新成就状态。";
+            LastManualToggleMessage = missingMsg;
+            return new ManualAchievementToggleResult(false, false, missingMsg);
         }
 
         var unlockDto = new AchievementUnlockDto
@@ -205,14 +237,19 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
         await _database.UpsertAchievementUnlocksBatchAsync(gameId, [unlockDto], cancellationToken).ConfigureAwait(false);
 
         // Best-effort sync to local Goldberg / gbe_fork JSON if applicable
+        bool syncedToLocalGoldbergFile = false;
         var context = await BuildSourceContextAsync(game, cancellationToken).ConfigureAwait(false);
         var targets = DiscoverAllTargets(context);
         foreach (var t in targets.Where(t => t.Flavor is EmulatorFlavor.GbeFork or EmulatorFlavor.Goldberg && !string.IsNullOrWhiteSpace(t.FilePath)))
         {
             if (File.Exists(t.FilePath!))
             {
-                await SteamEmulatorAchievementProvider.TrySyncLocalGoldbergSaveAsync(
+                bool synced = await SteamEmulatorAchievementProvider.TrySyncLocalGoldbergSaveAsync(
                     t.FilePath!, apiName, unlocked, cancellationToken).ConfigureAwait(false);
+                if (synced)
+                {
+                    syncedToLocalGoldbergFile = true;
+                }
             }
         }
 
@@ -239,7 +276,14 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
         }
 
         await PublishSchemaUpdatedEventAsync(summary, cancellationToken).ConfigureAwait(false);
-        return true;
+
+        string actionText = unlocked ? "已标记为已解锁" : "已重置为未解锁";
+        string message = syncedToLocalGoldbergFile
+            ? $"{actionText}，并已同步写入本地 Goldberg/GSE 成就文件。"
+            : $"{actionText}（非 Goldberg/GSE 渠道，仅更新 SPAWN 展示记录，未改动游戏本体或模拟器文件）。";
+
+        LastManualToggleMessage = message;
+        return new ManualAchievementToggleResult(true, syncedToLocalGoldbergFile, message);
     }
 
     public async Task<GbeForkActivationResult> ActivateGbeForkAsync(
@@ -327,6 +371,22 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
         OverlayThemeKind? themeOverride = null,
         CancellationToken cancellationToken = default)
     {
+        OverlayToastDispatchResult result = await TrySendTestToastAsync(gameId, themeOverride, cancellationToken).ConfigureAwait(false);
+        if (!result.Succeeded)
+        {
+            throw new InvalidOperationException(result.Message);
+        }
+    }
+
+    /// <summary>
+    /// Dispatches a live preview toast with immediate preview replacement and honestly reports whether
+    /// <c>Spawn.OverlayHost</c> acknowledged the IPC request.
+    /// </summary>
+    public async Task<OverlayToastDispatchResult> TrySendTestToastAsync(
+        string? gameId = null,
+        OverlayThemeKind? themeOverride = null,
+        CancellationToken cancellationToken = default)
+    {
         var settings = await _database.GetOverlaySettingsAsync(cancellationToken).ConfigureAwait(false);
         string gameTitle = "SPAWN 成就中心";
         string apiName = "SPAWN_TEST_ACHIEVEMENT";
@@ -390,9 +450,23 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
             SoundVolume = settings.SoundVolume,
             MuteSound = settings.MuteSound,
             DurationMs = 4500,
+            ReplaceActivePreview = true,
+            EnhanceRareAndPlatinumSound = settings.EnhanceRareAndPlatinumSound,
         };
 
-        await _overlayIpcClient.SendToastAsync(toast, cancellationToken).ConfigureAwait(false);
+        bool delivered = await _overlayIpcClient.SendToastAsync(toast, cancellationToken).ConfigureAwait(false);
+        if (delivered)
+        {
+            return new OverlayToastDispatchResult(true, "已推送测试跳杯弹窗（零焦点抢占）。");
+        }
+
+        string? launchDiag = (_overlayIpcClient as IOverlayIpcDiagnostics)?.LastLaunchError;
+        string errorMessage = !string.IsNullOrWhiteSpace(launchDiag)
+            ? $"未能连接 OverlayHost 弹窗服务：{launchDiag}"
+            : "未能连接 OverlayHost 弹窗服务（进程未启动或命名管道无响应）。";
+
+        _logger.LogWarning("Overlay test toast dispatch failed: {Reason}", errorMessage);
+        return new OverlayToastDispatchResult(false, errorMessage);
     }
 
     public async Task ResetGameAchievementStateAsync(
@@ -562,7 +636,7 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
                 _activeSessions.TryRemove(evt.GameId, out _);
 
                 // Final post-exit sweep so unlocks written during shutdown are never missed
-                await ScanLocalUnlocksAsync(evt.GameId, silentSeed: false, ct).ConfigureAwait(false);
+                await ScanLocalUnlocksRealtimeAsync(evt.GameId, ct).ConfigureAwait(false);
 
                 if (_activeSessions.IsEmpty && _cometDaemon.IsListening)
                 {
@@ -798,7 +872,11 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
 
         try
         {
-            var (_, totalParsedEntries) = await ScanLocalUnlocksInternalAsync(gameId, silentSeed: false, ct).ConfigureAwait(false);
+            var (_, totalParsedEntries) = await ScanLocalUnlocksInternalAsync(
+                gameId,
+                silentSeed: false,
+                isRealtimeMonitor: true,
+                ct).ConfigureAwait(false);
 
             // Half-write self-healing: if the triggering file exists with bytes > 0 yet parsed 0 entries (mid-flush torn JSON/INI),
             // schedule one follow-up read after 160ms.
@@ -819,7 +897,21 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
         if (retryForHalfWrite && !ct.IsCancellationRequested)
         {
             await Task.Delay(160, ct).ConfigureAwait(false);
-            await ScanLocalUnlocksAsync(gameId, silentSeed: false, ct).ConfigureAwait(false);
+            await ScanLocalUnlocksRealtimeAsync(gameId, ct).ConfigureAwait(false);
+        }
+    }
+
+    private async Task ScanLocalUnlocksRealtimeAsync(string gameId, CancellationToken ct)
+    {
+        var gate = _gameScanLocks.GetOrAdd(gameId, static _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            _ = await ScanLocalUnlocksInternalAsync(gameId, silentSeed: false, isRealtimeMonitor: true, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            gate.Release();
         }
     }
 
@@ -895,6 +987,7 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
     private async Task<(int NewlyUnlockedCount, int TotalParsedEntries)> ScanLocalUnlocksInternalAsync(
         string gameId,
         bool silentSeed,
+        bool isRealtimeMonitor,
         CancellationToken ct)
     {
         var game = await _database.GetGameByIdAsync(gameId, ct).ConfigureAwait(false);
@@ -909,6 +1002,9 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
         {
             return (0, 0);
         }
+
+        // Prevent toast bombardment when a manual rescan runs outside active real-time monitoring.
+        bool suppressOverlayPopups = silentSeed || (!isRealtimeMonitor && !_isMonitoring);
 
         var providerMap = _providers.ToDictionary(p => p.ProviderId, StringComparer.OrdinalIgnoreCase);
         var batchToUpsert = new Dictionary<string, AchievementUnlockDto>(StringComparer.OrdinalIgnoreCase);
@@ -936,17 +1032,23 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
                     continue;
                 }
 
+                // Never fabricate "today" (UtcNow) timestamps during silent initial seeding when the source format
+                // does not record per-achievement unlock times (e.g., LIMBO bitmask or flat INI/JSON arrays).
+                DateTimeOffset? resolvedUtc = entry.IsUnlocked
+                    ? (entry.UnlockedUtc ?? (silentSeed ? null : DateTimeOffset.UtcNow))
+                    : null;
+
                 var candidate = new AchievementUnlockDto
                 {
                     GameId = gameId,
                     ApiName = entry.ApiName,
                     IsUnlocked = entry.IsUnlocked,
-                    UnlockedUtc = entry.IsUnlocked ? (entry.UnlockedUtc ?? DateTimeOffset.UtcNow) : null,
+                    UnlockedUtc = resolvedUtc,
                     CurrentProgress = entry.CurrentProgress,
                     MaxProgress = entry.MaxProgress,
                     SourceProvider = target.Flavor.ToString(),
                     RawSourcePath = target.FilePath ?? target.RegistryKeyPath,
-                    NotifiedPopup = silentSeed,
+                    NotifiedPopup = suppressOverlayPopups,
                 };
 
                 // If multiple targets exist for the same game, prefer an unlocked state over locked
@@ -968,9 +1070,9 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
 
         if (newlyUnlocked.Count > 0)
         {
-            await DispatchNewlyUnlockedNotificationsAsync(game, newlyUnlocked, silentSeed, ct).ConfigureAwait(false);
+            await DispatchNewlyUnlockedNotificationsAsync(game, newlyUnlocked, suppressOverlayPopups, ct).ConfigureAwait(false);
         }
-        else if (silentSeed)
+        else if (suppressOverlayPopups)
         {
             var summary = await _database.GetGameAchievementSummaryAsync(gameId, ct).ConfigureAwait(false);
             await PublishSchemaUpdatedEventAsync(summary, ct).ConfigureAwait(false);
@@ -1048,24 +1150,92 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
                     AudioOutputDeviceId = overlaySettings.AudioOutputDeviceId,
                     SoundVolume = overlaySettings.SoundVolume,
                     MuteSound = overlaySettings.MuteSound,
+                    EnhanceRareAndPlatinumSound = overlaySettings.EnhanceRareAndPlatinumSound,
                 });
             }
         }
 
         if (!silentSeed && toastBatch.Count > 0)
         {
-            if (toastBatch.Count == 1)
+            if (toastBatch.Count >= BulkUnlockSummaryThreshold)
             {
-                await _overlayIpcClient.SendToastAsync(toastBatch[0], ct).ConfigureAwait(false);
+                // Collapse large bulk unlock bursts (>= 8) into a single summary toast so rescans never spam popups.
+                OverlayToastRequest representative = toastBatch[^1];
+                var sampleNames = toastBatch
+                    .Select(static t => t.DisplayName)
+                    .Where(static n => !string.IsNullOrWhiteSpace(n))
+                    .Distinct(StringComparer.Ordinal)
+                    .Take(2)
+                    .ToList();
+                string summaryDesc = sampleNames.Count switch
+                {
+                    0 => $"《{game.Title}》新增 {toastBatch.Count} 项成就，可在成就中心查看详情",
+                    1 => $"含「{sampleNames[0]}」等，可在成就中心查看全部详情",
+                    _ => $"含「{sampleNames[0]}」「{sampleNames[1]}」等，可在成就中心查看全部详情",
+                };
+                bool anyRare = toastBatch.Any(static t => t.IsRare || t.GlobalPercent is < 10.0);
+                double? rarestPercent = toastBatch.Where(static t => t.GlobalPercent.HasValue)
+                    .Select(static t => t.GlobalPercent!.Value)
+                    .DefaultIfEmpty()
+                    .Min();
+                if (!toastBatch.Any(static t => t.GlobalPercent.HasValue))
+                {
+                    rarestPercent = null;
+                }
+
+                var summaryToast = representative with
+                {
+                    RequestId = Guid.NewGuid().ToString("N"),
+                    AchievementApiName = BulkSummaryToastApiName,
+                    DisplayName = $"已连续解锁 {toastBatch.Count} 项成就",
+                    Description = summaryDesc,
+                    IsRare = anyRare,
+                    GlobalPercent = rarestPercent,
+                    IsPlatinumCompletion = completedAll,
+                    DurationMs = 3800,
+                    DisplayDurationMs = 3800,
+                };
+
+                bool delivered = await _overlayIpcClient.SendToastAsync(summaryToast, ct).ConfigureAwait(false);
+                if (delivered)
+                {
+                    foreach (var u in newlyUnlocked)
+                    {
+                        await _database.MarkAchievementPopupNotifiedAsync(game.GameId, u.ApiName, ct).ConfigureAwait(false);
+                    }
+                }
+                else
+                {
+                    _logger.LogWarning("Failed to deliver bulk achievement summary toast ({Count} items) for GameId {GameId}; keeping NotifiedPopup=0.", toastBatch.Count, game.GameId);
+                }
+            }
+            else if (toastBatch.Count == 1)
+            {
+                bool delivered = await _overlayIpcClient.SendToastAsync(toastBatch[0], ct).ConfigureAwait(false);
+                if (delivered)
+                {
+                    await _database.MarkAchievementPopupNotifiedAsync(game.GameId, newlyUnlocked[0].ApiName, ct).ConfigureAwait(false);
+                }
+                else
+                {
+                    _logger.LogWarning("Failed to deliver achievement toast {ApiName} for GameId {GameId}; keeping NotifiedPopup=0.", newlyUnlocked[0].ApiName, game.GameId);
+                }
             }
             else
             {
-                await _overlayIpcClient.SendToastBatchAsync(toastBatch, ct).ConfigureAwait(false);
-            }
-
-            foreach (var u in newlyUnlocked)
-            {
-                await _database.MarkAchievementPopupNotifiedAsync(game.GameId, u.ApiName, ct).ConfigureAwait(false);
+                int deliveredCount = await _overlayIpcClient.SendToastBatchAsync(toastBatch, ct).ConfigureAwait(false);
+                if (deliveredCount > 0)
+                {
+                    int toMark = Math.Min(deliveredCount, newlyUnlocked.Count);
+                    for (int idx = 0; idx < toMark; idx++)
+                    {
+                        await _database.MarkAchievementPopupNotifiedAsync(game.GameId, newlyUnlocked[idx].ApiName, ct).ConfigureAwait(false);
+                    }
+                }
+                else
+                {
+                    _logger.LogWarning("Failed to deliver achievement toast batch ({Count} items) for GameId {GameId}; keeping NotifiedPopup=0.", toastBatch.Count, game.GameId);
+                }
             }
         }
 

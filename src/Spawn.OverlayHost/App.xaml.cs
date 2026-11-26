@@ -73,6 +73,18 @@ public partial class App : Application
             return Task.CompletedTask;
         };
 
+        _ipcServer.ToastBatchReceived += (batch, _) =>
+        {
+            _queueCoordinator.EnqueueBatch(batch);
+            return Task.CompletedTask;
+        };
+
+        _ipcServer.ClearQueueRequested += _ =>
+        {
+            _queueCoordinator.ClearQueue();
+            return Task.CompletedTask;
+        };
+
         _ipcServer.ShutdownRequested += _ct =>
         {
             _ = Dispatcher.InvokeAsync(() => Shutdown(0));

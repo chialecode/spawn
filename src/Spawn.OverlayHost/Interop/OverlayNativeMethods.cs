@@ -3,6 +3,77 @@ using System.Runtime.InteropServices;
 namespace Spawn.OverlayHost.Interop;
 
 /// <summary>
+/// Pure monitor rectangle geometry helpers for selecting between <c>rcWork</c> (taskbar-aware desktop)
+/// and <c>rcMonitor</c> (full screen when a borderless fullscreen game covers the monitor).
+/// </summary>
+public static class OverlayMonitorPlacement
+{
+    public readonly record struct ScreenRect(int Left, int Top, int Right, int Bottom)
+    {
+        public int Width => Math.Max(0, Right - Left);
+        public int Height => Math.Max(0, Bottom - Top);
+    }
+
+    public readonly record struct MonitorPlacementBounds(
+        int LeftPx,
+        int TopPx,
+        int WidthPx,
+        int HeightPx,
+        uint DpiX,
+        uint DpiY,
+        bool UsesFullscreenMonitorBounds);
+
+    /// <summary>
+    /// Returns <see langword="true"/> when <paramref name="foregroundRect"/> covers the target monitor's
+    /// full <paramref name="monitorRect"/> (within <paramref name="tolerancePx"/> pixels on each edge).
+    /// </summary>
+    public static bool IsForegroundRectCoveringMonitor(
+        ScreenRect foregroundRect,
+        ScreenRect monitorRect,
+        int tolerancePx = 2)
+    {
+        if (foregroundRect.Width <= 0 || foregroundRect.Height <= 0
+            || monitorRect.Width <= 0 || monitorRect.Height <= 0)
+        {
+            return false;
+        }
+
+        int tol = Math.Max(0, tolerancePx);
+        return foregroundRect.Left <= monitorRect.Left + tol
+               && foregroundRect.Top <= monitorRect.Top + tol
+               && foregroundRect.Right >= monitorRect.Right - tol
+               && foregroundRect.Bottom >= monitorRect.Bottom - tol;
+    }
+
+    /// <summary>
+    /// Selects <paramref name="rcMonitor"/> when a non-shell foreground window covers the entire monitor
+    /// (borderless/exclusive fullscreen), and falls back to <paramref name="rcWork"/> on normal desktop sessions.
+    /// </summary>
+    public static MonitorPlacementBounds SelectEffectiveBounds(
+        ScreenRect rcMonitor,
+        ScreenRect rcWork,
+        ScreenRect? foregroundRect,
+        bool isShellOrDesktopWindow,
+        uint dpiX,
+        uint dpiY)
+    {
+        bool useFullMonitor = !isShellOrDesktopWindow
+                              && foregroundRect is { } fg
+                              && IsForegroundRectCoveringMonitor(fg, rcMonitor);
+
+        ScreenRect chosen = useFullMonitor ? rcMonitor : rcWork;
+        return new MonitorPlacementBounds(
+            chosen.Left,
+            chosen.Top,
+            Math.Max(640, chosen.Width),
+            Math.Max(480, chosen.Height),
+            dpiX >= 72 ? dpiX : 96u,
+            dpiY >= 72 ? dpiY : 96u,
+            useFullMonitor);
+    }
+}
+
+/// <summary>
 /// Clean-Host compliant Win32 window style, PerMonitorV2 DPI, and monitor topology helpers for <c>Spawn.OverlayHost</c>.
 /// Contains zero process memory, thread, or input-hook imports so binary PE audits always pass 100%.
 /// </summary>
@@ -81,9 +152,14 @@ internal static partial class OverlayNativeMethods
         return 96;
     }
 
-    public static MonitorWorkArea GetActiveMonitorWorkArea()
+    public static OverlayMonitorPlacement.MonitorPlacementBounds GetActiveMonitorWorkArea(nint ignoreHwnd = default)
     {
         nint fgHwnd = GetForegroundWindow();
+        if (fgHwnd == ignoreHwnd)
+        {
+            fgHwnd = nint.Zero;
+        }
+
         nint monitor = fgHwnd != nint.Zero
             ? MonitorFromWindow(fgHwnd, MonitorDefaultToNearest)
             : MonitorFromPoint(new NativePoint { X = 0, Y = 0 }, MonitorDefaultToPrimary);
@@ -116,17 +192,73 @@ internal static partial class OverlayNativeMethods
             };
             if (GetMonitorInfoW(monitor, ref info))
             {
-                return new MonitorWorkArea(
+                bool isShellOrDesktop = fgHwnd == nint.Zero || IsDesktopOrShellWindow(fgHwnd);
+                OverlayMonitorPlacement.ScreenRect? fgRect = null;
+                if (!isShellOrDesktop && GetWindowRect(fgHwnd, out NativeRect nativeFgRect))
+                {
+                    fgRect = new OverlayMonitorPlacement.ScreenRect(
+                        nativeFgRect.Left,
+                        nativeFgRect.Top,
+                        nativeFgRect.Right,
+                        nativeFgRect.Bottom);
+                }
+
+                var rcMonitor = new OverlayMonitorPlacement.ScreenRect(
+                    info.RcMonitor.Left,
+                    info.RcMonitor.Top,
+                    info.RcMonitor.Right,
+                    info.RcMonitor.Bottom);
+                var rcWork = new OverlayMonitorPlacement.ScreenRect(
                     info.RcWork.Left,
                     info.RcWork.Top,
-                    Math.Max(640, info.RcWork.Right - info.RcWork.Left),
-                    Math.Max(480, info.RcWork.Bottom - info.RcWork.Top),
+                    info.RcWork.Right,
+                    info.RcWork.Bottom);
+
+                return OverlayMonitorPlacement.SelectEffectiveBounds(
+                    rcMonitor,
+                    rcWork,
+                    fgRect,
+                    isShellOrDesktop,
                     dpiX,
                     dpiY);
             }
         }
 
-        return new MonitorWorkArea(0, 0, 1920, 1080, dpiX, dpiY);
+        return new OverlayMonitorPlacement.MonitorPlacementBounds(0, 0, 1920, 1080, dpiX, dpiY, UsesFullscreenMonitorBounds: false);
+    }
+
+    private static bool IsDesktopOrShellWindow(nint hwnd)
+    {
+        if (hwnd == nint.Zero)
+        {
+            return true;
+        }
+
+        if (hwnd == GetDesktopWindow() || hwnd == GetShellWindow())
+        {
+            return true;
+        }
+
+        Span<char> classBuf = stackalloc char[64];
+        int len;
+        unsafe
+        {
+            fixed (char* pBuf = classBuf)
+            {
+                len = GetClassNameW(hwnd, pBuf, classBuf.Length);
+            }
+        }
+
+        if (len <= 0)
+        {
+            return false;
+        }
+
+        ReadOnlySpan<char> className = classBuf[..Math.Min(len, classBuf.Length)];
+        return className.Equals("Progman", StringComparison.OrdinalIgnoreCase)
+               || className.Equals("WorkerW", StringComparison.OrdinalIgnoreCase)
+               || className.Equals("Shell_TrayWnd", StringComparison.OrdinalIgnoreCase)
+               || className.Equals("Shell_SecondaryTrayWnd", StringComparison.OrdinalIgnoreCase);
     }
 
     public static (int LeftPx, int TopPx, int WidthPx, int HeightPx)? TryGetPhysicalWindowRect(nint hwnd)
@@ -148,14 +280,6 @@ internal static partial class OverlayNativeMethods
         nint.Size == 8
             ? SetWindowLongPtrW(hWnd, nIndex, dwNewLong)
             : new nint(SetWindowLongW(hWnd, nIndex, dwNewLong.ToInt32()));
-
-    internal readonly record struct MonitorWorkArea(
-        int LeftPx,
-        int TopPx,
-        int WidthPx,
-        int HeightPx,
-        uint DpiX,
-        uint DpiY);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct NativePoint
@@ -227,4 +351,13 @@ internal static partial class OverlayNativeMethods
     [LibraryImport("user32.dll", EntryPoint = "GetMonitorInfoW")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool GetMonitorInfoW(nint hMonitor, ref MonitorInfo lpmi);
+
+    [LibraryImport("user32.dll")]
+    private static partial nint GetDesktopWindow();
+
+    [LibraryImport("user32.dll")]
+    private static partial nint GetShellWindow();
+
+    [LibraryImport("user32.dll", EntryPoint = "GetClassNameW", SetLastError = true)]
+    private static unsafe partial int GetClassNameW(nint hWnd, char* lpClassName, int nMaxCount);
 }

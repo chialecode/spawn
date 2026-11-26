@@ -20,11 +20,23 @@ public sealed class AchievementIconProcessor(SpawnPaths paths)
         0f,              0f,              0f,              0.90f, 0f,
     ];
 
-    public async Task<IReadOnlyList<AchievementDefinitionDto>> CacheAndProcessIconsAsync(
+    private const string FallbackSubdirectoryName = "_fallback";
+    private static readonly Lock FallbackBadgeLock = new();
+
+    public Task<IReadOnlyList<AchievementDefinitionDto>> CacheAndProcessIconsAsync(
         string schemaKey,
         IReadOnlyList<AchievementDefinitionDto> definitions,
         HttpClient httpClient,
         bool allowNetworkDownloads = true,
+        CancellationToken cancellationToken = default) =>
+        CacheAndProcessIconsAsync(schemaKey, definitions, httpClient, allowNetworkDownloads, forceRefresh: false, cancellationToken);
+
+    public async Task<IReadOnlyList<AchievementDefinitionDto>> CacheAndProcessIconsAsync(
+        string schemaKey,
+        IReadOnlyList<AchievementDefinitionDto> definitions,
+        HttpClient httpClient,
+        bool allowNetworkDownloads,
+        bool forceRefresh,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(schemaKey);
@@ -47,7 +59,7 @@ public sealed class AchievementIconProcessor(SpawnPaths paths)
             try
             {
                 updated[idx] = await ProcessSingleDefinitionIconAsync(
-                    iconDir, def, httpClient, allowNetworkDownloads, cancellationToken).ConfigureAwait(false);
+                    iconDir, def, httpClient, allowNetworkDownloads, forceRefresh, cancellationToken).ConfigureAwait(false);
             }
             finally
             {
@@ -57,6 +69,21 @@ public sealed class AchievementIconProcessor(SpawnPaths paths)
 
         await Task.WhenAll(tasks).ConfigureAwait(false);
         return updated;
+    }
+
+    /// <summary>
+    /// Returns <see langword="true"/> when <paramref name="path"/> points to a shared procedural offline fallback badge
+    /// rather than a real cached per-achievement icon (<c>{safeApi}_color.png</c> / <c>{safeApi}_gray.png</c>).
+    /// </summary>
+    public static bool IsFallbackPlaceholderPath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        string normalized = path.Replace('/', '\\');
+        return normalized.Contains($@"\{FallbackSubdirectoryName}\", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -140,6 +167,7 @@ public sealed class AchievementIconProcessor(SpawnPaths paths)
         AchievementDefinitionDto def,
         HttpClient httpClient,
         bool allowNetworkDownloads,
+        bool forceRefresh,
         CancellationToken ct)
     {
         string safeApi = SanitizeFileStem(def.ApiName);
@@ -147,23 +175,28 @@ public sealed class AchievementIconProcessor(SpawnPaths paths)
         string grayPath = Path.Combine(iconDir, $"{safeApi}_gray.png");
 
         byte[]? colorBytes = null;
-        if (File.Exists(colorPath))
+        if (!forceRefresh && File.Exists(colorPath))
         {
             colorBytes = await ResilientFileReader.ReadSharedBytesWithRetryAsync(colorPath, ct).ConfigureAwait(false);
         }
 
         if (colorBytes is null || colorBytes.Length == 0)
         {
-            colorBytes = await ResolveSourceImageBytesAsync(def.IconPath, httpClient, allowNetworkDownloads, ct).ConfigureAwait(false);
-            if (colorBytes is { Length: > 0 })
+            byte[]? fetchedColor = await ResolveSourceImageBytesAsync(def.IconPath, httpClient, allowNetworkDownloads, ct).ConfigureAwait(false);
+            if (fetchedColor is { Length: > 0 })
             {
-                colorBytes = NormalizeToPngBytes(colorBytes) ?? colorBytes;
+                colorBytes = NormalizeToPngBytes(fetchedColor) ?? fetchedColor;
                 await WriteBytesAtomicallyAsync(colorPath, colorBytes, ct).ConfigureAwait(false);
+            }
+            else if (forceRefresh && File.Exists(colorPath))
+            {
+                // Preserve existing valid cached icon if force-refresh failed offline.
+                colorBytes = await ResilientFileReader.ReadSharedBytesWithRetryAsync(colorPath, ct).ConfigureAwait(false);
             }
         }
 
         byte[]? grayBytes = null;
-        if (File.Exists(grayPath))
+        if (!forceRefresh && File.Exists(grayPath))
         {
             grayBytes = await ResilientFileReader.ReadSharedBytesWithRetryAsync(grayPath, ct).ConfigureAwait(false);
         }
@@ -198,27 +231,60 @@ public sealed class AchievementIconProcessor(SpawnPaths paths)
             {
                 await WriteBytesAtomicallyAsync(grayPath, grayBytes, ct).ConfigureAwait(false);
             }
+            else if (forceRefresh && File.Exists(grayPath))
+            {
+                grayBytes = await ResilientFileReader.ReadSharedBytesWithRetryAsync(grayPath, ct).ConfigureAwait(false);
+            }
         }
 
-        // Procedural badge fallback if offline and no cached icons exist yet
-        if (colorBytes is null || colorBytes.Length == 0)
-        {
-            colorBytes = GenerateProceduralFallbackBadgePng(grayscale: false, isRare: def.IsRare);
-            await WriteBytesAtomicallyAsync(colorPath, colorBytes, ct).ConfigureAwait(false);
-        }
+        // CRITICAL: Never write procedural fallback badges into the formal `{safeApi}_color.png` / `{safeApi}_gray.png` cache paths!
+        // Keep formal paths clean so a later online sync automatically downloads real icons, while pointing offline UI rendering
+        // to an isolated shared fallback badge under `_fallback/`.
+        string? effectiveColorPath = File.Exists(colorPath)
+            ? colorPath
+            : EnsureSharedFallbackBadgePath(iconDir, grayscale: false, isRare: def.IsRare);
 
-        if (grayBytes is null || grayBytes.Length == 0)
-        {
-            grayBytes = SynthesizeRec709GrayscalePng(colorBytes)
-                        ?? GenerateProceduralFallbackBadgePng(grayscale: true, isRare: def.IsRare);
-            await WriteBytesAtomicallyAsync(grayPath, grayBytes, ct).ConfigureAwait(false);
-        }
+        string? effectiveGrayPath = File.Exists(grayPath)
+            ? grayPath
+            : EnsureSharedFallbackBadgePath(iconDir, grayscale: true, isRare: def.IsRare);
 
         return def with
         {
-            IconPath = File.Exists(colorPath) ? colorPath : def.IconPath,
-            IconGrayPath = File.Exists(grayPath) ? grayPath : def.IconGrayPath,
+            IconPath = effectiveColorPath,
+            IconGrayPath = effectiveGrayPath,
         };
+    }
+
+    private static string EnsureSharedFallbackBadgePath(
+        string iconDir,
+        bool grayscale,
+        bool isRare)
+    {
+        string fallbackDir = Path.Combine(iconDir, FallbackSubdirectoryName);
+        string stem = isRare ? "rare" : "default";
+        string variant = grayscale ? "gray" : "color";
+        string targetPath = Path.Combine(fallbackDir, $"{stem}_{variant}.png");
+
+        if (File.Exists(targetPath))
+        {
+            return targetPath;
+        }
+
+        lock (FallbackBadgeLock)
+        {
+            if (File.Exists(targetPath))
+            {
+                return targetPath;
+            }
+
+            Directory.CreateDirectory(fallbackDir);
+            byte[] badgeBytes = GenerateProceduralFallbackBadgePng(grayscale: grayscale, isRare: isRare);
+            string tempPath = $"{targetPath}.{Guid.NewGuid():N}.tmp";
+            File.WriteAllBytes(tempPath, badgeBytes);
+            File.Move(tempPath, targetPath, overwrite: true);
+        }
+
+        return targetPath;
     }
 
     private static async Task<byte[]?> ResolveSourceImageBytesAsync(
@@ -227,7 +293,7 @@ public sealed class AchievementIconProcessor(SpawnPaths paths)
         bool allowNetworkDownloads,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(urlOrPath))
+        if (string.IsNullOrWhiteSpace(urlOrPath) || IsFallbackPlaceholderPath(urlOrPath))
         {
             return null;
         }

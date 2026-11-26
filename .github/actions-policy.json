@@ -11,7 +11,8 @@
       "actions/checkout@*",
       "actions/setup-dotnet@*",
       "actions/upload-artifact@*",
-      "actions/download-artifact@*"
+      "actions/download-artifact@*",
+      "actions/cache@*"
     ]
   },
   "workflowPermissions": {

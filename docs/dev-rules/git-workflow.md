@@ -5,7 +5,7 @@
 ## 1. 第一提交与 `main` 保护
 
 - **第一提交**：`ad7454c1ab58bb2019e0f0ba6810c5928f8a335e`（`chore: initialize repository with empty README`，0 字节 `README.md`，带 DCO 签名）永久保留，不改写；已推送到 `main` 的历史一律不 `amend`、`rebase` 或强推。
-- **规则集 `main-protection`**（镜像 [`.github/rulesets/main.json`](../../.github/rulesets/main.json)，无绕过名单）：禁止删除与非快进推送，线性历史，`main` 只经 PR 写入，只允许 squash 合并，所有讨论必须解决；必需检查只有一个 `repository-quality`（[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)：DCO 签名、文档与公开卫生、Windows `.NET 10` Release 构建与全量测试；不按路径过滤，纯文档 PR 也产出）。
+- **规则集 `main-protection`**（镜像 [`.github/rulesets/main.json`](../../.github/rulesets/main.json)，无绕过名单）：禁止删除与非快进推送，线性历史，`main` 只经 PR 写入，只允许 squash 合并，所有讨论必须解决；必需检查只有一个 `repository-quality`（[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)：DCO 签名、文档与公开卫生、Windows `.NET 10` Release 构建与全量测试，以及缓存固定 NSIS `3.13` 后的 `installer/spawn.nsi` 全身份 `-WX` 只编译检查；不按路径过滤，纯文档 PR 也产出）。
 - **仓库入口**：开启 [Issues](https://github.com/chialecode/spawn/issues)（只允许协作者创建）与 [Discussions](https://github.com/chialecode/spawn/discussions)，关闭 Wiki 与 Projects；PR 仅协作者可创建；允许自动合并与更新分支，合并后删除分支；网页提交要求 DCO 签名；来自 fork 的 PR 运行 workflow 前须维护者批准；安全问题走私密漏洞报告。远端设置的镜像是 [repository-settings.json](../../.github/repository-settings.json)、[rulesets/main.json](../../.github/rulesets/main.json) 与 [actions-policy.json](../../.github/actions-policy.json)，以 GitHub 实际回读为准，改远端设置时同步更新镜像；其中 `issue_creation_policy` 与 `pull_request_creation_policy` 的 REST 接口不返回，用 GraphQL 仓库字段 `issueCreationPolicy` / `pullRequestCreationPolicy` 核对。
 
 <a id="single-stage-commit"></a>
@@ -33,7 +33,7 @@ git log --format="%H | %s | %(trailers:key=Signed-off-by,valueonly)" origin/main
 | 合并[高风险](development-workflow.md#high-risk) PR | 用户合并 |
 | 发布正式版、改远端设置与规则集、签名密钥、改写已推送历史 | 用户对具体动作授权（改写时用指定旧 SHA 的 `--force-with-lease`） |
 
-- **Actions**：只允许镜像 [`.github/actions-policy.json`](../../.github/actions-policy.json) 列出的官方 action（`checkout`、`setup-dotnet`、`upload-artifact`、`download-artifact`），远端强制固定完整 40 位 SHA 并注明版本；token 默认只读。
+- **Actions**：只允许镜像 [`.github/actions-policy.json`](../../.github/actions-policy.json) 列出的官方 action（`checkout`、`setup-dotnet`、`upload-artifact`、`download-artifact`、`cache`），远端强制固定完整 40 位 SHA 并注明版本；token 默认只读。
 - **Dependabot**（[`.github/dependabot.yml`](../../.github/dependabot.yml)）：版本更新 PR 在[每周维护](development-workflow.md#weekly)时处理，NuGet 兼容更新按低风险，主版本与 Actions 更新按高风险；安全修复随时尽快处理。
 - **低频调用**：优先单次 `gh api` / `gh pr view` 获取所需字段，不写高频轮询，遇 `403` / `429` 限流不暴力重试。
 

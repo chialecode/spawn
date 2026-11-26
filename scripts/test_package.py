@@ -179,6 +179,151 @@ class InstallerScriptTests(unittest.TestCase):
             "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\io.github.chialecode.spawn-dev",
         )
 
+    def test_compile_nsis_installer_passes_wx_and_fails_on_nonzero_exit(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="spawn-nsis-wx-") as tmp:
+            root = Path(tmp)
+            app_dir = root / "app"
+            app_dir.mkdir()
+            (app_dir / "spawn.exe").write_bytes(b"MZ")
+            out_file = root / "out" / "setup.exe"
+            out_file.parent.mkdir()
+            work_dir = root / "work"
+            recorded_cmds: list[list[str]] = []
+
+            def fake_run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+                recorded_cmds.append(cmd)
+                out_file.write_bytes(b"MZ-setup")
+                return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+            with mock.patch.object(pkg, "_run_quiet", side_effect=fake_run):
+                pkg.compile_nsis_installer(
+                    root / "makensis.exe",
+                    REPO_ROOT / "installer" / "spawn.nsi",
+                    profile=pkg.IDENTITY_PROFILES["spawn"],
+                    version="0.1.1",
+                    numeric_version="0.1.1.0",
+                    icon_file=REPO_ROOT / "assets" / "icon.ico",
+                    app_dir=app_dir,
+                    out_file=out_file,
+                    work_dir=work_dir,
+                    create_shortcuts=True,
+                    fast_compression=False,
+                    cwd=REPO_ROOT,
+                )
+
+            self.assertEqual(len(recorded_cmds), 1)
+            self.assertIn("-WX", recorded_cmds[0])
+            self.assertIn("-DSPAWN_CREATE_SHORTCUTS=1", recorded_cmds[0])
+            self.assertNotIn("-DSPAWN_FAST_COMPRESSION", recorded_cmds[0])
+
+            def fake_warn_fail(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+                return subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=1,
+                    stdout="warning: synthetic warning",
+                    stderr="Error - aborting creation process",
+                )
+
+            with mock.patch.object(pkg, "_run_quiet", side_effect=fake_warn_fail):
+                with self.assertRaisesRegex(RuntimeError, "makensis failed"):
+                    pkg.compile_nsis_installer(
+                        root / "makensis.exe",
+                        REPO_ROOT / "installer" / "spawn.nsi",
+                        profile=pkg.IDENTITY_PROFILES["spawn"],
+                        version="0.1.1",
+                        numeric_version="0.1.1.0",
+                        icon_file=REPO_ROOT / "assets" / "icon.ico",
+                        app_dir=app_dir,
+                        out_file=out_file,
+                        work_dir=work_dir,
+                        create_shortcuts=False,
+                        fast_compression=True,
+                        cwd=REPO_ROOT,
+                    )
+
+    def test_check_nsis_script_covers_all_identities_and_shortcut_modes(self) -> None:
+        calls: list[dict[str, object]] = []
+        observed_app_dirs: list[Path] = []
+
+        def fake_compile(
+            makensis_exe: Path,
+            nsi_path: Path,
+            *,
+            profile: pkg.IdentityProfile,
+            version: str,
+            numeric_version: str,
+            icon_file: Path,
+            app_dir: Path,
+            out_file: Path,
+            work_dir: Path,
+            create_shortcuts: bool,
+            fast_compression: bool,
+            cwd: Path,
+        ) -> None:
+            self.assertEqual(nsi_path, REPO_ROOT / "installer" / "spawn.nsi")
+            self.assertTrue((app_dir / f"{profile.identity}.exe").is_file())
+            self.assertTrue((app_dir / "Spawn.OverlayHost.exe").is_file())
+            self.assertTrue((app_dir / "Workers" / "Trainer" / "Spawn.TrainerWorker.exe").is_file())
+            self.assertTrue((app_dir / "THIRD-PARTY-NOTICES.txt").is_file())
+            self.assertTrue(icon_file.is_file())
+            self.assertEqual(fast_compression, profile.dev_like)
+            observed_app_dirs.append(app_dir)
+            calls.append(
+                {
+                    "identity": profile.identity,
+                    "create_shortcuts": create_shortcuts,
+                    "fast_compression": fast_compression,
+                    "version": version,
+                    "numeric_version": numeric_version,
+                }
+            )
+
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            checked = pkg.check_nsis_script(
+                REPO_ROOT,
+                makensis_exe=Path("makensis.exe"),
+                compile_fn=fake_compile,
+            )
+
+        expected = {
+            (identity, create_shortcuts)
+            for identity in ("spawn", "spawn-dev", "spawn-test", "spawn-dev-test")
+            for create_shortcuts in (False, True)
+        }
+        self.assertEqual(len(checked), 8)
+        self.assertEqual(set(checked), expected)
+        self.assertEqual({(c["identity"], c["create_shortcuts"]) for c in calls}, expected)
+        for app_dir in observed_app_dirs:
+            self.assertFalse(app_dir.exists(), "temporary dummy app dir must be cleaned up")
+
+    def test_check_nsis_script_real_makensis_passes_clean_and_fails_on_warning(self) -> None:
+        try:
+            makensis = pkg.find_makensis({}, fetch=False)
+        except FileNotFoundError:
+            self.skipTest("pinned NSIS 3.13 not cached locally (offline unit test)")
+
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            checked = pkg.check_nsis_script(REPO_ROOT, makensis_exe=makensis)
+        self.assertEqual(len(checked), 8)
+
+        with tempfile.TemporaryDirectory(prefix="spawn-nsis-warn-") as tmp:
+            bad_nsi = Path(tmp) / "spawn-warn.nsi"
+            original = (REPO_ROOT / "installer" / "spawn.nsi").read_text(encoding="utf-8")
+            bad_nsi.write_text(
+                original + '\n!warning "synthetic warning to verify -WX enforcement"\n',
+                encoding="utf-8",
+                newline="\n",
+            )
+            with self.assertRaisesRegex(RuntimeError, "makensis failed"):
+                pkg.check_nsis_script(
+                    REPO_ROOT,
+                    makensis_exe=makensis,
+                    nsi_path=bad_nsi,
+                    profiles=[pkg.IDENTITY_PROFILES["spawn"]],
+                )
+
 
 class FakeClock:
     def __init__(self) -> None:

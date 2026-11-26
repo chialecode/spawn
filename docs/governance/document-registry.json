@@ -17,8 +17,8 @@
       "status": "active",
       "owner": "维护者",
       "scope": "GitHub Actions 权限、SHA 固定与允许运行的官方 Action 白名单声明镜像",
-      "reviewed": "2026-11-22",
-      "basis": "M3-W11：同步增加 actions/upload-artifact@* 与 actions/download-artifact@* 允许模式以匹配 release.yml（远端设置待同步）"
+      "reviewed": "2026-11-26",
+      "basis": "#36：与远端 selected-actions 白名单同步，补充 actions/cache@* 以按 SHA 缓存固定 NSIS 3.13"
     },
     {
       "path": ".github/repository-settings.json",
@@ -324,8 +324,8 @@
       "status": "active",
       "owner": "维护者",
       "scope": "Git 与远端：分支与提交、PR 与合并、规则集与仓库设置镜像、正式版发布流水线",
-      "reviewed": "2026-11-24",
-      "basis": "D-34：开发流程统一为 issue 驱动"
+      "reviewed": "2026-11-26",
+      "basis": "#36：同步 repository-quality NSIS 只编译检查与 actions/cache@* 白名单"
     },
     {
       "path": "docs/dev-rules/local-files-and-references.md",
@@ -342,8 +342,8 @@
       "status": "active",
       "owner": "维护者",
       "scope": "两级质量门禁设计（check_docs.py / quick_gate.py / Stage Gate + IAT 与每周发布工作流审计）与测试前台静音规范",
-      "reviewed": "2026-11-24",
-      "basis": "D-34：开发流程统一为 issue 驱动"
+      "reviewed": "2026-11-26",
+      "basis": "#36：同步 CI repository-quality 的 installer/spawn.nsi 全身份 -WX 只编译检查"
     },
     {
       "path": "docs/dev-rules/repo-map.md",

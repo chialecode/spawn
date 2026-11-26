@@ -25,6 +25,9 @@ public sealed class ReleaseWorkflowGateTests
     private const string ExpectedDownloadArtifactRef =
         "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333";
 
+    private const string ExpectedCacheActionRef =
+        "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9";
+
     private static readonly Regex PinnedActionRefRegex = new(
         @"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_./-]+)?@[0-9a-f]{40}$",
         RegexOptions.Compiled);
@@ -404,6 +407,80 @@ public sealed class ReleaseWorkflowGateTests
     }
 
     [Fact]
+    public void CiWorkflow_NsisCompileCheckAndActionPinning_EnforcesCacheFetchWxAndNoInstall()
+    {
+        ParsedWorkflow ci = LoadWorkflow(".github", "workflows", "ci.yml");
+        string repoRoot = LocateRepositoryRoot();
+
+        Assert.Equal(["repository-quality"], ci.Jobs.Keys.ToArray());
+        ParsedJob job = ci.Jobs["repository-quality"];
+
+        // 1. Every third-party action in ci.yml must pin a 40-hex SHA and be allowlisted in .github/actions-policy.json.
+        string policyPath = Path.Combine(repoRoot, ".github", "actions-policy.json");
+        Assert.True(File.Exists(policyPath), $"Missing Actions policy manifest: {policyPath}");
+        using JsonDocument policyDoc = JsonDocument.Parse(File.ReadAllText(policyPath));
+        Assert.True(policyDoc.RootElement.GetProperty("permissions").GetProperty("sha_pinning_required").GetBoolean());
+        HashSet<string> allowedPatterns = policyDoc.RootElement
+            .GetProperty("selectedActions")
+            .GetProperty("patterns_allowed")
+            .EnumerateArray()
+            .Select(e => e.GetString() ?? string.Empty)
+            .ToHashSet(StringComparer.Ordinal);
+
+        var usesSteps = job.Steps.Where(s => !string.IsNullOrWhiteSpace(s.Uses)).ToList();
+        Assert.NotEmpty(usesSteps);
+        foreach (ParsedStep step in usesSteps)
+        {
+            string usesRef = step.Uses!;
+            if (usesRef.StartsWith("./", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            Assert.True(
+                PinnedActionRefRegex.IsMatch(usesRef),
+                $"CI workflow action '{usesRef}' in step '{step.Name}' must pin an exact 40-character lowercase hex commit SHA.");
+            string actionRepo = usesRef[..usesRef.IndexOf('@', StringComparison.Ordinal)];
+            Assert.Contains($"{actionRepo}@*", allowedPatterns);
+        }
+
+        // 2. NSIS compile-only check steps: pinned actions/cache keyed by NSIS SHA -> --fetch-nsis -> --check-nsis,
+        //    strictly AFTER dotnet test so CI never executes the installer inside unit tests.
+        var steps = job.Steps.ToList();
+        int dotnetTestIndex = steps.FindIndex(
+            s => (s.Run ?? string.Empty).Contains("dotnet test Spawn.sln", StringComparison.Ordinal));
+        int cacheIndex = steps.FindIndex(
+            s => string.Equals(s.Uses, ExpectedCacheActionRef, StringComparison.Ordinal));
+        int fetchIndex = steps.FindIndex(
+            s => (s.Run ?? string.Empty).Contains("python -B scripts/package.py --fetch-nsis", StringComparison.Ordinal));
+        int checkNsisIndex = steps.FindIndex(
+            s => (s.Run ?? string.Empty).Contains("python -B scripts/package.py --check-nsis", StringComparison.Ordinal));
+
+        Assert.True(dotnetTestIndex >= 0, "CI repository-quality must run dotnet test.");
+        Assert.True(cacheIndex >= 0, $"CI repository-quality must cache pinned NSIS 3.13 via {ExpectedCacheActionRef}.");
+        Assert.True(fetchIndex >= 0, "CI repository-quality must fetch pinned NSIS via `python -B scripts/package.py --fetch-nsis`.");
+        Assert.True(checkNsisIndex >= 0, "CI repository-quality must compile-check installer/spawn.nsi via `python -B scripts/package.py --check-nsis`.");
+        Assert.True(
+            dotnetTestIndex < cacheIndex && cacheIndex < fetchIndex && fetchIndex < checkNsisIndex,
+            "CI must run NSIS cache -> --fetch-nsis -> --check-nsis strictly after dotnet test so unit tests never run an installer in CI.");
+
+        ParsedStep cacheStep = steps[cacheIndex];
+        Assert.Matches(new Regex(@"^\s+path:\s*\.tools/nsis-3\.13\s*$", RegexOptions.Multiline), cacheStep.RawBlock);
+        Assert.Contains(ExpectedNsis313ZipSha256, cacheStep.RawBlock, StringComparison.Ordinal);
+
+        // 3. CI must never execute any installer (--install, --install-dev, --drill-install) or override makensis.
+        string allScripts = job.AllRunScripts;
+        Assert.DoesNotContain("--install", allScripts, StringComparison.Ordinal);
+        Assert.DoesNotContain("--drill-install", allScripts, StringComparison.Ordinal);
+        Assert.DoesNotContain("SPAWN_MAKENSIS_PATH", job.RawBlock, StringComparison.Ordinal);
+
+        // 4. scripts/package.py must enforce -WX during NSIS compilation.
+        string packagePy = File.ReadAllText(Path.Combine(repoRoot, "scripts", "package.py"));
+        Assert.Contains("\"-WX\"", packagePy, StringComparison.Ordinal);
+        Assert.Contains("--check-nsis", packagePy, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ReleaseWorkflow_Parser_HandlesBlockScalarsAndDetectsTamperedTriggersOrUnpinnedUses()
     {
         const string tamperedYaml = """
@@ -439,16 +516,20 @@ public sealed class ReleaseWorkflowGateTests
         Assert.Null(parsed.Jobs["plan"].Steps[1].Uses);
     }
 
-    private static ParsedWorkflow LoadReleaseWorkflow()
+    private static ParsedWorkflow LoadReleaseWorkflow() =>
+        LoadWorkflow(".github", "workflows", "release.yml");
+
+    private static ParsedWorkflow LoadWorkflow(params string[] relativeSegments)
     {
         string repoRoot = LocateRepositoryRoot();
-        string workflowPath = Path.Combine(repoRoot, ".github", "workflows", "release.yml");
-        Assert.True(File.Exists(workflowPath), $"Missing weekly release workflow: {workflowPath}");
+        string workflowPath = Path.Combine([repoRoot, ..relativeSegments]);
+        string displayPath = string.Join('/', relativeSegments);
+        Assert.True(File.Exists(workflowPath), $"Missing workflow file: {workflowPath}");
 
         byte[] rawBytes = File.ReadAllBytes(workflowPath);
         Assert.False(
             rawBytes.Length >= 3 && rawBytes[0] == 0xEF && rawBytes[1] == 0xBB && rawBytes[2] == 0xBF,
-            ".github/workflows/release.yml must be UTF-8 without BOM.");
+            $"{displayPath} must be UTF-8 without BOM.");
 
         string text = Encoding.UTF8.GetString(rawBytes);
         Assert.DoesNotContain("\t", text, StringComparison.Ordinal);

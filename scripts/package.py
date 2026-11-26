@@ -6,6 +6,7 @@ NSIS 3.13 build is fetched on first use (SHA-256 checked) into the Git-ignored .
 Usage examples:
   python -B scripts/package.py --channel dev
   python -B scripts/package.py --install-dev
+  python -B scripts/package.py --check-nsis
   python -B scripts/package.py --identity spawn-dev-test --install --no-relaunch
   python -B scripts/package.py --identity spawn-dev-test --uninstall
 """
@@ -13,6 +14,7 @@ Usage examples:
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterable
 import ctypes
 from ctypes import wintypes
 from dataclasses import dataclass
@@ -26,6 +28,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Callable
 import urllib.request
@@ -375,6 +378,78 @@ def compile_nsis_installer(
         raise RuntimeError(f"makensis failed (exit {proc.returncode}):\n{proc.stdout}\n{proc.stderr}")
     if not out_file.is_file() or out_file.stat().st_size == 0:
         raise RuntimeError(f"makensis succeeded but installer not found at {out_file}")
+
+
+def check_nsis_script(
+    repo_root: Path,
+    *,
+    makensis_exe: Path | None = None,
+    nsi_path: Path | None = None,
+    profiles: Iterable[IdentityProfile] | None = None,
+    compile_fn: Callable[..., None] = compile_nsis_installer,
+) -> list[tuple[str, bool]]:
+    """Compile-check installer/spawn.nsi with -WX across every identity and shortcut mode.
+
+    Uses a tiny dummy application directory in a temporary folder and never executes any
+    compiled installer. Any NSIS warning fails compilation via makensis -WX.
+    """
+    resolved_makensis = makensis_exe if makensis_exe is not None else find_makensis()
+    resolved_nsi = nsi_path if nsi_path is not None else (repo_root / "installer" / "spawn.nsi")
+    if not resolved_nsi.is_file():
+        raise FileNotFoundError(f"NSIS installer script not found: {resolved_nsi}")
+
+    rel_ico, dev_ico = ensure_icons(repo_root)
+    target_profiles = list(profiles) if profiles is not None else list(IDENTITY_PROFILES.values())
+    if not target_profiles:
+        raise ValueError("check_nsis_script requires at least one identity profile")
+
+    numeric_version = compute_numeric_version(NEXT_BASE_VERSION)
+    checked: list[tuple[str, bool]] = []
+
+    with tempfile.TemporaryDirectory(prefix="spawn-nsis-check-") as tmp_str:
+        tmp_root = Path(tmp_str)
+        for profile in target_profiles:
+            fake_app = tmp_root / "app" / profile.identity
+            for rel_file, payload in (
+                (f"{profile.identity}.exe", b"MZ-dummy-host"),
+                ("Spawn.OverlayHost.exe", b"MZ-dummy-overlay"),
+                ("Workers/Trainer/Spawn.TrainerWorker.exe", b"MZ-dummy-worker"),
+                ("VERSION.txt", f"identity={profile.identity}\nchannel={profile.channel}\n".encode("utf-8")),
+                ("THIRD-PARTY-NOTICES.txt", b"SPAWN dummy third-party notices\n"),
+                ("assets/icon.ico", b"ICO"),
+            ):
+                target_file = fake_app / rel_file
+                target_file.parent.mkdir(parents=True, exist_ok=True)
+                target_file.write_bytes(payload)
+
+            icon_file = dev_ico if profile.dev_like else rel_ico
+            version = f"{NEXT_BASE_VERSION}-dev.202611240000" if profile.dev_like else NEXT_BASE_VERSION
+
+            for create_shortcuts in (False, True):
+                combo_dir = tmp_root / "out" / f"{profile.identity}-shortcuts-{int(create_shortcuts)}"
+                out_file = combo_dir / f"{profile.identity}-check.exe"
+                work_dir = combo_dir / "work"
+                compile_fn(
+                    resolved_makensis,
+                    resolved_nsi,
+                    profile=profile,
+                    version=version,
+                    numeric_version=numeric_version,
+                    icon_file=icon_file,
+                    app_dir=fake_app,
+                    out_file=out_file,
+                    work_dir=work_dir,
+                    create_shortcuts=create_shortcuts,
+                    fast_compression=profile.dev_like,
+                    cwd=repo_root,
+                )
+                checked.append((profile.identity, create_shortcuts))
+
+    print(
+        f"[package] NSIS compile-only check passed: {len(checked)} combinations "
+        f"({len(target_profiles)} identities x shortcuts=0/1, -WX, no install)."
+    )
+    return checked
 
 
 def resolve_git_short_sha(repo_root: Path) -> str:
@@ -1789,10 +1864,20 @@ def main() -> int:
         action="store_true",
         help="Only fetch the pinned NSIS build into .tools/ (SHA-256 checked) and print makensis.exe.",
     )
+    parser.add_argument(
+        "--check-nsis",
+        action="store_true",
+        help="Compile-check installer/spawn.nsi with -WX for every identity x shortcut mode against a dummy app dir (never runs the installer).",
+    )
     args = parser.parse_args()
 
     if args.fetch_nsis:
         print(find_makensis())
+        if not args.check_nsis:
+            return 0
+
+    if args.check_nsis:
+        check_nsis_script(REPO_ROOT)
         return 0
 
     repo_root = REPO_ROOT

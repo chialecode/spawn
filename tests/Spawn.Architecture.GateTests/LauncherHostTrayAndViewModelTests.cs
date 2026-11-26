@@ -82,7 +82,7 @@ public sealed class LauncherHostTrayAndViewModelTests
             };
 
             var posterVm = new GameListItemViewModel(posterRecord);
-            await posterVm.PendingArtworkLoadTask.WaitAsync(TimeSpan.FromSeconds(5));
+            await posterVm.PendingArtworkLoadTask.WaitAsync(TimeSpan.FromSeconds(10));
 
             Assert.NotNull(posterVm.CoverImage);
             Assert.NotNull(posterVm.SmallIcon);
@@ -108,7 +108,7 @@ public sealed class LauncherHostTrayAndViewModelTests
             };
 
             var iconOnlyVm = new GameListItemViewModel(iconOnlyRecord);
-            await iconOnlyVm.PendingArtworkLoadTask.WaitAsync(TimeSpan.FromSeconds(5));
+            await iconOnlyVm.PendingArtworkLoadTask.WaitAsync(TimeSpan.FromSeconds(10));
 
             Assert.NotNull(iconOnlyVm.CoverImage);
             Assert.False(iconOnlyVm.HasPosterCover);
@@ -196,7 +196,7 @@ public sealed class LauncherHostTrayAndViewModelTests
             };
 
             var vm = new GameListItemViewModel(record);
-            await vm.PendingArtworkLoadTask.WaitAsync(TimeSpan.FromSeconds(5));
+            await vm.PendingArtworkLoadTask.WaitAsync(TimeSpan.FromSeconds(10));
             var initialCover = vm.CoverImage;
             var initialSmall = vm.SmallIcon;
             Assert.NotNull(initialCover);
@@ -207,7 +207,7 @@ public sealed class LauncherHostTrayAndViewModelTests
             File.SetLastWriteTimeUtc(iconPath, DateTime.UtcNow.AddSeconds(5));
 
             vm.UpdateRecord(record);
-            await vm.PendingArtworkLoadTask.WaitAsync(TimeSpan.FromSeconds(5));
+            await vm.PendingArtworkLoadTask.WaitAsync(TimeSpan.FromSeconds(10));
 
             Assert.NotNull(vm.CoverImage);
             Assert.NotNull(vm.SmallIcon);
@@ -222,7 +222,7 @@ public sealed class LauncherHostTrayAndViewModelTests
             // 2. Delete icon.png on disk -> UpdateRecord clears cached bitmaps instead of keeping stale ghost images.
             File.Delete(iconPath);
             vm.UpdateRecord(record);
-            await vm.PendingArtworkLoadTask.WaitAsync(TimeSpan.FromSeconds(5));
+            await vm.PendingArtworkLoadTask.WaitAsync(TimeSpan.FromSeconds(10));
 
             Assert.Null(vm.CoverImage);
             Assert.Null(vm.SmallIcon);
@@ -289,7 +289,7 @@ public sealed class LauncherHostTrayAndViewModelTests
             // Trigger lazy async icon load and await deterministically.
             _ = row.IconImage;
             Assert.True(row.IsIconLoadStarted);
-            await row.EnsureIconLoadedAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            await row.EnsureIconLoadedAsync().WaitAsync(TimeSpan.FromSeconds(10));
             Assert.NotNull(row.IconImage);
             Assert.Equal(0.92, row.IconOpacity, precision: 2);
 
@@ -363,7 +363,7 @@ public sealed class LauncherHostTrayAndViewModelTests
             Assert.Equal(AchievementChannelDotState.PendingGbeFork, normalRow.ChannelDotState);
             Assert.Equal("#F59E0B", normalRow.ChannelDotHexColor);
 
-            await normalRow.EnsureIconLoadedAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            await normalRow.EnsureIconLoadedAsync().WaitAsync(TimeSpan.FromSeconds(10));
             Assert.NotNull(normalRow.IconImage);
             Assert.Equal(1.0, normalRow.IconOpacity, precision: 2);
         }

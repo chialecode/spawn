@@ -205,46 +205,58 @@ public sealed class LauncherCoreUxOptimizationTests
             Assert.True(launchRes.Succeeded, launchRes.ErrorMessage);
             int pid = starter.LastStartedProcess!.Id;
 
-            // 1. During graceful stop spanning multiple 40ms sample ticks, State MUST remain Stopping (never overwritten by Active/Background/Afk).
+            // 1. During graceful stop spanning multiple 40ms sample ticks (with generous 5s timeout so CI scheduling
+            // jitter cannot expire it early), State MUST remain Stopping and NEVER be overwritten by Active/Background/Afk.
+            // Cancelling CancellationToken mid-graceful-stop then cleans up StopRequested and restores running state.
             var observedDuringStop = new List<PlaySessionActivityState>();
-            Task<GameStopResult> gracefulTask = launchService.StopGameAsync(
-                game.GameId,
-                forceKill: false,
-                gracefulTimeout: TimeSpan.FromMilliseconds(320));
-
-            await Task.Delay(60);
-            for (int i = 0; i < 4; i++)
+            using (var cancelCts = new CancellationTokenSource())
             {
-                var snap = launchService.GetActiveSession(game.GameId);
-                if (snap is not null)
+                Task<GameStopResult> cancelableGracefulTask = launchService.StopGameAsync(
+                    game.GameId,
+                    forceKill: false,
+                    gracefulTimeout: TimeSpan.FromSeconds(5),
+                    cancellationToken: cancelCts.Token);
+
+                // Wait until Stopping is entered before sampling across multiple 40ms monitor ticks.
+                DateTime waitEnteredDeadline = DateTime.UtcNow.AddSeconds(2);
+                while (launchService.GetActiveSession(game.GameId)?.State != PlaySessionActivityState.Stopping
+                       && DateTime.UtcNow < waitEnteredDeadline)
                 {
-                    observedDuringStop.Add(snap.State);
+                    await Task.Delay(20);
                 }
 
-                await Task.Delay(45);
-            }
+                for (int i = 0; i < 5; i++)
+                {
+                    var snap = launchService.GetActiveSession(game.GameId);
+                    if (snap is not null)
+                    {
+                        observedDuringStop.Add(snap.State);
+                    }
 
-            GameStopResult timedOut = await gracefulTask;
-            Assert.False(timedOut.Succeeded);
-            Assert.Equal(GameStopOutcomeKind.GracefulTimeoutStillRunning, timedOut.Outcome);
-            Assert.NotEmpty(observedDuringStop);
-            Assert.All(observedDuringStop, s => Assert.Equal(PlaySessionActivityState.Stopping, s));
-            Assert.NotEqual(PlaySessionActivityState.Stopping, launchService.GetActiveSession(game.GameId)!.State);
+                    await Task.Delay(50);
+                }
 
-            // 2. Cancelling CancellationToken mid-graceful-stop cleans up StopRequested and restores running state!
-            using (var cancelCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(120)))
-            {
-                await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-                    launchService.StopGameAsync(
-                        game.GameId,
-                        forceKill: false,
-                        gracefulTimeout: TimeSpan.FromSeconds(5),
-                        cancellationToken: cancelCts.Token));
+                Assert.False(cancelableGracefulTask.IsCompleted);
+                Assert.NotEmpty(observedDuringStop);
+                Assert.All(observedDuringStop, s => Assert.Equal(PlaySessionActivityState.Stopping, s));
+
+                cancelCts.Cancel();
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cancelableGracefulTask);
             }
 
             ActiveGameSession? afterCancel = launchService.GetActiveSession(game.GameId);
             Assert.NotNull(afterCancel);
             Assert.NotEqual(PlaySessionActivityState.Stopping, afterCancel!.State);
+            Assert.True(SafeProcessInspector.IsProcessAlive(pid));
+
+            // 2. Natural graceful timeout returns GracefulTimeoutStillRunning and restores non-Stopping state.
+            GameStopResult timedOut = await launchService.StopGameAsync(
+                game.GameId,
+                forceKill: false,
+                gracefulTimeout: TimeSpan.FromMilliseconds(220));
+            Assert.False(timedOut.Succeeded);
+            Assert.Equal(GameStopOutcomeKind.GracefulTimeoutStillRunning, timedOut.Outcome);
+            Assert.NotEqual(PlaySessionActivityState.Stopping, launchService.GetActiveSession(game.GameId)!.State);
             Assert.True(SafeProcessInspector.IsProcessAlive(pid));
 
             // 3. Concurrent forceKill: true while a graceful stop is waiting cleanly supersedes without reverting state.
@@ -253,7 +265,13 @@ public sealed class LauncherCoreUxOptimizationTests
                 forceKill: false,
                 gracefulTimeout: TimeSpan.FromSeconds(5));
 
-            await Task.Delay(80);
+            DateTime waitForceDeadline = DateTime.UtcNow.AddSeconds(2);
+            while (launchService.GetActiveSession(game.GameId)?.State != PlaySessionActivityState.Stopping
+                   && DateTime.UtcNow < waitForceDeadline)
+            {
+                await Task.Delay(20);
+            }
+
             GameStopResult forceRes = await launchService.StopGameAsync(game.GameId, forceKill: true);
             GameStopResult supersededGracefulRes = await longGracefulTask.WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -961,7 +979,7 @@ public sealed class LauncherCoreUxOptimizationTests
             var psi = new ProcessStartInfo
             {
                 FileName = comSpec,
-                Arguments = "/c \"for /L %i in (1,1,2000) do @rem\"",
+                Arguments = "/c \"ping -n 2 127.0.0.1 >nul\"",
                 WorkingDirectory = request.WorkingDirectory,
                 UseShellExecute = false,
                 CreateNoWindow = true,

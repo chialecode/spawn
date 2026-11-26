@@ -455,6 +455,96 @@ public sealed class LauncherHostTrayAndViewModelTests
         Assert.DoesNotContain(cooldownMenu, m => m.CommandId >= TrayIconService.CmdQuickLaunchBase);
     }
 
+    [Fact]
+    public async Task AsyncArtworkAndAchievementIcon_DoNotPostBackToNonWpfSynchronizationContext()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"spawn-nonsyncctx-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+
+        try
+        {
+            string iconPath = Path.Combine(tempDir, "icon.png");
+            string achPath = Path.Combine(tempDir, "ach.png");
+            await File.WriteAllBytesAsync(iconPath, CreateSolidPngBytes(48, 48, SKColors.MediumSeaGreen));
+            await File.WriteAllBytesAsync(achPath, CreateSolidPngBytes(48, 48, SKColors.Gold));
+
+            var blockingContext = new NeverPostSynchronizationContext();
+            SynchronizationContext? previousContext = SynchronizationContext.Current;
+
+            GameListItemViewModel gameVm;
+            AchievementRowViewModel achVm;
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(blockingContext);
+                gameVm = new GameListItemViewModel(new GameRecord
+                {
+                    GameId = "game-syncctx-test",
+                    Title = "SyncContext Isolation",
+                    InstallDir = tempDir,
+                    ExecutableRelPath = "game.exe",
+                    CoverImagePath = iconPath,
+                    IconPath = iconPath,
+                });
+
+                achVm = new AchievementRowViewModel(
+                    "game-syncctx-test",
+                    "SyncContext Isolation",
+                    new GameAchievementItemDto
+                    {
+                        Definition = new AchievementDefinitionDto
+                        {
+                            ApiName = "ACH_SYNC_CTX",
+                            DisplayName = "No Starvation",
+                            IconPath = achPath,
+                        },
+                        Unlock = new AchievementUnlockDto
+                        {
+                            GameId = "game-syncctx-test",
+                            ApiName = "ACH_SYNC_CTX",
+                            IsUnlocked = true,
+                        },
+                    },
+                    globalRevealSpoilers: false,
+                    static (_, _) => Task.CompletedTask,
+                    static _ => Task.CompletedTask);
+
+                _ = achVm.IconImage;
+            }
+            finally
+            {
+                SynchronizationContext.SetSynchronizationContext(previousContext);
+            }
+
+            await gameVm.PendingArtworkLoadTask.WaitAsync(TimeSpan.FromSeconds(10));
+            await achVm.EnsureIconLoadedAsync().WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.Equal(0, blockingContext.PostCount);
+            Assert.NotNull(gameVm.CoverImage);
+            Assert.NotNull(gameVm.SmallIcon);
+            Assert.NotNull(achVm.IconImage);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+    }
+
+    private sealed class NeverPostSynchronizationContext : SynchronizationContext
+    {
+        private int _postCount;
+
+        public int PostCount => Volatile.Read(ref _postCount);
+
+        public override void Post(SendOrPostCallback d, object? state)
+        {
+            Interlocked.Increment(ref _postCount);
+            // Intentionally drop callback to simulate a starved non-WPF SynchronizationContext.
+        }
+    }
+
     private static byte[] CreateSolidPngBytes(int width, int height, SKColor color)
     {
         using var bmp = new SKBitmap(width, height, SKColorType.Bgra8888, SKAlphaType.Premul);

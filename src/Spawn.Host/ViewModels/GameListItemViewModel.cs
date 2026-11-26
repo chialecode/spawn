@@ -30,7 +30,6 @@ public sealed partial class GameListItemViewModel : ObservableObject
     };
 
     private readonly Dispatcher? _uiDispatcher;
-    private readonly SynchronizationContext? _syncContext;
 
     private string? _lastSmallIconPath;
     private string? _lastCoverSourcePath;
@@ -245,7 +244,6 @@ public sealed partial class GameListItemViewModel : ObservableObject
     {
         _record = record ?? throw new ArgumentNullException(nameof(record));
         _uiDispatcher = ResolveLiveUiDispatcher();
-        _syncContext = _uiDispatcher is null ? SynchronizationContext.Current : null;
         ReloadArtwork(forceRefresh: true);
     }
 
@@ -253,11 +251,20 @@ public sealed partial class GameListItemViewModel : ObservableObject
     {
         if (SynchronizationContext.Current is DispatcherSynchronizationContext)
         {
-            return Dispatcher.FromThread(Thread.CurrentThread);
+            Dispatcher? currentDispatcher = Dispatcher.FromThread(Thread.CurrentThread);
+            if (currentDispatcher is not null
+                && !currentDispatcher.HasShutdownStarted
+                && !currentDispatcher.HasShutdownFinished)
+            {
+                return currentDispatcher;
+            }
         }
 
         Dispatcher? appDispatcher = System.Windows.Application.Current?.Dispatcher;
-        if (appDispatcher is not null && appDispatcher.CheckAccess())
+        if (appDispatcher is not null
+            && !appDispatcher.HasShutdownStarted
+            && !appDispatcher.HasShutdownFinished
+            && appDispatcher.CheckAccess())
         {
             return appDispatcher;
         }
@@ -499,24 +506,8 @@ public sealed partial class GameListItemViewModel : ObservableObject
             return _uiDispatcher.InvokeAsync(action, DispatcherPriority.Background).Task;
         }
 
-        if (_syncContext is not null)
-        {
-            var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            _syncContext.Post(_ =>
-            {
-                try
-                {
-                    action();
-                    tcs.TrySetResult();
-                }
-                catch (Exception ex)
-                {
-                    tcs.TrySetException(ex);
-                }
-            }, null);
-            return tcs.Task;
-        }
-
+        // No live WPF Dispatcher (headless/test execution): decoded BitmapImage instances are already frozen,
+        // so updating properties directly avoids starving on non-WPF SynchronizationContexts (e.g. xUnit MaxConcurrencySyncContext).
         action();
         return Task.CompletedTask;
     }

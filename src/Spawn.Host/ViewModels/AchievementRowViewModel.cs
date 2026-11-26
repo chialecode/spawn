@@ -13,7 +13,6 @@ public sealed partial class AchievementRowViewModel : ObservableObject
     private readonly Func<AchievementRowViewModel, bool, Task> _onSetUnlockedAsync;
     private readonly Func<AchievementRowViewModel, Task> _onPreviewToastAsync;
     private readonly Dispatcher? _uiDispatcher;
-    private readonly SynchronizationContext? _syncContext;
 
     private BitmapImage? _iconImage;
     private double _iconOpacity;
@@ -142,7 +141,6 @@ public sealed partial class AchievementRowViewModel : ObservableObject
         _onSetUnlockedAsync = onSetUnlockedAsync;
         _onPreviewToastAsync = onPreviewToastAsync;
         _uiDispatcher = GameListItemViewModel.ResolveLiveUiDispatcher();
-        _syncContext = _uiDispatcher is null ? SynchronizationContext.Current : null;
 
         // Deterministic initial opacity without touching disk during construction.
         _iconOpacity = item.IsUnlocked
@@ -254,24 +252,8 @@ public sealed partial class AchievementRowViewModel : ObservableObject
             return _uiDispatcher.InvokeAsync(action, DispatcherPriority.Background).Task;
         }
 
-        if (_syncContext is not null)
-        {
-            var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            _syncContext.Post(_ =>
-            {
-                try
-                {
-                    action();
-                    tcs.TrySetResult();
-                }
-                catch (Exception ex)
-                {
-                    tcs.TrySetException(ex);
-                }
-            }, null);
-            return tcs.Task;
-        }
-
+        // No live WPF Dispatcher (headless/test execution): decoded BitmapImage instances are already frozen,
+        // so updating properties directly avoids starving on non-WPF SynchronizationContexts (e.g. xUnit MaxConcurrencySyncContext).
         action();
         return Task.CompletedTask;
     }

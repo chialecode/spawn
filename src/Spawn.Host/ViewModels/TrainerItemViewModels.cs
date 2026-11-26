@@ -279,14 +279,17 @@ public sealed partial class PreTrainerSnapshotItemViewModel : ObservableObject
     private readonly Func<PreTrainerSnapshotItemViewModel, Task> _onRestore;
 
     public PreTrainerSnapshotRecord Record { get; }
+    public bool IsTimeMachineSnapshot { get; }
 
     [ObservableProperty]
     private bool _isGameRunning;
 
     public string SnapshotId => Record.SnapshotId;
-    public string TriggerBadgeText => Record.TriggerKind == PreTrainerSnapshotTriggerKind.PreRestoreSafety
-        ? "回滚前安全点"
-        : "修改器启动前";
+    public string TriggerBadgeText => IsTimeMachineSnapshot
+        ? "修改器启动前 · 时光机"
+        : (Record.TriggerKind == PreTrainerSnapshotTriggerKind.PreRestoreSafety
+            ? "回滚前安全点"
+            : "修改器启动前");
     public string StatusText => UiFormatters.FormatPreTrainerSnapshotStatus(Record.Status, Record.SkipReason);
     public bool IsCompleted => Record.Status == PreTrainerSnapshotStatus.Completed;
     public bool IsSkipped => Record.Status == PreTrainerSnapshotStatus.Skipped;
@@ -305,9 +308,11 @@ public sealed partial class PreTrainerSnapshotItemViewModel : ObservableObject
     public PreTrainerSnapshotItemViewModel(
         PreTrainerSnapshotRecord record,
         bool isGameRunning,
-        Func<PreTrainerSnapshotItemViewModel, Task> onRestore)
+        Func<PreTrainerSnapshotItemViewModel, Task> onRestore,
+        bool isTimeMachineSnapshot = false)
     {
         Record = record ?? throw new ArgumentNullException(nameof(record));
+        IsTimeMachineSnapshot = isTimeMachineSnapshot;
         _isGameRunning = isGameRunning;
         _onRestore = onRestore ?? throw new ArgumentNullException(nameof(onRestore));
         RestoreCommand = new AsyncRelayCommand(() => _onRestore(this));

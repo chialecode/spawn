@@ -51,6 +51,7 @@ internal sealed class TrainerWorkerApplication
     private readonly TimeSpan _autoHidePollInterval;
 
     private readonly Lock _sessionGate = new();
+    private readonly Lock _windowVisibilityGate = new();
     private TrainerSandboxJob? _activeJob;
     private string? _activeSessionId;
     private int _activeHoldMs = TrainerSettingsDto.DefaultHotkeyHoldMs;
@@ -402,9 +403,15 @@ internal sealed class TrainerWorkerApplication
             {
                 try
                 {
-                    if (autoHideOnLaunch && IsAutoHideActiveFor(job) && !job.IsDisposed)
+                    if (autoHideOnLaunch)
                     {
-                        _ = job.SetWindowVisibility(visible: false, _windowInterop);
+                        lock (_windowVisibilityGate)
+                        {
+                            if (IsAutoHideActiveFor(job) && !job.IsDisposed)
+                            {
+                                _ = job.SetWindowVisibility(visible: false, _windowInterop);
+                            }
+                        }
                     }
 
                     if (client.IsConnected)
@@ -551,17 +558,20 @@ internal sealed class TrainerWorkerApplication
             };
         }
 
-        if (request.Visible)
+        lock (_windowVisibilityGate)
         {
-            CancelAutoHideSweep();
-        }
+            if (request.Visible)
+            {
+                CancelAutoHideSweep();
+            }
 
-        int affected = job.SetWindowVisibility(request.Visible, _windowInterop);
-        return new TrainerSetWindowVisibilityResponse
-        {
-            Succeeded = true,
-            AffectedWindowCount = affected,
-        };
+            int affected = job.SetWindowVisibility(request.Visible, _windowInterop);
+            return new TrainerSetWindowVisibilityResponse
+            {
+                Succeeded = true,
+                AffectedWindowCount = affected,
+            };
+        }
     }
 
     private Task<TrainerSetAudioFallbackResponse> HandleSetAudioFallbackAsync(
@@ -815,7 +825,16 @@ internal sealed class TrainerWorkerApplication
                 DateTimeOffset deadline = _timeProvider.GetUtcNow() + _autoHideWindowDuration;
                 while (!token.IsCancellationRequested && !job.IsDisposed)
                 {
-                    _ = job.SetWindowVisibility(visible: false, _windowInterop);
+                    lock (_windowVisibilityGate)
+                    {
+                        if (token.IsCancellationRequested || !IsAutoHideActiveFor(job) || job.IsDisposed)
+                        {
+                            break;
+                        }
+
+                        _ = job.SetWindowVisibility(visible: false, _windowInterop);
+                    }
+
                     if (_timeProvider.GetUtcNow() >= deadline)
                     {
                         break;

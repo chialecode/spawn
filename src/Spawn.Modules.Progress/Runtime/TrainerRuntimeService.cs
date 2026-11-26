@@ -557,13 +557,17 @@ public sealed class TrainerRuntimeService : ITrainerRuntimeService, IDisposable,
 
                 if (tmResult.Succeeded && tmResult.Snapshot is not null)
                 {
+                    string tmMessage = string.IsNullOrWhiteSpace(tmResult.Message)
+                        ? $"已通过存档时光机创建启动前快照（{tmResult.Snapshot.FileCount} 个文件）。"
+                        : (tmResult.Message.Contains("时光机", StringComparison.Ordinal)
+                            ? tmResult.Message
+                            : $"已通过存档时光机创建启动前快照：{tmResult.Message}");
+
                     return new PreTrainerSnapshotResult
                     {
                         Succeeded = true,
                         Status = PreTrainerSnapshotStatus.Completed,
-                        Message = string.IsNullOrWhiteSpace(tmResult.Message)
-                            ? $"已通过存档时光机创建启动前快照（{tmResult.Snapshot.FileCount} 个文件）。"
-                            : tmResult.Message,
+                        Message = tmMessage,
                         Snapshot = new PreTrainerSnapshotRecord
                         {
                             SnapshotId = tmResult.Snapshot.SnapshotId,

@@ -1,5 +1,6 @@
 using System.IO;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.DependencyInjection;
 using Spawn.Contracts;
 using Spawn.Core;
 using Spawn.Host.Helpers;
@@ -194,20 +195,31 @@ public sealed class TrainerWorkbenchUxTests
         await vm.CreateManualSnapshotCommand.ExecuteAsync(null);
         Assert.Equal([true], env.Snapshots.ManualFlags);
 
-        // P0-1c: Inline rollback confirmation prevents direct overwrite on RestoreCommand click.
+        // P0-1c & P1-1: Inline rollback confirmation prevents direct overwrite on first click, emits clear prompt,
+        // and supports BOTH ConfirmRollbackCommand AND second-click on same RestoreCommand (MainWindow.xaml compatible!).
         PreTrainerSnapshotItemViewModel snapItem = vm.PreTrainerSnapshots[0];
         await snapItem.RestoreCommand.ExecuteAsync(null);
         Assert.True(vm.IsRollbackConfirmOpen);
         Assert.Same(snapItem, vm.PendingRollbackSnapshot);
         Assert.Equal(0, env.Snapshots.RestoreCalls);
+        Assert.Contains("一键回滚", feedbacks.Last().Msg, StringComparison.Ordinal);
 
+        // Second click on same row's RestoreCommand completes confirmation rollback!
+        await snapItem.RestoreCommand.ExecuteAsync(null);
+        Assert.False(vm.IsRollbackConfirmOpen);
+        Assert.Equal(1, env.Snapshots.RestoreCalls);
+
+        // Cancel & explicit ConfirmRollbackCommand path also works.
+        snapItem = vm.PreTrainerSnapshots[0];
+        await snapItem.RestoreCommand.ExecuteAsync(null);
+        Assert.True(vm.IsRollbackConfirmOpen);
         vm.CancelRollbackCommand.Execute(null);
         Assert.False(vm.IsRollbackConfirmOpen);
 
         await snapItem.RestoreCommand.ExecuteAsync(null);
         await vm.ConfirmRollbackCommand.ExecuteAsync(null);
         Assert.False(vm.IsRollbackConfirmOpen);
-        Assert.Equal(1, env.Snapshots.RestoreCalls);
+        Assert.Equal(2, env.Snapshots.RestoreCalls);
 
         // P0-3a & P1-4b: Launch -> More menu stays visible while CanModifyBoundTrainer becomes false; window toggle with 0 affected does not flip.
         env.Runtime.NextLaunchOutcome = new TrainerLaunchOutcome
@@ -263,10 +275,173 @@ public sealed class TrainerWorkbenchUxTests
         await vm.RemoveTrainerCommand.ExecuteAsync(null);
         Assert.True(vm.IsRemoveConfirmOpen);
         Assert.Empty(env.Catalog.RemovedTrainerIds);
+        Assert.Contains("确认", feedbacks.Last().Msg, StringComparison.Ordinal);
+        Assert.Contains("移除", feedbacks.Last().Msg, StringComparison.Ordinal);
 
-        await vm.ConfirmRemoveTrainerCommand.ExecuteAsync(null);
+        // Second click on RemoveTrainerCommand (compatible with existing MainWindow.xaml) completes removal.
+        await vm.RemoveTrainerCommand.ExecuteAsync(null);
         Assert.False(vm.IsRemoveConfirmOpen);
         Assert.Contains("tr-v1", env.Catalog.RemovedTrainerIds);
+    }
+
+    [Fact]
+    public async Task TrainerWorkbench_WithInjectedSaveTimeMachine_UnifiesSnapshotListManualCreateRollbackAndDiResolution()
+    {
+        await using var env = await WorkbenchTestEnv.CreateAsync();
+
+        var game = new GameRecord
+        {
+            GameId = "game-tm-unified",
+            Title = "Unified Snapshot RPG",
+            InstallDir = Path.Combine(env.TempDir, "RPG"),
+            ExecutableRelPath = "rpg.exe",
+            AntiCheatTier = AntiCheatTier.Tier0,
+        };
+        await env.Db.UpsertGameAsync(game);
+
+        var trainer = new TrainerCatalogRecord
+        {
+            TrainerId = "tr-tm-1",
+            GameId = game.GameId,
+            Provider = TrainerProviderKind.LocalImport,
+            DisplayName = "RPG Trainer",
+            SandboxRelativePath = "game-tm-unified\\tr-tm-1\\trainer.exe",
+            FileSha256 = new string('d', 64),
+        };
+        await env.Db.UpsertTrainerAsync(trainer);
+        env.Catalog.SetTrainers(game.GameId, [trainer]);
+
+        DateTimeOffset t0 = new(2026, 11, 21, 10, 0, 0, TimeSpan.Zero);
+        env.Snapshots.SnapshotsByGame[game.GameId] =
+        [
+            new PreTrainerSnapshotRecord
+            {
+                SnapshotId = "legacy-only-1",
+                GameId = game.GameId,
+                Status = PreTrainerSnapshotStatus.Completed,
+                FileCount = 1,
+                TotalBytes = 512,
+                CreatedAtUtc = t0,
+            },
+            new PreTrainerSnapshotRecord
+            {
+                SnapshotId = "legacy-already-imported",
+                GameId = game.GameId,
+                Status = PreTrainerSnapshotStatus.Completed,
+                FileCount = 1,
+                TotalBytes = 512,
+                CreatedAtUtc = t0.AddMinutes(1),
+            },
+        ];
+
+        var timeMachine = new FakeTimeMachineService(game.GameId,
+        [
+            new SaveSnapshotRecord
+            {
+                SnapshotId = "tm-pretrainer-1",
+                GameId = game.GameId,
+                BranchId = "main",
+                TriggerKind = SaveSnapshotTriggerKind.PreTrainerImport,
+                FileCount = 3,
+                TotalRawBytes = 4096,
+                CreatedMachineId = "m1",
+                CreatedAtUtc = t0.AddMinutes(5),
+                LegacyPreTrainerSnapshotId = "legacy-already-imported",
+            },
+            new SaveSnapshotRecord
+            {
+                SnapshotId = "tm-manual-non-trainer",
+                GameId = game.GameId,
+                BranchId = "main",
+                TriggerKind = SaveSnapshotTriggerKind.Manual,
+                FileCount = 2,
+                TotalRawBytes = 2048,
+                CreatedMachineId = "m1",
+                CreatedAtUtc = t0.AddMinutes(6),
+            },
+        ]);
+
+        // Verify Microsoft.Extensions.DependencyInjection resolves TrainerWorkbenchViewModel cleanly and injects ISaveTimeMachineService!
+        var services = new ServiceCollection();
+        services.AddSingleton(env.Paths);
+        services.AddSingleton(env.Db);
+        services.AddSingleton<ITrainerCatalogService>(env.Catalog);
+        services.AddSingleton<ITrainerRuntimeService>(env.Runtime);
+        services.AddSingleton<IPreTrainerSaveSnapshotService>(env.Snapshots);
+        services.AddSingleton<ITrainerSafetyGate>(env.SafetyGate);
+        services.AddSingleton<IAntiCheatGuardService>(env.Guard);
+        services.AddSingleton<IGameLibraryService>(env.Library);
+        services.AddSingleton<IGameLaunchService>(env.Launch);
+        services.AddSingleton<ISaveTimeMachineService>(timeMachine);
+        services.AddSingleton<TrainerWorkbenchViewModel>();
+
+        await using ServiceProvider sp = services.BuildServiceProvider();
+        TrainerWorkbenchViewModel vm = sp.GetRequiredService<TrainerWorkbenchViewModel>();
+
+        await vm.LoadForGameAsync(new GameListItemViewModel(game));
+
+        // Merged list contains Time Machine PreTrainerImport + non-duplicate legacy snapshot (deduplicated & sorted newest first).
+        Assert.Equal(2, vm.PreTrainerSnapshots.Count);
+        Assert.Equal("tm-pretrainer-1", vm.PreTrainerSnapshots[0].SnapshotId);
+        Assert.True(vm.PreTrainerSnapshots[0].IsTimeMachineSnapshot);
+        Assert.Contains("时光机", vm.PreTrainerSnapshots[0].TriggerBadgeText, StringComparison.Ordinal);
+        Assert.Equal("legacy-only-1", vm.PreTrainerSnapshots[1].SnapshotId);
+        Assert.False(vm.PreTrainerSnapshots[1].IsTimeMachineSnapshot);
+
+        // LaunchTrainerAsync preserves outcome.PreSnapshot.Message verbatim when Completed!
+        env.Runtime.NextLaunchOutcome = new TrainerLaunchOutcome
+        {
+            Succeeded = true,
+            PreSnapshot = new PreTrainerSnapshotResult
+            {
+                Succeeded = true,
+                Status = PreTrainerSnapshotStatus.Completed,
+                Message = "已通过存档时光机创建启动前快照（3 个文件）。",
+                Snapshot = new PreTrainerSnapshotRecord
+                {
+                    SnapshotId = "tm-pretrainer-1",
+                    GameId = game.GameId,
+                    Status = PreTrainerSnapshotStatus.Completed,
+                    FileCount = 3,
+                },
+            },
+            Session = new TrainerSessionHandle
+            {
+                SessionId = "s-tm-1",
+                GameId = game.GameId,
+                TrainerId = trainer.TrainerId,
+                BackendKind = "ExternalTrainer",
+                ElevationLevel = TrainerElevationLevel.Level1MediumIl,
+                WorkerProcessId = 1001,
+                TrainerProcessId = 2001,
+            },
+        };
+        await vm.LaunchTrainerCommand.ExecuteAsync(null);
+        Assert.Equal("已通过存档时光机创建启动前快照（3 个文件）。", vm.LatestSnapshotNoticeText);
+        await vm.StopTrainerCommand.ExecuteAsync(null);
+
+        // Manual snapshot prefers ISaveTimeMachineService (PreTrainerImport) and immediately appears in PreTrainerSnapshots!
+        await vm.CreateManualSnapshotCommand.ExecuteAsync(null);
+        Assert.Single(timeMachine.CreateRequests);
+        Assert.Equal(SaveSnapshotTriggerKind.PreTrainerImport, timeMachine.CreateRequests[0].TriggerKind);
+        Assert.Empty(env.Snapshots.ManualFlags);
+        Assert.Equal(3, vm.PreTrainerSnapshots.Count);
+        Assert.Equal("tm-created-1", vm.PreTrainerSnapshots[0].SnapshotId);
+
+        // Rollback routes Time Machine snapshot to ISaveTimeMachineService.RollbackToSnapshotAsync (CreateSafetySnapshot = true),
+        // and legacy snapshot to IPreTrainerSaveSnapshotService.RestoreAsync!
+        PreTrainerSnapshotItemViewModel tmItem = vm.PreTrainerSnapshots[0];
+        await tmItem.RestoreCommand.ExecuteAsync(null);
+        await tmItem.RestoreCommand.ExecuteAsync(null);
+        Assert.Single(timeMachine.RollbackRequests);
+        Assert.Equal("tm-created-1", timeMachine.RollbackRequests[0].SnapshotId);
+        Assert.True(timeMachine.RollbackRequests[0].CreateSafetySnapshot);
+        Assert.Equal(0, env.Snapshots.RestoreCalls);
+
+        PreTrainerSnapshotItemViewModel legacyItem = vm.PreTrainerSnapshots.Single(s => s.SnapshotId == "legacy-only-1");
+        await legacyItem.RestoreCommand.ExecuteAsync(null);
+        await legacyItem.RestoreCommand.ExecuteAsync(null);
+        Assert.Equal(1, env.Snapshots.RestoreCalls);
     }
 
     [Fact]
@@ -720,5 +895,104 @@ public sealed class TrainerWorkbenchUxTests
         public Task<bool> StopGameAsync(string gameId, CancellationToken cancellationToken = default) => Task.FromResult(false);
         public void RegisterTrustedOverlayWindow(nint windowHandle, int processId) { }
         public void UnregisterTrustedOverlayWindow(nint windowHandle) { }
+    }
+
+    private sealed class FakeTimeMachineService(string gameId, IReadOnlyList<SaveSnapshotRecord> initialSnapshots)
+        : ISaveTimeMachineService
+    {
+        private readonly List<SaveSnapshotRecord> _snapshots = [.. initialSnapshots];
+        private int _createdSeq;
+
+        public List<CreateSaveSnapshotRequest> CreateRequests { get; } = [];
+        public List<RollbackSaveRequest> RollbackRequests { get; } = [];
+        public event EventHandler<SaveTreeChangedEvent>? SaveTreeChanged { add { } remove { } }
+
+        public Task<SaveTreeGraphDto> GetSaveTreeGraphAsync(string requestedGameId, CancellationToken ct = default)
+        {
+            var nodes = _snapshots
+                .Where(s => string.Equals(s.GameId, requestedGameId, StringComparison.OrdinalIgnoreCase))
+                .Select(s => new SaveTreeNodeDto
+                {
+                    Snapshot = s,
+                    BranchName = "main",
+                })
+                .ToArray();
+
+            return Task.FromResult(new SaveTreeGraphDto
+            {
+                GameId = requestedGameId,
+                Nodes = nodes,
+            });
+        }
+
+        public Task<CreateSaveSnapshotResult> CreateSnapshotAsync(CreateSaveSnapshotRequest request, CancellationToken ct = default)
+        {
+            CreateRequests.Add(request);
+            _createdSeq++;
+            var snap = new SaveSnapshotRecord
+            {
+                SnapshotId = $"tm-created-{_createdSeq}",
+                GameId = request.GameId,
+                BranchId = "main",
+                TriggerKind = request.TriggerKind,
+                Note = request.Note,
+                FileCount = 4,
+                TotalRawBytes = 8192,
+                CreatedMachineId = "m1",
+                CreatedAtUtc = new DateTimeOffset(2026, 11, 21, 12, 0, _createdSeq, TimeSpan.Zero),
+            };
+            _snapshots.Add(snap);
+            return Task.FromResult(new CreateSaveSnapshotResult
+            {
+                Succeeded = true,
+                Message = $"已通过存档时光机创建快照（{snap.FileCount} 个文件）",
+                Snapshot = snap,
+            });
+        }
+
+        public Task<SaveRestoreOutcome> RollbackToSnapshotAsync(RollbackSaveRequest request, CancellationToken ct = default)
+        {
+            RollbackRequests.Add(request);
+            return Task.FromResult(new SaveRestoreOutcome
+            {
+                Succeeded = true,
+                Message = "已通过存档时光机恢复快照。",
+                RestoredFileCount = 4,
+            });
+        }
+
+        public Task<SaveGameStateRecord> GetGameStateAsync(string g, CancellationToken ct = default) =>
+            Task.FromResult(new SaveGameStateRecord { GameId = g });
+        public Task<SaveGameStateRecord> UpdateGameStateAsync(SaveGameStateRecord state, CancellationToken ct = default) =>
+            Task.FromResult(state);
+        public Task<SaveSettingsDto> GetSettingsAsync(CancellationToken ct = default) => Task.FromResult(new SaveSettingsDto());
+        public Task SaveSettingsAsync(SaveSettingsDto settings, CancellationToken ct = default) => Task.CompletedTask;
+        public Task<IReadOnlyList<SaveLibraryGameOverviewDto>> GetLibraryOverviewAsync(CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyList<SaveLibraryGameOverviewDto>>([]);
+        public Task<IReadOnlyList<SaveSnapshotFileRecord>> GetSnapshotFilesAsync(string snapshotId, CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyList<SaveSnapshotFileRecord>>([]);
+        public Task<CasVaultStatsDto> GetVaultStatsAsync(CancellationToken ct = default) => Task.FromResult(new CasVaultStatsDto());
+        public Task<SaveSnapshotDiffDto> DiffSnapshotsAsync(string l, string r, CancellationToken ct = default) =>
+            Task.FromResult(new SaveSnapshotDiffDto { BaseLabel = l, TargetLabel = r });
+        public Task<SaveSnapshotDiffDto> DiffSnapshotWithDiskAsync(string id, CancellationToken ct = default) =>
+            Task.FromResult(new SaveSnapshotDiffDto { BaseLabel = id, TargetLabel = "disk" });
+        public Task<ForkBranchResult> CreateBranchAsync(ForkBranchRequest request, CancellationToken ct = default) =>
+            Task.FromResult(new ForkBranchResult { Succeeded = false, Message = gameId });
+        public Task<SaveRestoreOutcome> SwitchBranchAsync(SwitchBranchRequest request, CancellationToken ct = default) =>
+            Task.FromResult(new SaveRestoreOutcome { Succeeded = false, Message = "unused" });
+        public Task<SaveBranchRecord?> RenameBranchAsync(string branchId, string newName, string? description = null, string? colorHex = null, CancellationToken ct = default) =>
+            Task.FromResult<SaveBranchRecord?>(null);
+        public Task<DeleteBranchResult> DeleteBranchAsync(string branchId, bool deleteSnapshots = false, CancellationToken ct = default) =>
+            Task.FromResult(new DeleteBranchResult(false, "unused"));
+        public Task<bool> SetSnapshotPinnedAsync(string snapshotId, bool isPinned, CancellationToken ct = default) => Task.FromResult(false);
+        public Task<bool> UpdateSnapshotNoteAsync(string snapshotId, string? note, CancellationToken ct = default) => Task.FromResult(false);
+        public Task<DeleteSnapshotResult> DeleteSnapshotAsync(string snapshotId, CancellationToken ct = default) =>
+            Task.FromResult(new DeleteSnapshotResult(false, "unused"));
+        public Task<ExportSnapshotResult> ExportSnapshotToFolderAsync(string snapshotId, string targetDirectory, CancellationToken ct = default) =>
+            Task.FromResult(new ExportSnapshotResult(false, "unused"));
+        public Task<LegacyPreTrainerImportReport> ImportLegacyPreTrainerSnapshotsAsync(string g, CancellationToken ct = default) =>
+            Task.FromResult(new LegacyPreTrainerImportReport(0, 0, 0, [], []));
+        public Task<SaveGcReport> RunCasGarbageCollectionAsync(TimeSpan? gracePeriodOverride = null, CancellationToken ct = default) =>
+            Task.FromResult(new SaveGcReport(0, 0, 0, 0));
     }
 }

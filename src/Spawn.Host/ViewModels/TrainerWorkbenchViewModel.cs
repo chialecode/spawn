@@ -36,6 +36,7 @@ public sealed partial class TrainerWorkbenchViewModel : ObservableObject, IDispo
     private readonly Action<string> _openExternalUrl;
     private readonly Action<string> _copyToClipboard;
     private readonly Func<string, IReadOnlyList<SafeProcessEntry>> _directoryProcessFinder;
+    private readonly ISaveTimeMachineService? _saveTimeMachineService;
     private readonly Dictionary<string, string> _gameTitleCache = new(StringComparer.OrdinalIgnoreCase);
 
     private GameListItemViewModel? _currentGame;
@@ -427,7 +428,8 @@ public sealed partial class TrainerWorkbenchViewModel : ObservableObject, IDispo
         IGameLaunchService launchService,
         Action<string>? openExternalUrl = null,
         Action<string>? copyToClipboard = null,
-        Func<string, IReadOnlyList<SafeProcessEntry>>? directoryProcessFinder = null)
+        Func<string, IReadOnlyList<SafeProcessEntry>>? directoryProcessFinder = null,
+        ISaveTimeMachineService? saveTimeMachineService = null)
     {
         _paths = paths ?? throw new ArgumentNullException(nameof(paths));
         _db = db ?? throw new ArgumentNullException(nameof(db));
@@ -442,6 +444,7 @@ public sealed partial class TrainerWorkbenchViewModel : ObservableObject, IDispo
         _copyToClipboard = copyToClipboard ?? CopyTextToSystemClipboard;
         _directoryProcessFinder = directoryProcessFinder
             ?? (static dir => SafeProcessInspector.FindProcessesUnderDirectory(dir, excludeAuxiliary: true));
+        _saveTimeMachineService = saveTimeMachineService;
 
         UpdateGuardSnapshot(_antiCheatGuard.CurrentSnapshot);
         _runtimeService.StateChanged += OnRuntimeStateChanged;
@@ -561,7 +564,7 @@ public sealed partial class TrainerWorkbenchViewModel : ObservableObject, IDispo
         IReadOnlyList<TrainerCatalogRecord> loadedTrainers = [];
         TrainerCatalogRecord? selectedTrainer = null;
         IReadOnlyList<TrainerHotkeyBindingRecord> loadedBindings = [];
-        IReadOnlyList<PreTrainerSnapshotRecord> loadedSnapshots = [];
+        IReadOnlyList<MergedSnapshotEntry> loadedSnapshots = [];
         bool gameRunning = false;
 
         if (!blockedByTier)
@@ -574,7 +577,7 @@ public sealed partial class TrainerWorkbenchViewModel : ObservableObject, IDispo
                 loadedBindings = await _catalogService.GetHotkeysAsync(selectedTrainer.TrainerId, ct).ConfigureAwait(true);
             }
 
-            loadedSnapshots = await _snapshotService.ListAsync(game.GameId, ct).ConfigureAwait(true);
+            loadedSnapshots = await LoadMergedSnapshotsAsync(game.GameId, ct).ConfigureAwait(true);
             gameRunning = IsGameRunningIncludingExternal(game);
 
             if (generation != Volatile.Read(ref _loadGeneration))
@@ -599,7 +602,11 @@ public sealed partial class TrainerWorkbenchViewModel : ObservableObject, IDispo
                 loadedBindings.OrderBy(h => h.SortOrder).Select(h => CreateHotkeyRow(h)));
             ReplaceCollection(
                 PreTrainerSnapshots,
-                loadedSnapshots.Select(s => new PreTrainerSnapshotItemViewModel(s, gameRunning, RequestRollbackSnapshotAsync)));
+                loadedSnapshots.Select(s => new PreTrainerSnapshotItemViewModel(
+                    s.Record,
+                    gameRunning,
+                    RequestRollbackSnapshotAsync,
+                    isTimeMachineSnapshot: s.IsTimeMachine)));
             GameUpdateDriftNotice = ComputeGameUpdateDriftNotice(selectedTrainer, game);
             RuntimeState = ResolveRuntimeState(selectedTrainer);
         }
@@ -1198,7 +1205,9 @@ public sealed partial class TrainerWorkbenchViewModel : ObservableObject, IDispo
                 string skipLabel = UiFormatters.FormatPreTrainerSnapshotSkipReason(outcome.PreSnapshot.SkipReason);
                 LatestSnapshotNoticeText = outcome.PreSnapshot.Status switch
                 {
-                    PreTrainerSnapshotStatus.Completed => $"启动前已自动备份存档（{outcome.PreSnapshot.Snapshot?.FileCount ?? 0} 个文件）",
+                    PreTrainerSnapshotStatus.Completed => !string.IsNullOrWhiteSpace(outcome.PreSnapshot.Message)
+                        ? outcome.PreSnapshot.Message!
+                        : $"启动前已自动备份存档（{outcome.PreSnapshot.Snapshot?.FileCount ?? 0} 个文件）",
                     PreTrainerSnapshotStatus.Skipped => $"启动前快照已跳过（不阻断启动）：{outcome.PreSnapshot.Message ?? (string.IsNullOrWhiteSpace(skipLabel) ? "已跳过" : skipLabel)}",
                     _ => $"启动前快照未完成（不阻断启动）：{outcome.PreSnapshot.Message ?? "备份异常"}",
                 };
@@ -1548,6 +1557,7 @@ public sealed partial class TrainerWorkbenchViewModel : ObservableObject, IDispo
 
         IsRemoveConfirmOpen = true;
         OnPropertyChanged(nameof(RemoveConfirmPromptText));
+        StatusFeedbackRequested?.Invoke($"{RemoveConfirmPromptText} 请点击确认或再次点击「移除」执行。", false);
     }
 
     [RelayCommand]
@@ -1669,7 +1679,6 @@ public sealed partial class TrainerWorkbenchViewModel : ObservableObject, IDispo
         row.IsEditingMappedChord = false;
         row.EditingMappedChordText = string.Empty;
 
-        await _db.UpdateTrainerHotkeyMappedChordAsync(row.TrainerId, row.EntryId, normalized).ConfigureAwait(true);
         await _catalogService.SaveHotkeyBindingsAsync(ActiveTrainer.TrainerId, Hotkeys.Select(h => h.ToRecord()).ToList()).ConfigureAwait(true);
 
         StatusFeedbackRequested?.Invoke(
@@ -1690,6 +1699,50 @@ public sealed partial class TrainerWorkbenchViewModel : ObservableObject, IDispo
         IsBusy = true;
         try
         {
+            if (_saveTimeMachineService is not null)
+            {
+                try
+                {
+                    CreateSaveSnapshotResult tmRes = await _saveTimeMachineService
+                        .CreateSnapshotAsync(new CreateSaveSnapshotRequest
+                        {
+                            GameId = _currentGame.GameId,
+                            TriggerKind = SaveSnapshotTriggerKind.PreTrainerImport,
+                            Note = $"修改器工作台手动备份（{ActiveTrainer?.DisplayName ?? _currentGame.Title}）",
+                            IncludeConfigFiles = false,
+                            SkipIfUnchangedFromHead = false,
+                        })
+                        .ConfigureAwait(true);
+
+                    if (tmRes.Succeeded)
+                    {
+                        LatestSnapshotNoticeText = string.IsNullOrWhiteSpace(tmRes.Message)
+                            ? $"已通过存档时光机创建手动快照（{tmRes.Snapshot?.FileCount ?? 0} 个文件）"
+                            : (tmRes.Message.Contains("时光机", StringComparison.Ordinal)
+                                ? tmRes.Message
+                                : $"已通过存档时光机创建手动快照：{tmRes.Message}");
+                        await RefreshSnapshotsOnlyAsync(_currentGame.GameId).ConfigureAwait(true);
+                        StatusFeedbackRequested?.Invoke(LatestSnapshotNoticeText, false);
+                        return;
+                    }
+
+                    if (tmRes.Skipped && tmRes.SkipReason != SaveSnapshotSkipReason.DisabledBySettings)
+                    {
+                        string reasonText = UiFormatters.FormatPreTrainerSnapshotSkipReason(tmRes.SkipReason.ToString());
+                        LatestSnapshotNoticeText = string.IsNullOrWhiteSpace(tmRes.Message)
+                            ? $"存档快照已跳过（{reasonText}）"
+                            : tmRes.Message;
+                        await RefreshSnapshotsOnlyAsync(_currentGame.GameId).ConfigureAwait(true);
+                        StatusFeedbackRequested?.Invoke(LatestSnapshotNoticeText, false);
+                        return;
+                    }
+                }
+                catch
+                {
+                    // Fall back smoothly to legacy pre-trainer snapshot service when Time Machine is unavailable.
+                }
+            }
+
             PreTrainerSnapshotResult res = await _snapshotService
                 .CreateAsync(_currentGame.GameId, ActiveTrainer?.TrainerId, isManual: true)
                 .ConfigureAwait(true);
@@ -1938,7 +1991,7 @@ public sealed partial class TrainerWorkbenchViewModel : ObservableObject, IDispo
 
     private async Task RefreshSnapshotsOnlyAsync(string gameId, CancellationToken ct = default)
     {
-        var snapshots = await _snapshotService.ListAsync(gameId, ct).ConfigureAwait(true);
+        IReadOnlyList<MergedSnapshotEntry> snapshots = await LoadMergedSnapshotsAsync(gameId, ct).ConfigureAwait(true);
         bool running = _currentGame is not null && string.Equals(_currentGame.GameId, gameId, StringComparison.OrdinalIgnoreCase)
             ? IsGameRunningIncludingExternal(_currentGame)
             : _launchService.GetActiveSession(gameId) is not null;
@@ -1946,13 +1999,85 @@ public sealed partial class TrainerWorkbenchViewModel : ObservableObject, IDispo
 
         ReplaceCollection(
             PreTrainerSnapshots,
-            snapshots.Select(s => new PreTrainerSnapshotItemViewModel(s, running, RequestRollbackSnapshotAsync)));
+            snapshots.Select(s => new PreTrainerSnapshotItemViewModel(
+                s.Record,
+                running,
+                RequestRollbackSnapshotAsync,
+                isTimeMachineSnapshot: s.IsTimeMachine)));
 
         OnPropertyChanged(nameof(HasPreTrainerSnapshots));
     }
 
+    private async Task<IReadOnlyList<MergedSnapshotEntry>> LoadMergedSnapshotsAsync(string gameId, CancellationToken ct)
+    {
+        IReadOnlyList<PreTrainerSnapshotRecord> legacySnapshots = await _snapshotService.ListAsync(gameId, ct).ConfigureAwait(true);
+        var merged = new List<MergedSnapshotEntry>(legacySnapshots.Count);
+        var seenSnapshotIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        if (_saveTimeMachineService is not null)
+        {
+            try
+            {
+                SaveTreeGraphDto graph = await _saveTimeMachineService.GetSaveTreeGraphAsync(gameId, ct).ConfigureAwait(true);
+                foreach (SaveTreeNodeDto node in graph.Nodes)
+                {
+                    if (node.Snapshot.TriggerKind != SaveSnapshotTriggerKind.PreTrainerImport)
+                    {
+                        continue;
+                    }
+
+                    SaveSnapshotRecord tmSnap = node.Snapshot;
+                    if (!seenSnapshotIds.Add(tmSnap.SnapshotId))
+                    {
+                        continue;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(tmSnap.LegacyPreTrainerSnapshotId))
+                    {
+                        seenSnapshotIds.Add(tmSnap.LegacyPreTrainerSnapshotId!);
+                    }
+
+                    merged.Add(new MergedSnapshotEntry(
+                        new PreTrainerSnapshotRecord
+                        {
+                            SnapshotId = tmSnap.SnapshotId,
+                            GameId = tmSnap.GameId,
+                            TriggerKind = PreTrainerSnapshotTriggerKind.PreTrainer,
+                            Status = PreTrainerSnapshotStatus.Completed,
+                            FileCount = tmSnap.FileCount,
+                            TotalBytes = tmSnap.TotalRawBytes,
+                            CreatedAtUtc = tmSnap.CreatedAtUtc,
+                        },
+                        IsTimeMachine: true));
+                }
+            }
+            catch
+            {
+                // Ignore transient Time Machine graph errors so legacy pre-trainer snapshots remain accessible.
+            }
+        }
+
+        foreach (PreTrainerSnapshotRecord legacy in legacySnapshots)
+        {
+            if (seenSnapshotIds.Add(legacy.SnapshotId))
+            {
+                merged.Add(new MergedSnapshotEntry(legacy, IsTimeMachine: false));
+            }
+        }
+
+        merged.Sort(static (a, b) => b.Record.CreatedAtUtc.CompareTo(a.Record.CreatedAtUtc));
+        return merged;
+    }
+
+    private sealed record MergedSnapshotEntry(PreTrainerSnapshotRecord Record, bool IsTimeMachine);
+
     private Task RequestRollbackSnapshotAsync(PreTrainerSnapshotItemViewModel item)
     {
+        if (ReferenceEquals(PendingRollbackSnapshot, item))
+        {
+            return ConfirmRollbackAsync();
+        }
+
         RequestRollbackSnapshot(item);
         return Task.CompletedTask;
     }
@@ -1973,6 +2098,7 @@ public sealed partial class TrainerWorkbenchViewModel : ObservableObject, IDispo
         }
 
         PendingRollbackSnapshot = item;
+        StatusFeedbackRequested?.Invoke($"{RollbackConfirmPromptText} 请点击确认或再次点击该快照的「一键回滚」执行。", false);
     }
 
     [RelayCommand]
@@ -2019,6 +2145,27 @@ public sealed partial class TrainerWorkbenchViewModel : ObservableObject, IDispo
 
         try
         {
+            if (item.IsTimeMachineSnapshot && _saveTimeMachineService is not null)
+            {
+                SaveRestoreOutcome tmRestore = await _saveTimeMachineService
+                    .RollbackToSnapshotAsync(new RollbackSaveRequest
+                    {
+                        SnapshotId = item.SnapshotId,
+                        IncludeConfigFiles = false,
+                        CreateSafetySnapshot = true,
+                        ModMismatchPolicy = SaveModMismatchPolicy.AbortAndPrompt,
+                    })
+                    .ConfigureAwait(true);
+
+                await RefreshSnapshotsOnlyAsync(_currentGame.GameId).ConfigureAwait(true);
+                StatusFeedbackRequested?.Invoke(
+                    !string.IsNullOrWhiteSpace(tmRestore.Message)
+                        ? tmRestore.Message
+                        : (tmRestore.Succeeded ? $"已从存档时光机恢复快照（还原 {tmRestore.RestoredFileCount} 个文件）" : "回滚存档时光机快照失败"),
+                    !tmRestore.Succeeded);
+                return;
+            }
+
             PreTrainerRestoreResult result = await _snapshotService.RestoreAsync(item.SnapshotId).ConfigureAwait(true);
             await RefreshSnapshotsOnlyAsync(_currentGame.GameId).ConfigureAwait(true);
             StatusFeedbackRequested?.Invoke(

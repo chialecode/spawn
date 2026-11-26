@@ -717,6 +717,18 @@ public sealed class GameDataManagementService : IGameDataManagementService
         }
 
         string trashRootPrefix = Path.TrimEndingDirectorySeparator(Path.GetFullPath(_paths.TrashDir)) + Path.DirectorySeparatorChar;
+        string normalizedGameTrashRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(gameTrashRoot));
+        if (!normalizedGameTrashRoot.StartsWith(trashRootPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return GameDataTrashPurgeResult.Fail("安全围栏拦截：回收站目录越界。");
+        }
+
+        if ((new DirectoryInfo(normalizedGameTrashRoot).Attributes & FileAttributes.ReparsePoint) != 0)
+        {
+            return GameDataTrashPurgeResult.Fail("安全围栏拦截：禁止操作重解析点回收站目录。");
+        }
+
+        string gameTrashRootPrefix = normalizedGameTrashRoot + Path.DirectorySeparatorChar;
         var targetsToDelete = new List<string>();
 
         if (purgeSingle)
@@ -773,7 +785,7 @@ public sealed class GameDataManagementService : IGameDataManagementService
                 continue;
             }
 
-            if (!fullCandidate.StartsWith(trashRootPrefix, StringComparison.OrdinalIgnoreCase)
+            if (!fullCandidate.StartsWith(gameTrashRootPrefix, StringComparison.OrdinalIgnoreCase)
                 || !Directory.Exists(fullCandidate))
             {
                 continue;

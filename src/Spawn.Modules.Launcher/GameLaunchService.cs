@@ -394,12 +394,22 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
             return GameStopResult.NotRunning();
         }
 
-        PlaySessionActivityState stateBeforeStop = _activeSessions.TryGetValue(gameId, out var currentBeforeStop)
-            && currentBeforeStop.State is not PlaySessionActivityState.Stopping and not PlaySessionActivityState.Stopped
+        PlaySessionActivityState currentState = _activeSessions.TryGetValue(gameId, out var currentBeforeStop)
             ? currentBeforeStop.State
             : PlaySessionActivityState.Active;
 
-        ctx.MarkStopRequested();
+        var (attemptGeneration, supersededByForceKill) = ctx.BeginStopAttempt(forceKill, currentState);
+        if (supersededByForceKill)
+        {
+            // A force-kill is already terminating this session; await its completion without reverting Stopping state.
+            TimeSpan joinWait = _options.ForceKillWaitTimeout > TimeSpan.Zero
+                ? _options.ForceKillWaitTimeout
+                : TimeSpan.FromSeconds(3);
+            bool completed = await WaitForSessionCompletionAsync(ctx, joinWait, cancellationToken).ConfigureAwait(false);
+            return completed
+                ? GameStopResult.ForceKilled()
+                : GameStopResult.GracefulTimeout("强制终止正在进行中，等待进程树退出。");
+        }
 
         if (_activeSessions.TryGetValue(gameId, out var current))
         {
@@ -429,12 +439,37 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
                 effectiveGracefulTimeout = TimeSpan.Zero;
             }
 
-            bool exitedGracefully = await WaitForSessionCompletionAsync(ctx, effectiveGracefulTimeout, cancellationToken)
-                .ConfigureAwait(false);
+            bool exitedGracefully;
+            try
+            {
+                exitedGracefully = await WaitForSessionCompletionAsync(ctx, effectiveGracefulTimeout, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Caller cancelled waiting for graceful stop: restore active tracking unless a concurrent forceKill took over.
+                await RestoreSessionIfGracefulAttemptStillOwnerAsync(gameId, ctx, attemptGeneration)
+                    .ConfigureAwait(false);
+                throw;
+            }
 
             if (exitedGracefully)
             {
-                return GameStopResult.StoppedGracefully();
+                return ctx.IsForceKillActive
+                    ? GameStopResult.ForceKilled()
+                    : GameStopResult.StoppedGracefully();
+            }
+
+            // If a concurrent forceKill took over while we were waiting, do not clear StopRequested or revert Stopping!
+            if (ctx.IsForceKillActive)
+            {
+                TimeSpan joinWait = _options.ForceKillWaitTimeout > TimeSpan.Zero
+                    ? _options.ForceKillWaitTimeout
+                    : TimeSpan.FromSeconds(3);
+                bool finished = await WaitForSessionCompletionAsync(ctx, joinWait, cancellationToken).ConfigureAwait(false);
+                return finished
+                    ? GameStopResult.ForceKilled()
+                    : GameStopResult.GracefulTimeout("强制终止正在进行中，等待进程树退出。");
             }
 
             // Re-check liveness at the boundary in case processes exited right as the grace window elapsed.
@@ -448,24 +483,9 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
             }
 
             // Graceful close timed out while the game is still running: NEVER force-kill behind the player's back.
-            // Restore tracking state cleanly so playtime accounting continues uninterrupted.
-            ctx.ClearStopRequested();
-            if (_runningContexts.ContainsKey(gameId) && _activeSessions.TryGetValue(gameId, out var stillActive))
-            {
-                var restoredSession = stillActive with
-                {
-                    State = stateBeforeStop,
-                    TrackedProcessIds = CollectLiveSessionPids(ctx),
-                };
-                _activeSessions[gameId] = restoredSession;
-                await PublishSessionEventAsync(
-                    new ActiveGameSessionChangedEvent(
-                        GameId: gameId,
-                        Session: restoredSession,
-                        CurrentState: stateBeforeStop,
-                        OccurredUtc: _timeProvider.GetUtcNow()),
-                    publishToBus: true).ConfigureAwait(false);
-            }
+            // Restore tracking state cleanly ONLY if no newer stop/forceKill attempt superseded this generation.
+            await RestoreSessionIfGracefulAttemptStillOwnerAsync(gameId, ctx, attemptGeneration)
+                .ConfigureAwait(false);
 
             return GameStopResult.GracefulTimeout();
         }
@@ -503,6 +523,34 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
         }
 
         return GameStopResult.ForceKilled();
+    }
+
+    private async Task RestoreSessionIfGracefulAttemptStillOwnerAsync(
+        string gameId,
+        RunningSessionContext ctx,
+        long attemptGeneration)
+    {
+        if (!ctx.TryAbortGracefulStopAttempt(attemptGeneration, out PlaySessionActivityState stateToRestore))
+        {
+            return;
+        }
+
+        if (_runningContexts.ContainsKey(gameId) && _activeSessions.TryGetValue(gameId, out var stillActive))
+        {
+            var restoredSession = stillActive with
+            {
+                State = stateToRestore,
+                TrackedProcessIds = CollectLiveSessionPids(ctx),
+            };
+            _activeSessions[gameId] = restoredSession;
+            await PublishSessionEventAsync(
+                new ActiveGameSessionChangedEvent(
+                    GameId: gameId,
+                    Session: restoredSession,
+                    CurrentState: stateToRestore,
+                    OccurredUtc: _timeProvider.GetUtcNow()),
+                publishToBus: true).ConfigureAwait(false);
+        }
     }
 
     private async Task<bool> WaitForSessionCompletionAsync(
@@ -648,6 +696,9 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
                 ctx.LastPublishedPids = livePids;
                 ctx.RootProcessId = primaryPid;
 
+                bool isStopping = ctx.StopRequested;
+                PlaySessionActivityState effectiveState = isStopping ? PlaySessionActivityState.Stopping : tick.State;
+
                 var updatedSession = new ActiveGameSession
                 {
                     SessionId = ctx.SessionId,
@@ -655,7 +706,7 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
                     GameTitle = ctx.Game.Title,
                     InstallDir = ctx.Game.InstallDir,
                     AntiCheatTier = ctx.Game.AntiCheatTier,
-                    State = tick.State,
+                    State = effectiveState,
                     RootProcessId = primaryPid,
                     TrackedProcessIds = livePids,
                     StartedUtc = ctx.StartedUtc,
@@ -666,12 +717,12 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
 
                 _activeSessions[ctx.Game.GameId] = updatedSession;
 
-                bool publishToBus = tick.StateChanged || pidsChanged || tickCounter == 0;
+                bool publishToBus = !isStopping && (tick.StateChanged || pidsChanged || tickCounter == 0);
                 await PublishSessionEventAsync(
                     new ActiveGameSessionChangedEvent(
                         GameId: ctx.Game.GameId,
                         Session: updatedSession,
-                        CurrentState: tick.State,
+                        CurrentState: effectiveState,
                         CompletedSession: null,
                         OccurredUtc: _timeProvider.GetUtcNow()),
                     publishToBus: publishToBus).ConfigureAwait(false);
@@ -1396,8 +1447,12 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
         PlaytimeTracker playtime) : IDisposable
     {
         private readonly Lock _pidLock = new();
+        private readonly Lock _stopLock = new();
         private List<int> _directoryTrackedPids = [];
-        private volatile bool _stopRequested;
+        private bool _stopRequested;
+        private bool _forceKillActive;
+        private long _stopAttemptGeneration;
+        private PlaySessionActivityState _stateBeforeStop = PlaySessionActivityState.Active;
         private int _disposed;
 
         public string SessionId { get; } = sessionId;
@@ -1419,11 +1474,70 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
         public volatile bool UseDirectoryTrackingOnly;
         public IReadOnlyList<int> LastPublishedPids { get; set; } = [];
 
-        public bool StopRequested => _stopRequested;
+        public bool StopRequested
+        {
+            get
+            {
+                lock (_stopLock)
+                {
+                    return _stopRequested;
+                }
+            }
+        }
 
-        public void MarkStopRequested() => _stopRequested = true;
+        public bool IsForceKillActive
+        {
+            get
+            {
+                lock (_stopLock)
+                {
+                    return _forceKillActive;
+                }
+            }
+        }
 
-        public void ClearStopRequested() => _stopRequested = false;
+        public (long Generation, bool SupersededByForceKill) BeginStopAttempt(
+            bool forceKill,
+            PlaySessionActivityState currentState)
+        {
+            lock (_stopLock)
+            {
+                if (!forceKill && _forceKillActive)
+                {
+                    return (_stopAttemptGeneration, true);
+                }
+
+                if (!_stopRequested
+                    && currentState is not PlaySessionActivityState.Stopping and not PlaySessionActivityState.Stopped)
+                {
+                    _stateBeforeStop = currentState;
+                }
+
+                _stopRequested = true;
+                if (forceKill)
+                {
+                    _forceKillActive = true;
+                }
+
+                long gen = ++_stopAttemptGeneration;
+                return (gen, false);
+            }
+        }
+
+        public bool TryAbortGracefulStopAttempt(long generation, out PlaySessionActivityState stateToRestore)
+        {
+            lock (_stopLock)
+            {
+                stateToRestore = _stateBeforeStop;
+                if (_forceKillActive || _stopAttemptGeneration != generation)
+                {
+                    return false;
+                }
+
+                _stopRequested = false;
+                return true;
+            }
+        }
 
         public void SwitchToDirectoryTracking(IReadOnlyList<int> pids)
         {

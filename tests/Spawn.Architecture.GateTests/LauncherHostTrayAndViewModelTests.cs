@@ -175,6 +175,70 @@ public sealed class LauncherHostTrayAndViewModelTests
     }
 
     [Fact]
+    public async Task GameListItemViewModel_InPlaceArtworkOverwriteAndDeletion_RefreshesCachedBitmapsOnUpdateRecord()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"spawn-artwork-refresh-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+
+        try
+        {
+            string iconPath = Path.Combine(tempDir, "icon.png");
+            await File.WriteAllBytesAsync(iconPath, CreateSolidPngBytes(32, 32, SKColors.DodgerBlue));
+
+            var record = new GameRecord
+            {
+                GameId = "game-inplace-refresh",
+                Title = "InPlace Artwork Refresh",
+                InstallDir = tempDir,
+                ExecutableRelPath = "game.exe",
+                CoverImagePath = iconPath,
+                IconPath = iconPath,
+            };
+
+            var vm = new GameListItemViewModel(record);
+            await vm.PendingArtworkLoadTask.WaitAsync(TimeSpan.FromSeconds(5));
+            var initialCover = vm.CoverImage;
+            var initialSmall = vm.SmallIcon;
+            Assert.NotNull(initialCover);
+            Assert.NotNull(initialSmall);
+
+            // 1. Overwrite icon.png in-place with an upgraded 64x64 HD image and advance timestamp.
+            await File.WriteAllBytesAsync(iconPath, CreateSolidPngBytes(64, 64, SKColors.Crimson));
+            File.SetLastWriteTimeUtc(iconPath, DateTime.UtcNow.AddSeconds(5));
+
+            vm.UpdateRecord(record);
+            await vm.PendingArtworkLoadTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.NotNull(vm.CoverImage);
+            Assert.NotNull(vm.SmallIcon);
+            Assert.NotSame(initialCover, vm.CoverImage);
+            Assert.NotSame(initialSmall, vm.SmallIcon);
+
+            // Sample center pixel of updated CoverImage to verify Crimson pixels replaced DodgerBlue.
+            byte[] pixel = new byte[4];
+            vm.CoverImage!.CopyPixels(new System.Windows.Int32Rect(0, 0, 1, 1), pixel, 4, 0);
+            Assert.True(pixel[2] > pixel[0] + 100, $"Expected updated Crimson pixel (R >> B), got B={pixel[0]}, G={pixel[1]}, R={pixel[2]}.");
+
+            // 2. Delete icon.png on disk -> UpdateRecord clears cached bitmaps instead of keeping stale ghost images.
+            File.Delete(iconPath);
+            vm.UpdateRecord(record);
+            await vm.PendingArtworkLoadTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Null(vm.CoverImage);
+            Assert.Null(vm.SmallIcon);
+            Assert.False(vm.HasPosterCover);
+            Assert.False(vm.HasFallbackIcon);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public async Task AchievementRowViewModel_LazyAsyncIcon_ToggleSpoiler_Progress_RarePercentDedup_AndChannelDot()
     {
         string tempDir = Path.Combine(Path.GetTempPath(), $"spawn-achrow-vm-{Guid.NewGuid():N}");

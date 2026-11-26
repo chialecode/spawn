@@ -226,12 +226,19 @@ public sealed partial class AchievementRowViewModel : ObservableObject
             return;
         }
 
-        await PostToOwnerThreadAsync(() =>
+        try
         {
-            _iconImage = loaded;
-            IconOpacity = targetOpacity;
-            OnPropertyChanged(nameof(IconImage));
-        }).ConfigureAwait(false);
+            await PostToOwnerThreadAsync(() =>
+            {
+                _iconImage = loaded;
+                IconOpacity = targetOpacity;
+                OnPropertyChanged(nameof(IconImage));
+            }).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Ignore Dispatcher shutdown cancellation during app exit.
+        }
     }
 
     private Task PostToOwnerThreadAsync(Action action)

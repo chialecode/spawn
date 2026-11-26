@@ -32,17 +32,26 @@ public static class ImageLoaderHelper
 
     public static BitmapImage? LoadFrozen(string? filePath, int maxDecodeWidth = 256)
     {
-        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+        if (string.IsNullOrWhiteSpace(filePath))
         {
             return null;
         }
 
         string fullPath;
+        long fileLength;
         DateTime lastWriteUtc;
         try
         {
             fullPath = Path.GetFullPath(filePath);
-            lastWriteUtc = File.GetLastWriteTimeUtc(fullPath);
+            var info = new FileInfo(fullPath);
+            if (!info.Exists)
+            {
+                FastPathCache.TryRemove($"{fullPath}|{maxDecodeWidth}", out _);
+                return null;
+            }
+
+            fileLength = info.Length;
+            lastWriteUtc = info.LastWriteTimeUtc;
         }
         catch
         {
@@ -50,12 +59,16 @@ public static class ImageLoaderHelper
         }
 
         string fastKey = $"{fullPath}|{maxDecodeWidth}";
-        string cacheKey = $"{fastKey}|{lastWriteUtc.Ticks}";
+        string cacheKey = $"{fastKey}|{fileLength}|{lastWriteUtc.Ticks}";
         if (Cache.TryGetValue(cacheKey, out BitmapImage? cached))
         {
             if (cached is not null)
             {
                 FastPathCache[fastKey] = cached;
+            }
+            else
+            {
+                FastPathCache.TryRemove(fastKey, out _);
             }
 
             return cached;

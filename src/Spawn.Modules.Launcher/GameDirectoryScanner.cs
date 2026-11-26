@@ -2736,22 +2736,31 @@ public sealed partial class GameDirectoryScanner
     private static ParsedWindowsShortcut? TryParseWindowsShortcut(string lnkFullPath)
     {
         ParsedWindowsShortcut? parsed = TryParseWindowsShortcutBinary(lnkFullPath);
-        if (parsed is not null && !string.IsNullOrWhiteSpace(parsed.TargetPath))
+        if (parsed is not null && ShortcutTargetExists(parsed.TargetPath))
         {
             return parsed;
         }
 
+        // Fall back to Windows Shell COM IShellLinkW whenever binary parsing did not find an existing path
+        // (e.g. legacy non-Unicode ANSI CJK paths under .NET UTF-8 Default encoding, or IDList-only shortcuts).
         ParsedWindowsShortcut? comParsed = TryParseWindowsShortcutViaCom(lnkFullPath);
         if (comParsed is null)
         {
             return parsed;
         }
 
+        string? resolvedTarget = ShortcutTargetExists(comParsed.TargetPath)
+            ? comParsed.TargetPath
+            : (!string.IsNullOrWhiteSpace(parsed?.TargetPath) ? parsed.TargetPath : comParsed.TargetPath);
+
         return new ParsedWindowsShortcut(
-            TargetPath: !string.IsNullOrWhiteSpace(comParsed.TargetPath) ? comParsed.TargetPath : parsed?.TargetPath,
+            TargetPath: resolvedTarget,
             Arguments: !string.IsNullOrWhiteSpace(comParsed.Arguments) ? comParsed.Arguments : parsed?.Arguments,
             WorkingDirectory: !string.IsNullOrWhiteSpace(comParsed.WorkingDirectory) ? comParsed.WorkingDirectory : parsed?.WorkingDirectory);
     }
+
+    private static bool ShortcutTargetExists(string? targetPath) =>
+        !string.IsNullOrWhiteSpace(targetPath) && (File.Exists(targetPath) || Directory.Exists(targetPath));
 
     private static ParsedWindowsShortcut? TryParseWindowsShortcutBinary(string lnkFullPath)
     {

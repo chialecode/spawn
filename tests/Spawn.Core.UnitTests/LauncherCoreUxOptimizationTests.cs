@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text;
 using SkiaSharp;
 using Spawn.Contracts;
@@ -156,6 +157,158 @@ public sealed class LauncherCoreUxOptimizationTests
         GameStopResult secondStop = await launchService.StopGameAsync(game.GameId, forceKill: false);
         Assert.False(secondStop.Succeeded);
         Assert.Equal(GameStopOutcomeKind.NotRunning, secondStop.Outcome);
+    }
+
+    [Fact]
+    public async Task StopGameAsync_PreservesStoppingAcrossSampleTicks_RestoresOnCancel_AndIsolatesConcurrentForceKill()
+    {
+        await using var sandbox = new TestSandbox();
+        await sandbox.Database.InitializeAsync();
+
+        string fakeGameDir = sandbox.CreateSubDirectory("games", "StoppingStateMachineGame");
+        await File.WriteAllBytesAsync(Path.Combine(fakeGameDir, "game.exe"), [0x4D, 0x5A]);
+
+        var game = new GameRecord
+        {
+            GameId = SpawnId.NewUlid(),
+            Title = "Stopping State Machine Game",
+            InstallDir = fakeGameDir,
+            ExecutableRelPath = "game.exe",
+            AntiCheatTier = AntiCheatTier.Tier0,
+        };
+        await sandbox.Database.UpsertGameAsync(game);
+
+        using var guard = new AntiCheatGuardService(
+            residualProcessProbe: static () => [],
+            highRiskEnvironmentProbe: static () => HighRiskEnvironmentReport.Clean);
+        var starter = new LongRunningHiddenProcessStarter();
+
+        await using var launchService = new GameLaunchService(
+            sandbox.Database,
+            guard,
+            new InMemorySpawnEventBus(),
+            activityProbe: new StaticUserActivityProbe(),
+            processStarter: starter,
+            options: new GameLaunchOptions
+            {
+                ForceCreateNoWindow = true,
+                PlaytimeSampleInterval = TimeSpan.FromMilliseconds(40),
+                ShellBreakTriggerThreshold = TimeSpan.Zero,
+                ShellBreakObservationWindow = TimeSpan.Zero,
+                GracefulStopTimeout = TimeSpan.FromMilliseconds(360),
+                ForceKillWaitTimeout = TimeSpan.FromSeconds(5),
+            });
+
+        try
+        {
+            var launchRes = await launchService.LaunchGameAsync(game.GameId);
+            Assert.True(launchRes.Succeeded, launchRes.ErrorMessage);
+            int pid = starter.LastStartedProcess!.Id;
+
+            // 1. During graceful stop spanning multiple 40ms sample ticks, State MUST remain Stopping (never overwritten by Active/Background/Afk).
+            var observedDuringStop = new List<PlaySessionActivityState>();
+            Task<GameStopResult> gracefulTask = launchService.StopGameAsync(
+                game.GameId,
+                forceKill: false,
+                gracefulTimeout: TimeSpan.FromMilliseconds(320));
+
+            await Task.Delay(60);
+            for (int i = 0; i < 4; i++)
+            {
+                var snap = launchService.GetActiveSession(game.GameId);
+                if (snap is not null)
+                {
+                    observedDuringStop.Add(snap.State);
+                }
+
+                await Task.Delay(45);
+            }
+
+            GameStopResult timedOut = await gracefulTask;
+            Assert.False(timedOut.Succeeded);
+            Assert.Equal(GameStopOutcomeKind.GracefulTimeoutStillRunning, timedOut.Outcome);
+            Assert.NotEmpty(observedDuringStop);
+            Assert.All(observedDuringStop, s => Assert.Equal(PlaySessionActivityState.Stopping, s));
+            Assert.NotEqual(PlaySessionActivityState.Stopping, launchService.GetActiveSession(game.GameId)!.State);
+
+            // 2. Cancelling CancellationToken mid-graceful-stop cleans up StopRequested and restores running state!
+            using (var cancelCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(120)))
+            {
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                    launchService.StopGameAsync(
+                        game.GameId,
+                        forceKill: false,
+                        gracefulTimeout: TimeSpan.FromSeconds(5),
+                        cancellationToken: cancelCts.Token));
+            }
+
+            ActiveGameSession? afterCancel = launchService.GetActiveSession(game.GameId);
+            Assert.NotNull(afterCancel);
+            Assert.NotEqual(PlaySessionActivityState.Stopping, afterCancel!.State);
+            Assert.True(SafeProcessInspector.IsProcessAlive(pid));
+
+            // 3. Concurrent forceKill: true while a graceful stop is waiting cleanly supersedes without reverting state.
+            Task<GameStopResult> longGracefulTask = launchService.StopGameAsync(
+                game.GameId,
+                forceKill: false,
+                gracefulTimeout: TimeSpan.FromSeconds(5));
+
+            await Task.Delay(80);
+            GameStopResult forceRes = await launchService.StopGameAsync(game.GameId, forceKill: true);
+            GameStopResult supersededGracefulRes = await longGracefulTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.True(forceRes.Succeeded);
+            Assert.Equal(GameStopOutcomeKind.ForceKilled, forceRes.Outcome);
+            Assert.True(supersededGracefulRes.Succeeded);
+            Assert.False(SafeProcessInspector.IsProcessAlive(pid));
+            Assert.Null(launchService.GetActiveSession(game.GameId));
+        }
+        finally
+        {
+            starter.EnsureCleanedUp();
+        }
+    }
+
+    [Fact]
+    public async Task ResolveImportTarget_LnkWithNonExistentBinaryLinkInfo_FallsBackToComIShellLink()
+    {
+        await using var sandbox = new TestSandbox();
+        string gameDir = sandbox.CreateSubDirectory("games", "中文快捷方式回退测试");
+        string targetExe = Path.Combine(gameDir, "RealComTarget.exe");
+        await File.WriteAllBytesAsync(targetExe, new byte[8192]);
+
+        string desktopDir = sandbox.CreateSubDirectory("desktop");
+        string lnkPath = Path.Combine(desktopDir, "ComFallbackShortcut.lnk");
+
+        // Build a real Windows .lnk via COM IShellLinkW (contains valid LinkTargetIDList + LinkInfo),
+        // then mutate ONLY the LinkInfo path bytes to a non-existent path of identical length so binary LinkInfo
+        // returns a missing path while Shell IDList stays intact -> forces COM IShellLinkW fallback!
+        CreateRealWindowsShortcutViaCom(lnkPath, targetExe, gameDir, "--com-fallback-arg");
+
+        byte[] freshBytes = await File.ReadAllBytesAsync(lnkPath);
+        int linkInfoOffset = LocateLinkInfoSectionOffset(freshBytes);
+        Assert.True(linkInfoOffset > 76, "Expected real Windows .lnk to contain LinkTargetIDList followed by LinkInfo.");
+
+        byte[] mutated = (byte[])freshBytes.Clone();
+        int mutatedInLinkInfo = ReplaceBytePatternFromOffset(
+            mutated,
+            linkInfoOffset,
+            Encoding.Unicode.GetBytes("RealComTarget.exe"),
+            Encoding.Unicode.GetBytes("MissingBinary.exe"));
+        mutatedInLinkInfo += ReplaceBytePatternFromOffset(
+            mutated,
+            linkInfoOffset,
+            Encoding.ASCII.GetBytes("RealComTarget.exe"),
+            Encoding.ASCII.GetBytes("MissingBinary.exe"));
+        Assert.True(mutatedInLinkInfo > 0, "Expected LinkInfo section to contain target filename.");
+        await File.WriteAllBytesAsync(lnkPath, mutated);
+
+        ResolvedImportTarget? resolved = GameDirectoryScanner.ResolveImportTargetDetailed(lnkPath);
+        Assert.NotNull(resolved);
+        Assert.True(resolved!.ResolvedFromShortcut);
+        Assert.Equal(Path.TrimEndingDirectorySeparator(gameDir), resolved.InstallDir, ignoreCase: true);
+        Assert.Equal("RealComTarget.exe", resolved.ExplicitExeRelPath, ignoreCase: true);
+        Assert.Equal("--com-fallback-arg", resolved.LaunchArguments);
     }
 
     [Fact]
@@ -841,5 +994,100 @@ public sealed class LauncherCoreUxOptimizationTests
             Task.FromResult(false);
         public void RegisterTrustedOverlayWindow(nint windowHandle, int processId) { }
         public void UnregisterTrustedOverlayWindow(nint windowHandle) { }
+    }
+
+    private static void CreateRealWindowsShortcutViaCom(string lnkPath, string targetPath, string workingDir, string arguments)
+    {
+        object? comObj = null;
+        try
+        {
+            Type shellLinkType = Type.GetTypeFromCLSID(new Guid("00021401-0000-0000-C000-000000000046"), throwOnError: true)!;
+            comObj = Activator.CreateInstance(shellLinkType)!;
+            var shellLink = (ITestShellLinkW)comObj;
+            shellLink.SetPath(targetPath);
+            shellLink.SetWorkingDirectory(workingDir);
+            shellLink.SetArguments(arguments);
+            ((ITestPersistFile)comObj).Save(lnkPath, fRemember: true);
+        }
+        finally
+        {
+            if (comObj is not null && Marshal.IsComObject(comObj))
+            {
+                Marshal.FinalReleaseComObject(comObj);
+            }
+        }
+    }
+
+    private static int LocateLinkInfoSectionOffset(byte[] data)
+    {
+        if (data.Length < 78)
+        {
+            return -1;
+        }
+
+        uint flags = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(20, 4));
+        int pos = 76;
+        if ((flags & 0x01) != 0)
+        {
+            ushort idListSize = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(pos, 2));
+            pos += 2 + idListSize;
+        }
+
+        return (flags & 0x02) != 0 && pos < data.Length ? pos : -1;
+    }
+
+    private static int ReplaceBytePatternFromOffset(byte[] buffer, int startOffset, byte[] search, byte[] replacement)
+    {
+        int count = 0;
+        for (int i = startOffset; i <= buffer.Length - search.Length; i++)
+        {
+            if (buffer.AsSpan(i, search.Length).SequenceEqual(search))
+            {
+                replacement.CopyTo(buffer.AsSpan(i, replacement.Length));
+                count++;
+                i += search.Length - 1;
+            }
+        }
+
+        return count;
+    }
+
+    [ComImport]
+    [Guid("000214F9-0000-0000-C000-000000000046")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface ITestShellLinkW
+    {
+        void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszFile, int cchMaxPath, nint pfd, uint fFlags);
+        void GetIDList(out nint ppidl);
+        void SetIDList(nint pidl);
+        void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszName, int cchMaxName);
+        void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string pszName);
+        void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszDir, int cchMaxPath);
+        void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string pszDir);
+        void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszArgs, int cchMaxPath);
+        void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string pszArgs);
+        void GetHotkey(out short pwHotkey);
+        void SetHotkey(short wHotkey);
+        void GetShowCmd(out int piShowCmd);
+        void SetShowCmd(int iShowCmd);
+        void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszIconPath, int cchIconPath, out int piIcon);
+        void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string pszIconPath, int iIcon);
+        void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string pszPathRel, uint dwReserved);
+        void Resolve(nint hwnd, uint fFlags);
+        void SetPath([MarshalAs(UnmanagedType.LPWStr)] string pszFile);
+    }
+
+    [ComImport]
+    [Guid("0000010b-0000-0000-C000-000000000046")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface ITestPersistFile
+    {
+        void GetClassID(out Guid pClassID);
+        [PreserveSig]
+        int IsDirty();
+        void Load([MarshalAs(UnmanagedType.LPWStr)] string pszFileName, uint dwMode);
+        void Save([MarshalAs(UnmanagedType.LPWStr)] string pszFileName, [MarshalAs(UnmanagedType.Bool)] bool fRemember);
+        void SaveCompleted([MarshalAs(UnmanagedType.LPWStr)] string pszFileName);
+        void GetCurFile([MarshalAs(UnmanagedType.LPWStr)] out string ppszFileName);
     }
 }

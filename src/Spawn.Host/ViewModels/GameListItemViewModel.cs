@@ -281,7 +281,9 @@ public sealed partial class GameListItemViewModel : ObservableObject
             Record = updated;
         }
 
-        ReloadArtwork(forceRefresh: recordChanged);
+        // Always revalidate artwork asynchronously in background on UpdateRecord so in-place overwrites
+        // (e.g. upgraded HD icon.png or replaced custom cover) or deletions refresh cleanly without UI-thread I/O.
+        ReloadArtwork(forceRefresh: true);
 
         if (recordChanged)
         {
@@ -375,26 +377,35 @@ public sealed partial class GameListItemViewModel : ObservableObject
         {
             SmallIcon = null;
         }
-        else if (ImageLoaderHelper.TryGetCached(smallSource, 96, out var cachedSmall))
-        {
-            SmallIcon = cachedSmall;
-        }
         else
         {
-            needAsyncSmall = true;
+            if (ImageLoaderHelper.TryGetCached(smallSource, 96, out var cachedSmall))
+            {
+                // Immediate flicker-free placeholder from memory cache; still revalidate LastWriteTimeUtc in background on forceRefresh.
+                SmallIcon = cachedSmall;
+                needAsyncSmall = forceRefresh;
+            }
+            else
+            {
+                needAsyncSmall = true;
+            }
         }
 
         if (string.IsNullOrWhiteSpace(coverSource))
         {
             CoverImage = null;
         }
-        else if (ImageLoaderHelper.TryGetCached(coverSource, 320, out var cachedCover))
-        {
-            CoverImage = cachedCover;
-        }
         else
         {
-            needAsyncCover = true;
+            if (ImageLoaderHelper.TryGetCached(coverSource, 320, out var cachedCover))
+            {
+                CoverImage = cachedCover;
+                needAsyncCover = forceRefresh;
+            }
+            else
+            {
+                needAsyncCover = true;
+            }
         }
 
         if (!needAsyncSmall && !needAsyncCover)
@@ -449,23 +460,30 @@ public sealed partial class GameListItemViewModel : ObservableObject
             return;
         }
 
-        await PostToOwnerThreadAsync(() =>
+        try
         {
-            if (Volatile.Read(ref _artworkLoadVersion) != version)
+            await PostToOwnerThreadAsync(() =>
             {
-                return;
-            }
+                if (Volatile.Read(ref _artworkLoadVersion) != version)
+                {
+                    return;
+                }
 
-            if (!string.IsNullOrWhiteSpace(smallSource))
-            {
-                SmallIcon = decodedSmall;
-            }
+                if (!string.IsNullOrWhiteSpace(smallSource))
+                {
+                    SmallIcon = decodedSmall;
+                }
 
-            if (!string.IsNullOrWhiteSpace(coverSource))
-            {
-                CoverImage = decodedCover;
-            }
-        }).ConfigureAwait(false);
+                if (!string.IsNullOrWhiteSpace(coverSource))
+                {
+                    CoverImage = decodedCover;
+                }
+            }).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Ignore Dispatcher shutdown cancellation during app exit.
+        }
     }
 
     private Task PostToOwnerThreadAsync(Action action)

@@ -56,8 +56,9 @@
                                        Margin="0,3,0,0" />
                         </StackPanel>
 
-                        <StackPanel Margin="0,0,34,6">
-                            <TextBlock Text="CAS 去重实占" FontSize="12.5" Foreground="{DynamicResource SecondaryTextBrush}" />
+                        <StackPanel Margin="0,0,34,6"
+                                    ToolTip="基于 FastCDC + BLAKE3 + Zstd 块级去重计算实际磁盘占用">
+                            <TextBlock Text="去重后实占空间" FontSize="12.5" Foreground="{DynamicResource SecondaryTextBrush}" />
                             <StackPanel Orientation="Horizontal" Margin="0,3,0,0" VerticalAlignment="Bottom">
                                 <TextBlock Text="{Binding SaveVaultStoredSizeText}"
                                            FontFamily="{StaticResource SpawnMonoFont}"
@@ -84,7 +85,7 @@
                             IsEnabled="{Binding CanSyncAllCloudSaves}" />
                 </DockPanel>
 
-                <!-- CAS Vault Path & Settings Bar -->
+                <!-- Local Vault Path & Settings Bar -->
                 <Border CornerRadius="8"
                         Background="{DynamicResource SubtleSurfaceBrush}"
                         BorderBrush="{DynamicResource DividerBrush}"
@@ -97,7 +98,8 @@
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
                         <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,12,0">
-                            <TextBlock Text="FastCDC + BLAKE3 + Zstd 块级去重存档库（严禁将 spawn.db 直接放进网盘）"
+                            <TextBlock Text="本地增量存档仓库（请勿将 spawn.db 直接放进网盘同步目录）"
+                                       ToolTip="底层采用 FastCDC + BLAKE3 + Zstd 块级去重存储"
                                        FontSize="11.5"
                                        Foreground="{DynamicResource SecondaryTextBrush}" />
                             <TextBlock Text="{Binding SaveVaultPathText}"
@@ -211,7 +213,20 @@
                     <DataTemplate DataType="{x:Type savesVm:ManagedSaveGameOverviewItemViewModel}">
                         <Border BorderBrush="{DynamicResource DividerBrush}"
                                 BorderThickness="0,0,0,1"
-                                Padding="0,12">
+                                CornerRadius="8"
+                                Padding="8,12"
+                                Cursor="Hand"
+                                MouseLeftButtonUp="OnGameCardRowMouseLeftButtonUp">
+                            <Border.Style>
+                                <Style TargetType="Border">
+                                    <Setter Property="Background" Value="Transparent" />
+                                    <Style.Triggers>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter Property="Background" Value="{DynamicResource ItemHoverBrush}" />
+                                        </Trigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="42" />
@@ -255,7 +270,7 @@
                                                 Padding="6,1"
                                                 Margin="8,0,0,0"
                                                 VerticalAlignment="Center">
-                                            <TextBlock Text="{Binding ActiveBranchName}"
+                                            <TextBlock Text="{Binding ActiveBranchDisplayName}"
                                                        FontFamily="{StaticResource SpawnMonoFont}"
                                                        FontSize="11"
                                                        FontWeight="SemiBold"
@@ -301,6 +316,26 @@
                                             Content="快速备份"
                                             Command="{Binding QuickBackupCommand}"
                                             IsEnabled="{Binding IsNotBusy}" />
+                                    <Button Height="30"
+                                            Padding="12,0"
+                                            FontSize="12"
+                                            Margin="0,2,6,2"
+                                            Content="同步"
+                                            Command="{Binding QuickSyncCommand}"
+                                            IsEnabled="{Binding IsNotBusy}"
+                                            Visibility="{Binding HasCloudEndpoint, Converter={StaticResource BoolToVis}}">
+                                        <Button.Style>
+                                            <Style TargetType="Button" BasedOn="{StaticResource SecondaryCapsuleButtonStyle}">
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding HasCloudConflict}" Value="True">
+                                                        <Setter Property="Background" Value="{DynamicResource WarningAmberSoftBrush}" />
+                                                        <Setter Property="BorderBrush" Value="{DynamicResource WarningAmberBrush}" />
+                                                        <Setter Property="Foreground" Value="{DynamicResource WarningAmberBrush}" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Button.Style>
+                                    </Button>
                                     <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
                                             Height="30"
                                             Padding="12,0"
@@ -323,7 +358,7 @@
                            FontSize="15.5"
                            FontWeight="SemiBold"
                            HorizontalAlignment="Center" />
-                <TextBlock Text="请先在「设置 → 常规与游戏库」导入单机游戏，即可体验 Git 式多分支树状存档与 32MB SPPK 云同步。"
+                <TextBlock Text="请先在「设置 → 常规与游戏库」导入单机游戏，即可体验多分支时间机器存档与跨设备云同步。"
                            FontSize="12.5"
                            Foreground="{DynamicResource SecondaryTextBrush}"
                            TextAlignment="Center"

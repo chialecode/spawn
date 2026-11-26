@@ -40,6 +40,7 @@ public sealed partial class LudusaviRuleResolver : ILudusaviRuleResolver
 
     private readonly SpawnDatabase _database;
     private readonly IGameDataManagementService _gameDataService;
+    private readonly IKnownFolderProvider _knownFolderProvider;
     private readonly LudusaviPlaceholderExpander _expander;
     private readonly TimeProvider _timeProvider;
     private readonly Func<string, bool> _registryKeyExistsProbe;
@@ -71,7 +72,8 @@ public sealed partial class LudusaviRuleResolver : ILudusaviRuleResolver
 
         _database = database;
         _gameDataService = gameDataService;
-        _expander = new LudusaviPlaceholderExpander(knownFolderProvider);
+        _knownFolderProvider = knownFolderProvider ?? WindowsKnownFolderResolver.Instance;
+        _expander = new LudusaviPlaceholderExpander(_knownFolderProvider);
         _timeProvider = timeProvider ?? TimeProvider.System;
         _registryKeyExistsProbe = registryKeyExistsProbe;
         _logger = logger ?? NullLogger<LudusaviRuleResolver>.Instance;
@@ -132,6 +134,11 @@ public sealed partial class LudusaviRuleResolver : ILudusaviRuleResolver
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(rulesJson);
 
+        if (!LudusaviYamlManifestParser.LooksLikeJson(rulesJson))
+        {
+            return await ImportRulesYamlAsync(rulesJson, ct).ConfigureAwait(false);
+        }
+
         DateTimeOffset now = _timeProvider.GetUtcNow();
         List<LudusaviRuleRecord> parsed = ParseImportJson(rulesJson, now);
         if (parsed.Count == 0)
@@ -142,8 +149,102 @@ public sealed partial class LudusaviRuleResolver : ILudusaviRuleResolver
         return await _database.UpsertLudusaviRulesBatchAsync(parsed, ct).ConfigureAwait(false);
     }
 
+    public async Task<int> ImportRulesYamlAsync(string manifestYaml, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(manifestYaml);
+
+        DateTimeOffset now = _timeProvider.GetUtcNow();
+        List<LudusaviRuleRecord> parsed = LudusaviYamlManifestParser.Parse(manifestYaml, now);
+        if (parsed.Count == 0)
+        {
+            return 0;
+        }
+
+        return await _database.UpsertLudusaviRulesBatchAsync(parsed, ct).ConfigureAwait(false);
+    }
+
     public Task<int> GetRuleCountAsync(CancellationToken ct = default) =>
         _database.GetLudusaviRuleCountAsync(ct);
+
+    public Task<IReadOnlyList<SaveCustomLocationRecord>> GetCustomLocationsAsync(
+        string gameId,
+        CancellationToken ct = default) =>
+        _database.GetSaveCustomLocationsByGameAsync(gameId, ct);
+
+    public async Task<SaveCustomLocationRecord> AddCustomLocationAsync(
+        string gameId,
+        string pathOrRegistryKey,
+        SaveCustomLocationKind locationKind,
+        SaveFileCategory category = SaveFileCategory.Save,
+        string? label = null,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(gameId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(pathOrRegistryKey);
+
+        GameRecord? game = await _database.GetGameByIdAsync(gameId, ct).ConfigureAwait(false);
+        if (game is null)
+        {
+            throw new InvalidOperationException($"未找到游戏记录：{gameId}");
+        }
+
+        string trimmedInput = pathOrRegistryKey.Trim();
+        string normalizedStoredPath;
+        SaveFileCategory effectiveCategory = category;
+
+        if (locationKind == SaveCustomLocationKind.RegistryKey)
+        {
+            var (isSafe, canonicalKey, reason) = TrustedSavePathFence.ValidateTrustedRegistryTarget(trimmedInput);
+            if (!isSafe || string.IsNullOrWhiteSpace(canonicalKey))
+            {
+                throw new InvalidOperationException(reason ?? $"安全围栏已拦截非法的注册表项：{trimmedInput}");
+            }
+
+            normalizedStoredPath = canonicalKey;
+            effectiveCategory = SaveFileCategory.RegistryExport;
+        }
+        else
+        {
+            string expanded = trimmedInput.StartsWith('<')
+                ? _expander.ExpandLogicalPath(trimmedInput, game)
+                : trimmedInput;
+
+            var (isSafe, reason) = TrustedSavePathFence.ValidateTrustedFilesystemTarget(
+                expanded,
+                game.InstallDir,
+                _knownFolderProvider,
+                isUserCustomPath: true);
+            if (!isSafe)
+            {
+                throw new InvalidOperationException(reason ?? $"安全围栏已拦截不安全的自定义路径：{expanded}");
+            }
+
+            normalizedStoredPath = NormalizePathForDedup(expanded);
+        }
+
+        DateTimeOffset now = _timeProvider.GetUtcNow();
+        var record = new SaveCustomLocationRecord
+        {
+            LocationId = SpawnId.NewUlid(now),
+            GameId = gameId,
+            PathOrRegistryKey = normalizedStoredPath,
+            LocationKind = locationKind,
+            Category = effectiveCategory,
+            Label = string.IsNullOrWhiteSpace(label) ? null : label.Trim(),
+            CreatedAtUtc = now,
+        };
+
+        await _database.UpsertSaveCustomLocationAsync(record, ct).ConfigureAwait(false);
+        IReadOnlyList<SaveCustomLocationRecord> all = await _database
+            .GetSaveCustomLocationsByGameAsync(gameId, ct)
+            .ConfigureAwait(false);
+        return all.FirstOrDefault(
+            l => string.Equals(l.PathOrRegistryKey, normalizedStoredPath, StringComparison.OrdinalIgnoreCase))
+            ?? record;
+    }
+
+    public Task<bool> RemoveCustomLocationAsync(string locationId, CancellationToken ct = default) =>
+        _database.DeleteSaveCustomLocationAsync(locationId, ct);
 
     public string CanonicalizeToLogicalPath(string fullPathOrRegistryKey, GameRecord game) =>
         _expander.CanonicalizeToLogicalPath(fullPathOrRegistryKey, game);
@@ -180,6 +281,83 @@ public sealed partial class LudusaviRuleResolver : ILudusaviRuleResolver
         var warnings = new List<string>();
         var fsLocations = new Dictionary<string, ResolvedSaveLocation>(StringComparer.OrdinalIgnoreCase);
         var regLocations = new Dictionary<string, ResolvedSaveLocation>(StringComparer.OrdinalIgnoreCase);
+
+        // 0. Merge user-configured custom save locations (save_custom_locations) first so they always take priority.
+        IReadOnlyList<SaveCustomLocationRecord> customLocations = await _database
+            .GetSaveCustomLocationsByGameAsync(game.GameId, ct)
+            .ConfigureAwait(false);
+        foreach (SaveCustomLocationRecord custom in customLocations)
+        {
+            ct.ThrowIfCancellationRequested();
+            string customLabel = string.IsNullOrWhiteSpace(custom.Label) ? "自定义路径" : $"自定义 · {custom.Label}";
+
+            if (custom.LocationKind == SaveCustomLocationKind.RegistryKey)
+            {
+                var (isSafeReg, canonicalKey, reason) = TrustedSavePathFence.ValidateTrustedRegistryTarget(custom.PathOrRegistryKey);
+                if (!isSafeReg || string.IsNullOrWhiteSpace(canonicalKey))
+                {
+                    warnings.Add(reason ?? $"已跳过不安全的自定义注册表项：{custom.PathOrRegistryKey}");
+                    continue;
+                }
+
+                string subKey = canonicalKey[@"HKCU\".Length..];
+                bool exists = _registryKeyExistsProbe(subKey);
+                regLocations[canonicalKey] = new ResolvedSaveLocation
+                {
+                    LogicalTemplatePath = _expander.CanonicalizeToLogicalPath(canonicalKey, game),
+                    ResolvedFullPath = canonicalKey,
+                    Category = SaveFileCategory.RegistryExport,
+                    SourceRule = GameDataSourceRule.NativeRule,
+                    SourceLabel = customLabel,
+                    Exists = exists,
+                    IsSafe = true,
+                    IsCustom = true,
+                    CustomLocationId = custom.LocationId,
+                    FileCount = exists ? 1 : 0,
+                    TotalBytes = 0,
+                };
+                continue;
+            }
+
+            string expandedCustom = custom.PathOrRegistryKey.StartsWith('<')
+                ? _expander.ExpandLogicalPath(custom.PathOrRegistryKey, game)
+                : custom.PathOrRegistryKey;
+
+            var (isSafeFs, fsReason) = TrustedSavePathFence.ValidateTrustedFilesystemTarget(
+                expandedCustom,
+                game.InstallDir,
+                _knownFolderProvider,
+                isUserCustomPath: true);
+            if (!isSafeFs)
+            {
+                warnings.Add(fsReason ?? $"安全围栏已跳过不安全的自定义路径：{expandedCustom}");
+                continue;
+            }
+
+            string normCustom = NormalizePathForDedup(expandedCustom);
+            var (diskExists, fileCount, totalBytes) = LudusaviPlaceholderExpander.MeasurePathSkippingIgnored(normCustom);
+            SaveFileCategory cat = custom.Category == SaveFileCategory.Config
+                ? SaveFileCategory.Config
+                : SaveFileCategory.Save;
+
+            MergeFilesystemLocation(
+                fsLocations,
+                normCustom,
+                new ResolvedSaveLocation
+                {
+                    LogicalTemplatePath = _expander.CanonicalizeToLogicalPath(normCustom, game),
+                    ResolvedFullPath = normCustom,
+                    Category = cat,
+                    SourceRule = GameDataSourceRule.NativeRule,
+                    SourceLabel = customLabel,
+                    Exists = diskExists,
+                    IsSafe = true,
+                    IsCustom = true,
+                    CustomLocationId = custom.LocationId,
+                    FileCount = fileCount,
+                    TotalBytes = totalBytes,
+                });
+        }
 
         // 1. Resolve from SQLite ludusavi_rules (indexed by SteamAppId / GogId / cleaned title & aliases).
         LudusaviRuleRecord? matchedRule = await FindMatchingRuleAsync(game, ct).ConfigureAwait(false);
@@ -421,10 +599,24 @@ public sealed partial class LudusaviRuleResolver : ILudusaviRuleResolver
                 continue;
             }
 
+            // Hard redlines are always enforced first (system dirs, drive root, ReparsePoint, executables, SPAWN data, engine dirs).
+            var (trustedSafe, trustedReason) = TrustedSavePathFence.ValidateTrustedFilesystemTarget(
+                resolvedPath,
+                game.InstallDir,
+                _knownFolderProvider,
+                isUserCustomPath: false);
+            if (!trustedSafe)
+            {
+                warnings.Add(trustedReason ?? $"安全围栏已跳过不安全路径：{resolvedPath}");
+                continue;
+            }
+
+            // Also consult IGameDataManagementService; only relax its heuristic 10-folder / 3-char whitelist
+            // for matched Ludusavi rules (fixing e.g. b1/Saved/SaveGames, preferences, runs, SNAppData).
             GameDataSafetyCheckResult safety = await _gameDataService
                 .ValidateSaveRestoreTargetAsync(game.GameId, resolvedPath, ct)
                 .ConfigureAwait(false);
-            if (!safety.IsSafe)
+            if (!safety.IsSafe && !TrustedSavePathFence.IsHeuristicStrictFenceRejection(safety.Reason))
             {
                 warnings.Add(safety.Reason ?? $"安全围栏已跳过不安全路径：{resolvedPath}");
                 continue;
@@ -522,6 +714,8 @@ public sealed partial class LudusaviRuleResolver : ILudusaviRuleResolver
         {
             Category = mergedCategory,
             Exists = mergedExists,
+            IsCustom = existing.IsCustom || incoming.IsCustom,
+            CustomLocationId = existing.CustomLocationId ?? incoming.CustomLocationId,
             FileCount = mergedFileCount,
             TotalBytes = mergedBytes,
         };

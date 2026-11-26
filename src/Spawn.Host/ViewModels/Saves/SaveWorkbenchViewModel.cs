@@ -25,6 +25,14 @@ public enum SaveDiffTargetMode
     CurrentDisk = 1,
 }
 
+public enum SaveWorkbenchEmptyStateKind
+{
+    None = 0,
+    NoSnapshotsWithPaths = 1,
+    NoSavePathsDetected = 2,
+    FilterNoMatch = 3,
+}
+
 /// <summary>
 /// Per-game Save Time Machine &amp; Branching Save Tree ViewModel powering the reusable <c>SaveWorkbenchControl</c>
 /// (shared between Game Detail's <c>存档</c> sub-tab and the top-level Column 1 <c>存档</c> workbench).
@@ -38,6 +46,8 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
     private readonly IGameLaunchService _launchService;
     private readonly Action<string> _openFolder;
     private readonly Func<string?> _pickExportFolder;
+    private readonly Func<string?> _pickCustomFolder;
+    private readonly Func<string?> _pickCustomFile;
 
     private GameListItemViewModel? _currentGame;
     private SaveTreeGraphDto? _rawGraph;
@@ -48,10 +58,12 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
     private bool _suppressAutoSaveToggles;
     private bool _suppressBranchSelectionCommand;
     private bool _disposed;
+    private readonly HashSet<string> _dismissedLegacyBannerGames = new(StringComparer.OrdinalIgnoreCase);
 
     public event Action<string, bool>? StatusFeedbackRequested;
     public event Action? OpenSavesSettingsRequested;
     public event Func<string, Task>? SaveTreeMutatedRequested;
+    public event Action<SaveSnapshotRowViewModel>? ScrollToSnapshotRequested;
 
     public string? CurrentGameId => _currentGame?.GameId;
     public bool IsServiceAvailable => _saveService is not null;
@@ -69,10 +81,13 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
     ];
 
     public ObservableCollection<SaveBranchItemViewModel> Branches { get; } = [];
+    public ObservableCollection<SaveBranchItemViewModel> BackgroundDeletableBranches { get; } = [];
     public ObservableCollection<SaveSnapshotRowViewModel> GraphRows { get; } = [];
     public ObservableCollection<SaveFileEntryViewModel> SelectedNodeFiles { get; } = [];
     public ObservableCollection<SaveDiffEntryViewModel> SelectedNodeDiffItems { get; } = [];
     public ObservableCollection<CloudEndpointItemViewModel> AvailableCloudEndpoints { get; } = [];
+    public ObservableCollection<ResolvedSaveLocationItemViewModel> ResolvedLocationItems { get; } = [];
+    public ObservableCollection<string> ResolvedLocationWarnings { get; } = [];
 
     [ObservableProperty]
     private bool _isBusy;
@@ -137,7 +152,27 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
     private SaveWatcherStatusKind _watcherStatus = SaveWatcherStatusKind.Stopped;
 
     [ObservableProperty]
+    private string _watcherStatusDetailText = string.Empty;
+
+    [ObservableProperty]
     private string _resolvedLocationsSummaryText = "正在探测存档路径…";
+
+    [ObservableProperty]
+    private int _existingSaveLocationCount;
+
+    [ObservableProperty]
+    private int _totalRuleLocationCount;
+
+    // Expandable Save Paths Config drawer
+    [ObservableProperty]
+    private bool _isPathsDrawerOpen;
+
+    [ObservableProperty]
+    private string _customRegistryKeyInput = string.Empty;
+
+    // Legacy PreTrainer migration banner
+    [ObservableProperty]
+    private int _unimportedLegacyPreTrainerCount;
 
     // Inline Fork Branch popover state
     [ObservableProperty]
@@ -171,12 +206,28 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
     [ObservableProperty]
     private string _renameBranchColorHex = SaveBranchColors.DefaultMainColorHex;
 
+    // Inline Danger Confirmation Bars (Branch Deletion & Snapshot Deletion)
+    [ObservableProperty]
+    private bool _isDeleteBranchConfirmOpen;
+
+    [ObservableProperty]
+    private SaveBranchItemViewModel? _pendingDeleteBranch;
+
+    [ObservableProperty]
+    private bool _isDeleteSnapshotConfirmOpen;
+
     // Inline Rollback confirmation bar
     [ObservableProperty]
     private bool _isRollbackConfirmOpen;
 
     [ObservableProperty]
     private bool _rollbackIncludeConfig;
+
+    [ObservableProperty]
+    private bool _rollbackForkNewBranch;
+
+    [ObservableProperty]
+    private string _rollbackForkNewBranchName = string.Empty;
 
     [ObservableProperty]
     private bool _rollbackRequiresModMismatchConfirm;
@@ -236,12 +287,60 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
     private DateTimeOffset? _lastSyncedAtUtc;
 
     [ObservableProperty]
+    private string _effectiveCloudGameKey = string.Empty;
+
+    [ObservableProperty]
+    private string _cloudGameKeyInput = string.Empty;
+
+    [ObservableProperty]
+    private bool _syncAllBranchesToCloud;
+
+    [ObservableProperty]
     private bool _isDivergenceModalOpen;
 
     public bool HasSelectedGame => _currentGame is not null;
     public bool HasSnapshots => TotalSnapshotCount > 0;
     public bool HasVisibleGraphRows => GraphRows.Count > 0;
     public bool HasSelectedNode => SelectedNode is not null;
+    public bool HasBackgroundDeletableBranches => BackgroundDeletableBranches.Count > 0;
+    public bool HasResolvedLocationItems => ResolvedLocationItems.Count > 0;
+    public bool HasResolvedLocationWarnings => ResolvedLocationWarnings.Count > 0;
+    public bool HasNoCloudEndpoints => AvailableCloudEndpoints.Count == 0;
+    public bool HasCloudEndpoints => AvailableCloudEndpoints.Count > 0;
+    public bool HasCustomCloudGameKey => !string.IsNullOrWhiteSpace(_gameState?.CloudGameKey);
+    public bool ShowLegacyPreTrainerBanner =>
+        UnimportedLegacyPreTrainerCount > 0
+        && _currentGame is not null
+        && !_dismissedLegacyBannerGames.Contains(_currentGame.GameId);
+
+    public string LegacyPreTrainerBannerText => string.Create(
+        CultureInfo.InvariantCulture,
+        $"检测到 {UnimportedLegacyPreTrainerCount} 份旧版修改器启动前备份，可一键无损导入当前存档时间机器。");
+
+    public SaveWorkbenchEmptyStateKind EmptyStateKind
+    {
+        get
+        {
+            if (HasVisibleGraphRows)
+            {
+                return SaveWorkbenchEmptyStateKind.None;
+            }
+
+            if (TotalSnapshotCount > 0)
+            {
+                return SaveWorkbenchEmptyStateKind.FilterNoMatch;
+            }
+
+            return TotalRuleLocationCount == 0 && ExistingSaveLocationCount == 0
+                ? SaveWorkbenchEmptyStateKind.NoSavePathsDetected
+                : SaveWorkbenchEmptyStateKind.NoSnapshotsWithPaths;
+        }
+    }
+
+    public bool ShowEmptyNoSnapshotsWithPaths => EmptyStateKind == SaveWorkbenchEmptyStateKind.NoSnapshotsWithPaths;
+    public bool ShowEmptyNoPathsDetected => EmptyStateKind == SaveWorkbenchEmptyStateKind.NoSavePathsDetected;
+    public bool ShowEmptyFilterNoMatch => EmptyStateKind == SaveWorkbenchEmptyStateKind.FilterNoMatch;
+
     public bool ShowDesktopInspector => !IsCompactLayout && HasSelectedNode;
     public bool ShowCompactInspectorOverlay => IsCompactLayout && IsInspectorOpenOnCompact && HasSelectedNode;
     public bool ShowFilesInspectorTab => InspectorTab == SaveInspectorTab.Files;
@@ -256,13 +355,30 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
     public bool CanDeleteSelectedSnapshot => HasSelectedGame && IsServiceAvailable && !IsBusy && SelectedNode is { IsHead: false, IsPinned: false };
 
     public string ActiveBranchNameText => ActiveBranch?.Name ?? _rawGraph?.ActiveBranchName ?? "main";
+    public string ActiveBranchDisplayNameText => SaveBranchItemViewModel.FormatBranchDisplayName(ActiveBranchNameText, ActiveBranch?.IsDefault ?? false);
     public Brush ActiveBranchColorBrush => ActiveBranch?.ColorBrush ?? BranchColorPalette[0].SwatchBrush;
+
+    public string DeleteBranchConfirmTitle => PendingDeleteBranch is null
+        ? string.Empty
+        : PendingDeleteBranch.IsActive
+            ? $"确认删除当前路线「{PendingDeleteBranch.DisplayName}」？"
+            : $"确认后台删除路线「{PendingDeleteBranch.DisplayName}」？";
+
+    public string DeleteBranchConfirmDescription => PendingDeleteBranch is null
+        ? string.Empty
+        : PendingDeleteBranch.IsActive
+            ? $"将先自动为当前磁盘创建安全保护快照并切回主线，再移除「{PendingDeleteBranch.DisplayName}」及其 {PendingDeleteBranch.SnapshotCount} 个未固定快照。"
+            : $"仅从存档树后台移除「{PendingDeleteBranch.DisplayName}」及其 {PendingDeleteBranch.SnapshotCount} 个未固定快照，不会触碰当前游戏磁盘存档。";
+
+    public string DeleteSnapshotConfirmText => SelectedNode is null
+        ? string.Empty
+        : $"确认永久删除快照「{SelectedNode.DisplayTitle}」({SelectedNode.ShortId})？若为线性中间节点，系统会自动重连前后历史指针。";
 
     public string TreeMetricsSummaryText => TotalSnapshotCount == 0
         ? "暂无存档快照 · 点击「创建快照」建立第一个时间点"
         : string.Create(
             CultureInfo.InvariantCulture,
-            $"{TotalBranchCount} 分支 · {TotalSnapshotCount} 快照 · 原始 {UiFormatters.FormatByteSize(TotalRawBytes)} · 去重实占 {UiFormatters.FormatByteSize(TotalDeduplicatedBytes)}（{UiFormatters.FormatDeduplicationPercent(DeduplicationRatio)}）");
+            $"{TotalBranchCount} 路线 · {TotalSnapshotCount} 快照 · 原始 {UiFormatters.FormatByteSize(TotalRawBytes)} · 去重实占 {UiFormatters.FormatByteSize(TotalDeduplicatedBytes)}（{UiFormatters.FormatDeduplicationPercent(DeduplicationRatio)}）");
 
     public string WatcherStatusBadgeText => IsSelectedGameRunning
         ? $"{UiFormatters.FormatSaveWatcherStatusLabel(WatcherStatus)} · 游戏运行中"
@@ -271,6 +387,8 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
     public bool IsWatcherActive => WatcherStatus is SaveWatcherStatusKind.Watching
         or SaveWatcherStatusKind.Debouncing
         or SaveWatcherStatusKind.Capturing;
+
+    public bool IsWatcherError => WatcherStatus == SaveWatcherStatusKind.Error;
 
     public string CloudStatusChipText
     {
@@ -292,14 +410,18 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
         }
     }
 
+    public string CloudSyncScopeText => SyncAllBranchesToCloud
+        ? "同步范围：当前路线 + 全部本地侧分支（推送后侧分支节点也将标记 ☁ 已同步）"
+        : "同步范围：仅当前激活路线（未推送的侧分支保持本地，不会误标已同步）";
+
     public string SelectedNodePinActionText => SelectedNode?.IsPinned == true ? "取消固定 (★)" : "固定此快照 (★)";
     public string RollbackButtonToolTip => IsSelectedGameRunning
-        ? "游戏正在运行中，为防止坏档已禁止回滚与切换分支；请先关闭游戏"
-        : "回滚前将自动创建「回滚安全点」快照，并原子替换存档文件";
+        ? "游戏正在运行中，为防止坏档已禁止载入旧档与切换路线；请先关闭游戏"
+        : "载入前将自动为当前磁盘创建安全保护快照，再原子替换游戏存档";
 
     public bool HasCloudSyncPlan => CloudSyncPlan is not null;
     public string CloudPlanSummaryText => CloudSyncPlan is null
-        ? "点击「检查同步计划」对比本机与远端 64 代血缘链（默认仅同步 [save]，不同步本机 [config]）。"
+        ? "点击「检查同步状态」比对本机与云端进度（默认仅同步游戏存档，不覆盖本机画面配置）。"
         : $"{UiFormatters.FormatCloudSyncRelationLabel(CloudSyncPlan.Relation)} · {CloudSyncPlan.Message}";
 
     public string CloudPlanTransferMetricsText => CloudSyncPlan is null
@@ -308,11 +430,14 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
         {
             CloudSyncRelation.FastForwardPush => string.Create(
                 CultureInfo.InvariantCulture,
-                $"待上传 {CloudSyncPlan.MissingRemoteChunkCount} 块（约 {UiFormatters.FormatByteSize(CloudSyncPlan.EstimatedUploadBytes)}，<=32MB SPPK 分包）· {CloudSyncPlan.SaveFileCount} 个 [save] 文件"),
+                $"待上传 {CloudSyncPlan.MissingRemoteChunkCount} 个增量块（约 {UiFormatters.FormatByteSize(CloudSyncPlan.EstimatedUploadBytes)}）· {CloudSyncPlan.SaveFileCount} 个存档文件{(CloudSyncPlan.UnsyncedBranchCount > 0 ? $" · 另有 {CloudSyncPlan.UnsyncedBranchCount} 条未同步侧分支" : string.Empty)}"),
             CloudSyncRelation.FastForwardPull => string.Create(
                 CultureInfo.InvariantCulture,
-                $"待拉取 {CloudSyncPlan.MissingLocalChunkCount} 块（约 {UiFormatters.FormatByteSize(CloudSyncPlan.EstimatedDownloadBytes)}）· {CloudSyncPlan.SaveFileCount} 个 [save] 文件"),
-            CloudSyncRelation.Diverged => "本机与远端进度互不为祖先，请点击下方按钮打开双端分叉向导（绝不静默覆盖）。",
+                $"待下载 {CloudSyncPlan.MissingLocalChunkCount} 个缺失块（约 {UiFormatters.FormatByteSize(CloudSyncPlan.EstimatedDownloadBytes)}）· {CloudSyncPlan.SaveFileCount} 个存档文件"),
+            CloudSyncRelation.Diverged => "本机与云端进度出现离线分叉，请点击下方按钮打开双端对比决策（绝不静默覆盖）。",
+            CloudSyncRelation.UpToDate when CloudSyncPlan.UnsyncedBranchCount > 0 => string.Create(
+                CultureInfo.InvariantCulture,
+                $"当前路线已最新 · 另有 {CloudSyncPlan.UnsyncedBranchCount} 条本地侧分支尚未推送至云端"),
             _ => string.Empty,
         };
 
@@ -327,7 +452,7 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
                 or CloudSyncRelation.Diverged);
 
     public string LocalDivergenceCardTitle => CloudSyncPlan?.LocalHeadSnapshot is { } local
-        ? $"本机进度 · {ActiveBranchNameText} (#{local.ShortId})"
+        ? $"本机进度 · {ActiveBranchDisplayNameText} (#{local.ShortId})"
         : "本机当前进度";
 
     public string LocalDivergenceCardDetails => CloudSyncPlan?.LocalHeadSnapshot is { } local
@@ -337,18 +462,18 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
         : "暂无本机快照详情";
 
     public string RemoteDivergenceCardTitle => CloudSyncPlan?.RemoteHead is { } remote
-        ? $"远端进度 · {remote.BranchName ?? "main"} ({remote.MachineName ?? remote.MachineId})"
-        : "远端云同步进度";
+        ? $"云端进度 · {SaveBranchItemViewModel.FormatBranchDisplayName(remote.BranchName)} ({remote.MachineName ?? remote.MachineId})"
+        : "云端同步进度";
 
     public string RemoteDivergenceCardDetails => CloudSyncPlan?.RemoteHead is { } remote
         ? string.Create(
             CultureInfo.InvariantCulture,
             $"时间：{remote.UpdatedAtUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss}\n游玩：{UiFormatters.FormatDurationHms(remote.PlaytimeActiveSeconds)} · {remote.FileCount} 文件 · {UiFormatters.FormatByteSize(remote.TotalRawBytes)}\n快照：#{(remote.HeadSnapshotId.Length >= 8 ? remote.HeadSnapshotId[^8..].ToLowerInvariant() : remote.HeadSnapshotId.ToLowerInvariant())}")
-        : "暂无远端快照详情";
+        : "暂无云端快照详情";
 
     public string CommonAncestorSummaryText => !string.IsNullOrWhiteSpace(CloudSyncPlan?.CommonAncestorSnapshotId)
-        ? $"共同分叉祖先：#{(CloudSyncPlan!.CommonAncestorSnapshotId!.Length >= 8 ? CloudSyncPlan.CommonAncestorSnapshotId[^8..].ToLowerInvariant() : CloudSyncPlan.CommonAncestorSnapshotId.ToLowerInvariant())}"
-        : "共同祖先：未在最近 64 代链中命中（独立双端历史）";
+        ? $"共同分叉起点：#{(CloudSyncPlan!.CommonAncestorSnapshotId!.Length >= 8 ? CloudSyncPlan.CommonAncestorSnapshotId[^8..].ToLowerInvariant() : CloudSyncPlan.CommonAncestorSnapshotId.ToLowerInvariant())}"
+        : "共同起点：未在最近历史链中命中（双端独立推进）";
 
     public SaveWorkbenchViewModel(
         IGameLaunchService launchService,
@@ -357,7 +482,9 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
         ISaveWatcherService? watcherService = null,
         ILudusaviRuleResolver? ruleResolver = null,
         Action<string>? openFolder = null,
-        Func<string?>? pickExportFolder = null)
+        Func<string?>? pickExportFolder = null,
+        Func<string?>? pickCustomFolder = null,
+        Func<string?>? pickCustomFile = null)
     {
         _launchService = launchService ?? throw new ArgumentNullException(nameof(launchService));
         _saveService = saveService;
@@ -366,6 +493,10 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
         _ruleResolver = ruleResolver;
         _openFolder = openFolder ?? OpenDirectoryInExplorer;
         _pickExportFolder = pickExportFolder ?? BrowseForExportDirectory;
+        _pickCustomFolder = pickCustomFolder ?? BrowseForCustomSaveDirectory;
+        _pickCustomFile = pickCustomFile ?? BrowseForCustomSaveFile;
+
+        SyncColorOptionSelections();
 
         if (_watcherService is not null)
         {
@@ -391,7 +522,10 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
             _gameState = null;
             _resolvedLayout = null;
             Branches.Clear();
+            BackgroundDeletableBranches.Clear();
             GraphRows.Clear();
+            ResolvedLocationItems.Clear();
+            ResolvedLocationWarnings.Clear();
             SelectedNode = null;
             SelectedNodeFiles.Clear();
             SelectedNodeDiffItems.Clear();
@@ -400,6 +534,12 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
             TotalRawBytes = 0;
             TotalDeduplicatedBytes = 0;
             DeduplicationRatio = 0;
+            ExistingSaveLocationCount = 0;
+            TotalRuleLocationCount = 0;
+            UnimportedLegacyPreTrainerCount = 0;
+            EffectiveCloudGameKey = string.Empty;
+            CloudGameKeyInput = string.Empty;
+            WatcherStatusDetailText = string.Empty;
             ResolvedLocationsSummaryText = string.Empty;
             NotifyAllDerivedStates();
             return;
@@ -409,6 +549,7 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
         {
             _rawGraph = null;
             Branches.Clear();
+            BackgroundDeletableBranches.Clear();
             GraphRows.Clear();
             SelectedNode = null;
             ResolvedLocationsSummaryText = "存档时间机器服务正在初始化…";
@@ -432,8 +573,12 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
                 AutoWatchEnabled = state.AutoWatchEnabled;
                 PostExitSnapshotEnabled = state.PostExitSnapshotEnabled;
                 IncludeConfigOnSnapshot = state.IncludeConfigFiles;
+                SyncAllBranchesToCloud = state.SyncAllBranchesToCloud;
                 HasUnresolvedCloudConflict = state.HasUnresolvedCloudConflict || graph.HasUnresolvedCloudConflict;
                 LastSyncedAtUtc = state.LastSyncedAtUtc ?? graph.LastSyncedAtUtc;
+                EffectiveCloudGameKey = graph.EffectiveCloudGameKey ?? state.CloudGameKey ?? string.Empty;
+                CloudGameKeyInput = state.CloudGameKey ?? EffectiveCloudGameKey;
+                UnimportedLegacyPreTrainerCount = graph.UnimportedLegacyPreTrainerCount;
             }
             finally
             {
@@ -442,11 +587,14 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
 
             if (_watcherService is not null)
             {
-                WatcherStatus = _watcherService.GetStatus(game.GameId).Status;
+                SaveWatcherStatusDto ws = _watcherService.GetStatus(game.GameId);
+                WatcherStatus = ws.Status;
+                WatcherStatusDetailText = ws.LastMessage ?? string.Empty;
             }
             else
             {
                 WatcherStatus = SaveWatcherStatusKind.Stopped;
+                WatcherStatusDetailText = string.Empty;
             }
 
             ApplyTreeGraph(graph, preserveSelectionId: SelectedNode?.SnapshotId);
@@ -526,9 +674,30 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
 
         IsEditingNote = false;
         IsRollbackConfirmOpen = false;
+        IsDeleteSnapshotConfirmOpen = false;
         RollbackRequiresModMismatchConfirm = false;
         NotifyAllDerivedStates();
         _ = LoadSelectedNodeInspectorAsync(newValue);
+    }
+
+    partial void OnSelectedForkColorHexChanged(string value) => SyncColorOptionSelections();
+    partial void OnRenameBranchColorHexChanged(string value) => SyncColorOptionSelections();
+
+    partial void OnPendingDeleteBranchChanged(SaveBranchItemViewModel? value)
+    {
+        OnPropertyChanged(nameof(DeleteBranchConfirmTitle));
+        OnPropertyChanged(nameof(DeleteBranchConfirmDescription));
+    }
+
+    partial void OnSyncAllBranchesToCloudChanged(bool value)
+    {
+        OnPropertyChanged(nameof(CloudSyncScopeText));
+        if (_suppressAutoSaveToggles)
+        {
+            return;
+        }
+
+        _ = PersistGameStateTogglesAsync();
     }
 
     partial void OnInspectorTabChanged(SaveInspectorTab value)
@@ -592,6 +761,7 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
     partial void OnActiveBranchChanged(SaveBranchItemViewModel? oldValue, SaveBranchItemViewModel? newValue)
     {
         OnPropertyChanged(nameof(ActiveBranchNameText));
+        OnPropertyChanged(nameof(ActiveBranchDisplayNameText));
         OnPropertyChanged(nameof(ActiveBranchColorBrush));
         OnPropertyChanged(nameof(CanDeleteActiveBranch));
 
@@ -636,10 +806,255 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
     private void ClearTreeSearch() => TreeSearchText = string.Empty;
 
     [RelayCommand]
+    private void ResetTreeFilters()
+    {
+        TreeFilterMode = SaveTreeFilterMode.All;
+        TreeSearchText = string.Empty;
+    }
+
+    [RelayCommand]
+    private void TogglePathsDrawer() => IsPathsDrawerOpen = !IsPathsDrawerOpen;
+
+    [RelayCommand]
     private void ToggleCloudDrawer() => IsCloudDrawerOpen = !IsCloudDrawerOpen;
 
     [RelayCommand]
     private void OpenSavesSettings() => OpenSavesSettingsRequested?.Invoke();
+
+    [RelayCommand]
+    private void DismissLegacyImportBanner()
+    {
+        if (_currentGame is not null)
+        {
+            _dismissedLegacyBannerGames.Add(_currentGame.GameId);
+            OnPropertyChanged(nameof(ShowLegacyPreTrainerBanner));
+        }
+    }
+
+    [RelayCommand]
+    public async Task ReturnToMainLatestAsync()
+    {
+        SaveBranchItemViewModel? mainBranch = Branches.FirstOrDefault(static b => b.IsDefault) ?? Branches.FirstOrDefault();
+        if (mainBranch is null)
+        {
+            return;
+        }
+
+        await SwitchToBranchAsync(mainBranch).ConfigureAwait(true);
+    }
+
+    [RelayCommand]
+    public async Task AddCustomFolderAsync()
+    {
+        if (_currentGame is null || _ruleResolver is null || IsBusy)
+        {
+            return;
+        }
+
+        string? picked = _pickCustomFolder();
+        if (string.IsNullOrWhiteSpace(picked))
+        {
+            return;
+        }
+
+        await AddCustomLocationCoreAsync(picked, SaveCustomLocationKind.Directory, SaveFileCategory.Save).ConfigureAwait(true);
+    }
+
+    [RelayCommand]
+    public async Task AddCustomFileAsync()
+    {
+        if (_currentGame is null || _ruleResolver is null || IsBusy)
+        {
+            return;
+        }
+
+        string? picked = _pickCustomFile();
+        if (string.IsNullOrWhiteSpace(picked))
+        {
+            return;
+        }
+
+        await AddCustomLocationCoreAsync(picked, SaveCustomLocationKind.File, SaveFileCategory.Save).ConfigureAwait(true);
+    }
+
+    [RelayCommand]
+    public async Task AddCustomRegistryKeyAsync()
+    {
+        if (_currentGame is null || _ruleResolver is null || IsBusy)
+        {
+            return;
+        }
+
+        string key = CustomRegistryKeyInput.Trim();
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            StatusFeedbackRequested?.Invoke(@"请输入 HKCU 注册表路径（如 HKCU\Software\Vendor\Game）", true);
+            return;
+        }
+
+        bool ok = await AddCustomLocationCoreAsync(key, SaveCustomLocationKind.RegistryKey, SaveFileCategory.RegistryExport)
+            .ConfigureAwait(true);
+        if (ok)
+        {
+            CustomRegistryKeyInput = string.Empty;
+        }
+    }
+
+    [RelayCommand]
+    public async Task RemoveCustomLocationAsync(ResolvedSaveLocationItemViewModel? item)
+    {
+        if (_currentGame is null || _ruleResolver is null || item is null || string.IsNullOrWhiteSpace(item.CustomLocationId))
+        {
+            return;
+        }
+
+        try
+        {
+            bool removed = await _ruleResolver.RemoveCustomLocationAsync(item.CustomLocationId).ConfigureAwait(true);
+            if (removed)
+            {
+                await RefreshResolvedLocationsSummaryAsync(_currentGame.GameId, refreshOnline: false).ConfigureAwait(true);
+                StatusFeedbackRequested?.Invoke($"已移除自定义存档路径：{item.ResolvedFullPath}", false);
+            }
+        }
+        catch (Exception ex)
+        {
+            StatusFeedbackRequested?.Invoke($"移除自定义路径失败：{ex.Message}", true);
+        }
+    }
+
+    [RelayCommand]
+    private void OpenSpecificLocationFolder(ResolvedSaveLocationItemViewModel? item)
+    {
+        if (item is null || item.IsRegistryCategory || !item.Exists)
+        {
+            StatusFeedbackRequested?.Invoke("该路径尚未在磁盘生成，无法打开目录", true);
+            return;
+        }
+
+        string? dir = File.Exists(item.ResolvedFullPath)
+            ? Path.GetDirectoryName(item.ResolvedFullPath)
+            : item.ResolvedFullPath;
+        if (string.IsNullOrWhiteSpace(dir) || !Directory.Exists(dir))
+        {
+            StatusFeedbackRequested?.Invoke("目标目录不存在", true);
+            return;
+        }
+
+        try
+        {
+            _openFolder(dir);
+        }
+        catch (Exception ex)
+        {
+            StatusFeedbackRequested?.Invoke($"打开目录失败：{ex.Message}", true);
+        }
+    }
+
+    private async Task<bool> AddCustomLocationCoreAsync(
+        string pathOrKey,
+        SaveCustomLocationKind kind,
+        SaveFileCategory category)
+    {
+        if (_currentGame is null || _ruleResolver is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            await _ruleResolver.AddCustomLocationAsync(_currentGame.GameId, pathOrKey, kind, category).ConfigureAwait(true);
+            await RefreshResolvedLocationsSummaryAsync(_currentGame.GameId, refreshOnline: false).ConfigureAwait(true);
+            StatusFeedbackRequested?.Invoke($"已添加自定义存档位置：{pathOrKey}", false);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            StatusFeedbackRequested?.Invoke(ex.Message, true);
+            return false;
+        }
+    }
+
+    [RelayCommand]
+    public async Task SaveCloudGameKeyAsync()
+    {
+        if (_currentGame is null || _saveService is null || IsCloudSyncBusy)
+        {
+            return;
+        }
+
+        string trimmed = CloudGameKeyInput.Trim();
+        if (trimmed.Contains("..", StringComparison.Ordinal) || trimmed.Contains('/') || trimmed.Contains('\\'))
+        {
+            StatusFeedbackRequested?.Invoke("云端槽位标识不能包含路径分隔符（/、\\）或 ..", true);
+            return;
+        }
+
+        try
+        {
+            SaveGameStateRecord baseState = _gameState ?? await _saveService.GetGameStateAsync(_currentGame.GameId).ConfigureAwait(true);
+            string? explicitOverride = string.IsNullOrWhiteSpace(trimmed) ? null : trimmed;
+            _gameState = await _saveService.UpdateGameStateAsync(baseState with
+            {
+                CloudGameKey = explicitOverride,
+                UpdatedAtUtc = DateTimeOffset.UtcNow,
+            }).ConfigureAwait(true);
+
+            CloudSyncPlan = null;
+            await ReloadCurrentGameAndNotifyParentAsync(_currentGame.GameId, SelectedNode?.SnapshotId).ConfigureAwait(true);
+            EffectiveCloudGameKey = _rawGraph?.EffectiveCloudGameKey ?? explicitOverride ?? string.Empty;
+            CloudGameKeyInput = _gameState.CloudGameKey ?? EffectiveCloudGameKey;
+            NotifyAllDerivedStates();
+            StatusFeedbackRequested?.Invoke($"已更新双机云同步绑定键：{EffectiveCloudGameKey}", false);
+        }
+        catch (Exception ex)
+        {
+            StatusFeedbackRequested?.Invoke($"更新云同步绑定键失败：{ex.Message}", true);
+        }
+    }
+
+    [RelayCommand]
+    public async Task ResetCloudGameKeyAsync()
+    {
+        CloudGameKeyInput = string.Empty;
+        await SaveCloudGameKeyAsync().ConfigureAwait(true);
+    }
+
+    [RelayCommand]
+    public async Task PushAllBranchesAsync()
+    {
+        if (_currentGame is null || _cloudSyncService is null || _saveService is null || IsCloudSyncBusy)
+        {
+            return;
+        }
+
+        bool prevSyncAll = SyncAllBranchesToCloud;
+        if (!prevSyncAll)
+        {
+            SaveGameStateRecord baseState = _gameState ?? await _saveService.GetGameStateAsync(_currentGame.GameId).ConfigureAwait(true);
+            _gameState = await _saveService.UpdateGameStateAsync(baseState with
+            {
+                SyncAllBranchesToCloud = true,
+                UpdatedAtUtc = DateTimeOffset.UtcNow,
+            }).ConfigureAwait(true);
+        }
+
+        try
+        {
+            await ExecuteCloudSyncCoreAsync(divergenceResolution: null).ConfigureAwait(true);
+        }
+        finally
+        {
+            if (!prevSyncAll && _currentGame is not null && _gameState is not null)
+            {
+                _gameState = await _saveService.UpdateGameStateAsync(_gameState with
+                {
+                    SyncAllBranchesToCloud = false,
+                    UpdatedAtUtc = DateTimeOffset.UtcNow,
+                }).ConfigureAwait(true);
+            }
+        }
+    }
 
     [RelayCommand]
     public async Task CreateSnapshotAsync()
@@ -650,7 +1065,7 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
         }
 
         IsBusy = true;
-        BusyMessage = "正在通过 FastCDC + BLAKE3 创建增量存档快照…";
+        BusyMessage = "正在创建增量存档快照…";
         NotifyAllDerivedStates();
 
         try
@@ -710,8 +1125,8 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
     {
         string? headId = _rawGraph?.CurrentHeadSnapshotId ?? SelectedNode?.SnapshotId;
         string label = !string.IsNullOrWhiteSpace(headId)
-            ? $"当前 HEAD (#{(headId.Length >= 8 ? headId[^8..].ToLowerInvariant() : headId.ToLowerInvariant())})"
-            : "当前分支起点";
+            ? $"当前存档 (#{(headId.Length >= 8 ? headId[^8..].ToLowerInvariant() : headId.ToLowerInvariant())})"
+            : "当前路线起点";
         OpenForkPopoverCore(headId, label);
     }
 
@@ -810,7 +1225,7 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
         }
 
         IsBusy = true;
-        BusyMessage = $"正在切换至分支「{targetBranch.Name}」并原子检出存档…";
+        BusyMessage = $"正在切换至路线「{targetBranch.DisplayName}」并载入存档到游戏…";
         NotifyAllDerivedStates();
 
         try
@@ -919,6 +1334,116 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
     }
 
     [RelayCommand]
+    private void RequestDeleteActiveBranch()
+    {
+        if (ActiveBranch is null || ActiveBranch.IsDefault)
+        {
+            StatusFeedbackRequested?.Invoke("默认主线（main）不可删除", true);
+            return;
+        }
+
+        RequestDeleteBranch(ActiveBranch);
+    }
+
+    [RelayCommand]
+    private void RequestDeleteBranch(SaveBranchItemViewModel? branch)
+    {
+        if (branch is null || branch.IsDefault)
+        {
+            return;
+        }
+
+        if (branch.IsActive && IsSelectedGameRunning)
+        {
+            StatusFeedbackRequested?.Invoke("游戏运行中不可删除当前激活路线；您可删除其他未激活分支，或先退出游戏后再试", true);
+            return;
+        }
+
+        string? blockReason = ValidateBranchDeletablePreCheck(branch);
+        if (!string.IsNullOrEmpty(blockReason))
+        {
+            StatusFeedbackRequested?.Invoke(blockReason, true);
+            return;
+        }
+
+        CloseTransientPopovers();
+        PendingDeleteBranch = branch;
+        IsDeleteBranchConfirmOpen = true;
+    }
+
+    [RelayCommand]
+    private void CancelDeleteBranch()
+    {
+        IsDeleteBranchConfirmOpen = false;
+        PendingDeleteBranch = null;
+    }
+
+    [RelayCommand]
+    public async Task ConfirmDeleteBranchAsync()
+    {
+        SaveBranchItemViewModel? target = PendingDeleteBranch;
+        IsDeleteBranchConfirmOpen = false;
+        PendingDeleteBranch = null;
+
+        if (target is null)
+        {
+            return;
+        }
+
+        if (target.IsActive)
+        {
+            await DeleteActiveBranchAsync().ConfigureAwait(true);
+        }
+        else
+        {
+            await DeleteBackgroundBranchAsync(target).ConfigureAwait(true);
+        }
+    }
+
+    public async Task DeleteBackgroundBranchAsync(SaveBranchItemViewModel targetBranch)
+    {
+        if (_currentGame is null || _saveService is null || targetBranch is null || IsBusy)
+        {
+            return;
+        }
+
+        if (targetBranch.IsDefault)
+        {
+            StatusFeedbackRequested?.Invoke("默认主线（main）不可删除", true);
+            return;
+        }
+
+        string? blockReason = ValidateBranchDeletablePreCheck(targetBranch);
+        if (!string.IsNullOrEmpty(blockReason))
+        {
+            StatusFeedbackRequested?.Invoke(blockReason, true);
+            return;
+        }
+
+        IsBusy = true;
+        BusyMessage = $"正在后台删除路线「{targetBranch.DisplayName}」…";
+        NotifyAllDerivedStates();
+        try
+        {
+            DeleteBranchResult result = await _saveService
+                .DeleteBranchAsync(targetBranch.BranchId, deleteSnapshots: true)
+                .ConfigureAwait(true);
+            await ReloadCurrentGameAndNotifyParentAsync(_currentGame.GameId, SelectedNode?.SnapshotId).ConfigureAwait(true);
+            StatusFeedbackRequested?.Invoke(result.Message, !result.Succeeded);
+        }
+        catch (Exception ex)
+        {
+            StatusFeedbackRequested?.Invoke($"删除路线失败：{ex.Message}", true);
+        }
+        finally
+        {
+            IsBusy = false;
+            BusyMessage = string.Empty;
+            NotifyAllDerivedStates();
+        }
+    }
+
+    [RelayCommand]
     public async Task DeleteActiveBranchAsync()
     {
         if (_currentGame is null || _saveService is null || ActiveBranch is null || IsBusy)
@@ -928,43 +1453,55 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
 
         if (ActiveBranch.IsDefault)
         {
-            StatusFeedbackRequested?.Invoke("默认主分支（main）不可删除", true);
+            StatusFeedbackRequested?.Invoke("默认主线（main）不可删除", true);
             return;
         }
 
         if (IsSelectedGameRunning)
         {
-            StatusFeedbackRequested?.Invoke("游戏运行中已禁止切换并删除分支，请先退出游戏后再试", true);
+            StatusFeedbackRequested?.Invoke("游戏运行中已禁止切换并删除当前路线，请先退出游戏后再试", true);
             return;
         }
 
         SaveBranchItemViewModel branchToDelete = ActiveBranch;
+
+        // Pre-validate pinned snapshots & child-branch dependencies BEFORE touching disk or switching branches!
+        string? blockReason = ValidateBranchDeletablePreCheck(branchToDelete);
+        if (!string.IsNullOrEmpty(blockReason))
+        {
+            StatusFeedbackRequested?.Invoke(blockReason, true);
+            return;
+        }
+
         SaveBranchItemViewModel? fallbackBranch = Branches.FirstOrDefault(
             b => b.IsDefault && !string.Equals(b.BranchId, branchToDelete.BranchId, StringComparison.OrdinalIgnoreCase))
             ?? Branches.FirstOrDefault(
                 b => !string.Equals(b.BranchId, branchToDelete.BranchId, StringComparison.OrdinalIgnoreCase));
         if (fallbackBranch is null)
         {
-            StatusFeedbackRequested?.Invoke("找不到可切回的目标分支，无法删除当前分支", true);
+            StatusFeedbackRequested?.Invoke("找不到可切回的目标路线，无法删除当前路线", true);
             return;
         }
 
         IsBusy = true;
+        BusyMessage = $"正在创建切换安全快照并切回「{fallbackBranch.DisplayName}」…";
         NotifyAllDerivedStates();
         try
         {
-            // Switch back to the default (or fallback) branch first so the branch being deleted is no longer active.
+            // Force CreateSafetySnapshot = true stored onto fallbackBranch so unsaved disk changes are preserved
+            // and never cascade-deleted along with branchToDelete!
             SaveRestoreOutcome switchOutcome = await _saveService.SwitchBranchAsync(new SwitchBranchRequest
             {
                 GameId = _currentGame.GameId,
                 TargetBranchId = fallbackBranch.BranchId,
-                CreateSafetySnapshot = false,
+                CreateSafetySnapshot = true,
+                SafetySnapshotBranchId = fallbackBranch.BranchId,
                 ModMismatchPolicy = SaveModMismatchPolicy.ProceedAnyway,
             }).ConfigureAwait(true);
 
             if (!switchOutcome.Succeeded)
             {
-                StatusFeedbackRequested?.Invoke($"切回「{fallbackBranch.Name}」失败，已取消删除：{switchOutcome.Message}", true);
+                StatusFeedbackRequested?.Invoke($"切回「{fallbackBranch.DisplayName}」失败，已取消删除：{switchOutcome.Message}", true);
                 return;
             }
 
@@ -974,13 +1511,56 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
         }
         catch (Exception ex)
         {
-            StatusFeedbackRequested?.Invoke($"删除分支失败：{ex.Message}", true);
+            StatusFeedbackRequested?.Invoke($"删除路线失败：{ex.Message}", true);
         }
         finally
         {
             IsBusy = false;
+            BusyMessage = string.Empty;
             NotifyAllDerivedStates();
         }
+    }
+
+    private string? ValidateBranchDeletablePreCheck(SaveBranchItemViewModel branch)
+    {
+        if (_rawGraph is null)
+        {
+            return null;
+        }
+
+        var ownedSnapIds = _rawGraph.Nodes
+            .Where(n => string.Equals(n.Snapshot.BranchId, branch.BranchId, StringComparison.OrdinalIgnoreCase))
+            .Select(n => n.Snapshot.SnapshotId)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (_rawGraph.Nodes.Any(n => ownedSnapIds.Contains(n.Snapshot.SnapshotId) && n.Snapshot.IsPinned))
+        {
+            return $"路线「{branch.DisplayName}」内存在已固定的重要快照（★），请先取消固定后再删除。";
+        }
+
+        foreach (SaveBranchRecord other in _rawGraph.Branches)
+        {
+            if (string.Equals(other.BranchId, branch.BranchId, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if ((!string.IsNullOrWhiteSpace(other.BaseSnapshotId) && ownedSnapIds.Contains(other.BaseSnapshotId))
+                || (!string.IsNullOrWhiteSpace(other.HeadSnapshotId) && ownedSnapIds.Contains(other.HeadSnapshotId)))
+            {
+                return $"路线「{branch.DisplayName}」的节点正被子路线「{other.Name}」引用，无法直接删除。";
+            }
+        }
+
+        if (_rawGraph.Nodes.Any(n =>
+                !ownedSnapIds.Contains(n.Snapshot.SnapshotId)
+                && ((!string.IsNullOrWhiteSpace(n.ParentSnapshotId) && ownedSnapIds.Contains(n.ParentSnapshotId))
+                    || (!string.IsNullOrWhiteSpace(n.MergeParentSnapshotId) && ownedSnapIds.Contains(n.MergeParentSnapshotId)))))
+        {
+            return $"路线「{branch.DisplayName}」的节点被其他子分支依赖，无法直接删除。";
+        }
+
+        return null;
     }
 
     [RelayCommand]
@@ -993,12 +1573,14 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
 
         if (IsSelectedGameRunning)
         {
-            StatusFeedbackRequested?.Invoke("游戏运行中已禁止回滚存档，请先退出游戏后再操作", true);
+            StatusFeedbackRequested?.Invoke("游戏运行中已禁止载入旧档，请先退出游戏后再操作", true);
             return;
         }
 
         CloseTransientPopovers();
         RollbackIncludeConfig = false;
+        RollbackForkNewBranch = false;
+        RollbackForkNewBranchName = string.Empty;
         RollbackRequiresModMismatchConfirm = false;
         RollbackModMismatchWarning = string.Empty;
         IsRollbackConfirmOpen = true;
@@ -1008,6 +1590,8 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
     private void CancelRollbackConfirm()
     {
         IsRollbackConfirmOpen = false;
+        RollbackForkNewBranch = false;
+        RollbackForkNewBranchName = string.Empty;
         RollbackRequiresModMismatchConfirm = false;
         RollbackModMismatchWarning = string.Empty;
     }
@@ -1029,13 +1613,24 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
 
         if (IsSelectedGameRunning)
         {
-            StatusFeedbackRequested?.Invoke("游戏正在运行中，已拒绝回滚操作", true);
+            StatusFeedbackRequested?.Invoke("游戏正在运行中，已拒绝载入旧档", true);
             return;
+        }
+
+        string? forkBranchName = null;
+        if (RollbackForkNewBranch)
+        {
+            forkBranchName = RollbackForkNewBranchName.Trim();
+            if (string.IsNullOrWhiteSpace(forkBranchName))
+            {
+                StatusFeedbackRequested?.Invoke("请输入要开启的新路线名称，或取消勾选「回滚并直接开启新路线」", true);
+                return;
+            }
         }
 
         string targetId = SelectedNode.SnapshotId;
         IsBusy = true;
-        BusyMessage = "正在自动创建回滚安全点并原子还原存档…";
+        BusyMessage = "正在自动创建回滚安全点并载入存档到游戏…";
         NotifyAllDerivedStates();
 
         try
@@ -1046,6 +1641,7 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
                 IncludeConfigFiles = RollbackIncludeConfig,
                 ModMismatchPolicy = mismatchPolicy,
                 CreateSafetySnapshot = true,
+                ForkNewBranchName = forkBranchName,
             }).ConfigureAwait(true);
 
             if (outcome.RequiresModMismatchConfirmation)
@@ -1063,6 +1659,8 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
             }
 
             IsRollbackConfirmOpen = false;
+            RollbackForkNewBranch = false;
+            RollbackForkNewBranchName = string.Empty;
             RollbackRequiresModMismatchConfirm = false;
             await ReloadCurrentGameAndNotifyParentAsync(_currentGame.GameId, targetId).ConfigureAwait(true);
             StatusFeedbackRequested?.Invoke(outcome.Message, false);
@@ -1150,16 +1748,16 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
     }
 
     [RelayCommand]
-    public async Task DeleteSelectedSnapshotAsync()
+    private void RequestDeleteSelectedSnapshot()
     {
-        if (_currentGame is null || _saveService is null || SelectedNode is null || IsBusy)
+        if (SelectedNode is null)
         {
             return;
         }
 
         if (SelectedNode.IsHead)
         {
-            StatusFeedbackRequested?.Invoke("当前 HEAD 快照不可直接删除", true);
+            StatusFeedbackRequested?.Invoke("当前正在使用的存档节点不可直接删除", true);
             return;
         }
 
@@ -1169,6 +1767,42 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
             return;
         }
 
+        CloseTransientPopovers();
+        IsDeleteSnapshotConfirmOpen = true;
+        OnPropertyChanged(nameof(DeleteSnapshotConfirmText));
+    }
+
+    [RelayCommand]
+    private void CancelDeleteSelectedSnapshot() => IsDeleteSnapshotConfirmOpen = false;
+
+    [RelayCommand]
+    public async Task ConfirmDeleteSelectedSnapshotAsync()
+    {
+        IsDeleteSnapshotConfirmOpen = false;
+        await DeleteSelectedSnapshotAsync().ConfigureAwait(true);
+    }
+
+    [RelayCommand]
+    public async Task DeleteSelectedSnapshotAsync()
+    {
+        if (_currentGame is null || _saveService is null || SelectedNode is null || IsBusy)
+        {
+            return;
+        }
+
+        if (SelectedNode.IsHead)
+        {
+            StatusFeedbackRequested?.Invoke("当前正在使用的存档节点不可直接删除", true);
+            return;
+        }
+
+        if (SelectedNode.IsPinned)
+        {
+            StatusFeedbackRequested?.Invoke("已固定（★）的快照受保护，请先取消固定后再删除", true);
+            return;
+        }
+
+        IsDeleteSnapshotConfirmOpen = false;
         IsBusy = true;
         NotifyAllDerivedStates();
         try
@@ -1209,7 +1843,7 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
         }
 
         IsBusy = true;
-        BusyMessage = "正在解压 CAS 块并导出快照副本…";
+        BusyMessage = "正在解压并导出快照副本…";
         NotifyAllDerivedStates();
         try
         {
@@ -1236,18 +1870,15 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
     private void OpenSaveFolder()
     {
         string? dir = _resolvedLayout?.SaveLocations
-            .Select(l => l.ResolvedFullPath)
-            .Select(p => File.Exists(p) ? Path.GetDirectoryName(p) : p)
-            .FirstOrDefault(p => !string.IsNullOrWhiteSpace(p) && Directory.Exists(p));
-
-        if (string.IsNullOrWhiteSpace(dir))
-        {
-            dir = _currentGame?.Record.InstallDir;
-        }
+            .Where(static l => l.Exists && l.IsSafe)
+            .Select(static l => l.ResolvedFullPath)
+            .Select(static p => File.Exists(p) ? Path.GetDirectoryName(p) : p)
+            .FirstOrDefault(static p => !string.IsNullOrWhiteSpace(p) && Directory.Exists(p));
 
         if (string.IsNullOrWhiteSpace(dir) || !Directory.Exists(dir))
         {
-            StatusFeedbackRequested?.Invoke("尚未定位到已存在的存档文件夹", true);
+            IsPathsDrawerOpen = true;
+            StatusFeedbackRequested?.Invoke("尚未检测到已生成的存档目录（不会误打开游戏安装目录），可在「存档路径配置」中查看规则或添加自定义目录", true);
             return;
         }
 
@@ -1271,9 +1902,20 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
 
         SaveSnapshotRowViewModel? parentRow = GraphRows.FirstOrDefault(
             r => string.Equals(r.SnapshotId, parentId, StringComparison.OrdinalIgnoreCase));
+
+        if (parentRow is null && (TreeFilterMode != SaveTreeFilterMode.All || !string.IsNullOrWhiteSpace(TreeSearchText)))
+        {
+            // Parent was hidden by current filter/search — automatically switch to full tree and locate it!
+            TreeFilterMode = SaveTreeFilterMode.All;
+            TreeSearchText = string.Empty;
+            parentRow = GraphRows.FirstOrDefault(
+                r => string.Equals(r.SnapshotId, parentId, StringComparison.OrdinalIgnoreCase));
+        }
+
         if (parentRow is not null)
         {
             SelectedNode = parentRow;
+            ScrollToSnapshotRequested?.Invoke(parentRow);
         }
     }
 
@@ -1335,7 +1977,7 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
 
         IsCloudDrawerOpen = true;
         IsCloudSyncBusy = true;
-        CloudSyncProgressText = "正在拉取远端 64 代血缘指针并比对分叉关系…";
+        CloudSyncProgressText = "正在检查云端存档版本并比对分叉关系…";
         CloudSyncProgressPercent = 20;
         NotifyAllDerivedStates();
 
@@ -1345,6 +1987,15 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
                 _currentGame.GameId,
                 SelectedCloudEndpoint?.EndpointId).ConfigureAwait(true);
             CloudSyncPlan = preview;
+            if (!string.IsNullOrWhiteSpace(preview.ResolvedCloudGameKey))
+            {
+                EffectiveCloudGameKey = preview.ResolvedCloudGameKey;
+                if (string.IsNullOrWhiteSpace(_gameState?.CloudGameKey))
+                {
+                    CloudGameKeyInput = preview.ResolvedCloudGameKey;
+                }
+            }
+
             HasUnresolvedCloudConflict = preview.Relation == CloudSyncRelation.Diverged;
 
             if (preview.Relation == CloudSyncRelation.Diverged)
@@ -1411,7 +2062,7 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
 
         IsCloudSyncBusy = true;
         CloudSyncProgressPercent = 5;
-        CloudSyncProgressText = "正在准备 32MB SPPK 增量封包与血缘校验…";
+        CloudSyncProgressText = "正在准备云端增量同步与版本校验…";
         NotifyAllDerivedStates();
 
         try
@@ -1474,17 +2125,32 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
         DeduplicationRatio = graph.DeduplicationRatio;
         HasUnresolvedCloudConflict = graph.HasUnresolvedCloudConflict;
         LastSyncedAtUtc = graph.LastSyncedAtUtc ?? LastSyncedAtUtc;
+        UnimportedLegacyPreTrainerCount = graph.UnimportedLegacyPreTrainerCount;
+        if (!string.IsNullOrWhiteSpace(graph.EffectiveCloudGameKey))
+        {
+            EffectiveCloudGameKey = graph.EffectiveCloudGameKey;
+            if (string.IsNullOrWhiteSpace(_gameState?.CloudGameKey))
+            {
+                CloudGameKeyInput = graph.EffectiveCloudGameKey;
+            }
+        }
 
         _suppressBranchSelectionCommand = true;
         try
         {
             Branches.Clear();
+            BackgroundDeletableBranches.Clear();
             SaveBranchItemViewModel? matchedActive = null;
             foreach (SaveBranchRecord branch in graph.Branches)
             {
                 bool isActive = string.Equals(branch.BranchId, graph.ActiveBranchId, StringComparison.OrdinalIgnoreCase);
                 var vm = new SaveBranchItemViewModel(branch, isActive);
                 Branches.Add(vm);
+                if (vm.CanBackgroundDelete)
+                {
+                    BackgroundDeletableBranches.Add(vm);
+                }
+
                 if (isActive)
                 {
                     matchedActive = vm;
@@ -1541,6 +2207,10 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
 
         OnPropertyChanged(nameof(HasSnapshots));
         OnPropertyChanged(nameof(HasVisibleGraphRows));
+        OnPropertyChanged(nameof(EmptyStateKind));
+        OnPropertyChanged(nameof(ShowEmptyNoSnapshotsWithPaths));
+        OnPropertyChanged(nameof(ShowEmptyNoPathsDetected));
+        OnPropertyChanged(nameof(ShowEmptyFilterNoMatch));
         OnPropertyChanged(nameof(TreeMetricsSummaryText));
     }
 
@@ -1702,9 +2372,15 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
 
     private async Task RefreshResolvedLocationsSummaryAsync(string gameId, bool refreshOnline, CancellationToken ct = default)
     {
+        ResolvedLocationItems.Clear();
+        ResolvedLocationWarnings.Clear();
+
         if (_ruleResolver is null)
         {
+            ExistingSaveLocationCount = 0;
+            TotalRuleLocationCount = 0;
             ResolvedLocationsSummaryText = "已就绪 · 自动复用游戏数据路径";
+            NotifyAllDerivedStates();
             return;
         }
 
@@ -1712,19 +2388,57 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
         {
             ResolvedSaveLayout layout = await _ruleResolver.ResolveGameSaveLayoutAsync(gameId, refreshOnline, ct).ConfigureAwait(true);
             _resolvedLayout = layout;
-            int saveCount = layout.SaveLocations.Count;
+
+            foreach (ResolvedSaveLocation loc in layout.SaveLocations.Concat(layout.ConfigLocations).Concat(layout.RegistryKeys))
+            {
+                ResolvedLocationItems.Add(new ResolvedSaveLocationItemViewModel(loc));
+            }
+
+            foreach (string warning in layout.Warnings)
+            {
+                ResolvedLocationWarnings.Add(warning);
+            }
+
+            int existingSaveCount = layout.SaveLocations.Count(static l => l.Exists && l.IsSafe);
+            int totalSaveRules = layout.SaveLocations.Count;
             int cfgCount = layout.ConfigLocations.Count;
             int regCount = layout.RegistryKeys.Count;
+            ExistingSaveLocationCount = existingSaveCount + layout.RegistryKeys.Count(static r => r.Exists && r.IsSafe);
+            TotalRuleLocationCount = totalSaveRules + cfgCount + regCount;
+
             string ruleSuffix = string.IsNullOrWhiteSpace(layout.MatchedRuleName)
                 ? string.Empty
                 : $" · 规则 {layout.MatchedRuleName}";
-            ResolvedLocationsSummaryText = string.Create(
-                CultureInfo.InvariantCulture,
-                $"已定位 {saveCount} 处 [save] · {cfgCount} 处 [config] · {regCount} 项 HKCU 注册表{ruleSuffix}");
+            string warnSuffix = layout.Warnings.Count > 0
+                ? $" · {layout.Warnings.Count} 条拦截提示"
+                : string.Empty;
+
+            if (TotalRuleLocationCount == 0)
+            {
+                ResolvedLocationsSummaryText = $"未探测到存档路径{warnSuffix}（点击配置）";
+            }
+            else if (existingSaveCount == 0 && layout.RegistryKeys.All(static r => !r.Exists))
+            {
+                ResolvedLocationsSummaryText = string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"现存 0 / 规则 {totalSaveRules} 处存档（尚未生成）{ruleSuffix}{warnSuffix}");
+            }
+            else
+            {
+                ResolvedLocationsSummaryText = string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"现存 {existingSaveCount} / 规则 {totalSaveRules} 处存档 · {cfgCount} 配置 · {regCount} 注册表{ruleSuffix}{warnSuffix}");
+            }
         }
         catch
         {
-            ResolvedLocationsSummaryText = "未能探测到存档路径（可点击 ⋯ 刷新路径规则）";
+            ExistingSaveLocationCount = 0;
+            TotalRuleLocationCount = 0;
+            ResolvedLocationsSummaryText = "未能探测到存档路径（点击打开路径配置）";
+        }
+        finally
+        {
+            NotifyAllDerivedStates();
         }
     }
 
@@ -1744,6 +2458,7 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
                 PostExitSnapshotEnabled = PostExitSnapshotEnabled,
                 IncludeConfigFiles = IncludeConfigOnSnapshot,
                 CloudEndpointId = SelectedCloudEndpoint?.EndpointId,
+                SyncAllBranchesToCloud = SyncAllBranchesToCloud,
                 UpdatedAtUtc = DateTimeOffset.UtcNow,
             };
 
@@ -1797,12 +2512,53 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
         }
     }
 
+    public bool TryHandleEscapeKey()
+    {
+        if (IsDivergenceModalOpen)
+        {
+            IsDivergenceModalOpen = false;
+            return true;
+        }
+
+        if (IsDeleteBranchConfirmOpen || IsDeleteSnapshotConfirmOpen || IsForkPanelOpen || IsRenameBranchPanelOpen || IsRollbackConfirmOpen || IsEditingNote)
+        {
+            CloseTransientPopovers();
+            return true;
+        }
+
+        if (IsPathsDrawerOpen)
+        {
+            IsPathsDrawerOpen = false;
+            return true;
+        }
+
+        if (IsCloudDrawerOpen)
+        {
+            IsCloudDrawerOpen = false;
+            return true;
+        }
+
+        return false;
+    }
+
     private void CloseTransientPopovers()
     {
         IsForkPanelOpen = false;
         IsRenameBranchPanelOpen = false;
         IsRollbackConfirmOpen = false;
+        IsDeleteBranchConfirmOpen = false;
+        PendingDeleteBranch = null;
+        IsDeleteSnapshotConfirmOpen = false;
         IsEditingNote = false;
+    }
+
+    private void SyncColorOptionSelections()
+    {
+        foreach (SaveBranchColorOption option in BranchColorPalette)
+        {
+            option.IsSelectedForFork = string.Equals(option.ColorHex, SelectedForkColorHex, StringComparison.OrdinalIgnoreCase);
+            option.IsSelectedForRename = string.Equals(option.ColorHex, RenameBranchColorHex, StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     private void OnWatcherStatusChanged(object? sender, SaveWatcherStatusDto status)
@@ -1816,8 +2572,10 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
         void Apply()
         {
             WatcherStatus = status.Status;
+            WatcherStatusDetailText = status.LastMessage ?? string.Empty;
             OnPropertyChanged(nameof(WatcherStatusBadgeText));
             OnPropertyChanged(nameof(IsWatcherActive));
+            OnPropertyChanged(nameof(IsWatcherError));
         }
 
         if (Application.Current?.Dispatcher is { } dispatcher && !dispatcher.CheckAccess())
@@ -1836,6 +2594,18 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
         OnPropertyChanged(nameof(HasSnapshots));
         OnPropertyChanged(nameof(HasVisibleGraphRows));
         OnPropertyChanged(nameof(HasSelectedNode));
+        OnPropertyChanged(nameof(HasBackgroundDeletableBranches));
+        OnPropertyChanged(nameof(HasResolvedLocationItems));
+        OnPropertyChanged(nameof(HasResolvedLocationWarnings));
+        OnPropertyChanged(nameof(HasNoCloudEndpoints));
+        OnPropertyChanged(nameof(HasCloudEndpoints));
+        OnPropertyChanged(nameof(HasCustomCloudGameKey));
+        OnPropertyChanged(nameof(ShowLegacyPreTrainerBanner));
+        OnPropertyChanged(nameof(LegacyPreTrainerBannerText));
+        OnPropertyChanged(nameof(EmptyStateKind));
+        OnPropertyChanged(nameof(ShowEmptyNoSnapshotsWithPaths));
+        OnPropertyChanged(nameof(ShowEmptyNoPathsDetected));
+        OnPropertyChanged(nameof(ShowEmptyFilterNoMatch));
         OnPropertyChanged(nameof(ShowDesktopInspector));
         OnPropertyChanged(nameof(ShowCompactInspectorOverlay));
         OnPropertyChanged(nameof(ShowFilesInspectorTab));
@@ -1849,11 +2619,17 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
         OnPropertyChanged(nameof(CanDeleteActiveBranch));
         OnPropertyChanged(nameof(CanDeleteSelectedSnapshot));
         OnPropertyChanged(nameof(ActiveBranchNameText));
+        OnPropertyChanged(nameof(ActiveBranchDisplayNameText));
         OnPropertyChanged(nameof(ActiveBranchColorBrush));
+        OnPropertyChanged(nameof(DeleteBranchConfirmTitle));
+        OnPropertyChanged(nameof(DeleteBranchConfirmDescription));
+        OnPropertyChanged(nameof(DeleteSnapshotConfirmText));
         OnPropertyChanged(nameof(TreeMetricsSummaryText));
         OnPropertyChanged(nameof(WatcherStatusBadgeText));
         OnPropertyChanged(nameof(IsWatcherActive));
+        OnPropertyChanged(nameof(IsWatcherError));
         OnPropertyChanged(nameof(CloudStatusChipText));
+        OnPropertyChanged(nameof(CloudSyncScopeText));
         OnPropertyChanged(nameof(SelectedNodePinActionText));
         OnPropertyChanged(nameof(RollbackButtonToolTip));
         OnPropertyChanged(nameof(HasCloudSyncPlan));
@@ -1885,6 +2661,28 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
             Multiselect = false,
         };
         return dialog.ShowDialog() == true ? dialog.FolderName : null;
+    }
+
+    private static string? BrowseForCustomSaveDirectory()
+    {
+        var dialog = new OpenFolderDialog
+        {
+            Title = "选择自定义游戏存档目录",
+            Multiselect = false,
+        };
+        return dialog.ShowDialog() == true ? dialog.FolderName : null;
+    }
+
+    private static string? BrowseForCustomSaveFile()
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "选择自定义游戏存档文件",
+            Multiselect = false,
+            CheckFileExists = true,
+            Filter = "存档文件 (*.*)|*.*",
+        };
+        return dialog.ShowDialog() == true ? dialog.FileName : null;
     }
 
     public void Dispose()

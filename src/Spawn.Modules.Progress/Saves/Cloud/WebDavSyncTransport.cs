@@ -89,22 +89,26 @@ internal sealed class WebDavSyncTransport : ICloudSyncTransport
         request.Content = new ByteArrayContent(data.ToArray());
         request.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(contentType);
 
-        using HttpResponseMessage response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
+        using HttpResponseMessage response = await CloudSyncHttpDiagnostics
+            .SendWithDiagnosticsAsync(_httpClient, request, "WebDAV", "上传文件", cancellationToken)
+            .ConfigureAwait(false);
+        CloudSyncHttpDiagnostics.EnsureSuccess(response, "WebDAV", "上传文件");
     }
 
     public async Task<byte[]?> GetBytesAsync(string relativePath, CancellationToken cancellationToken = default)
     {
         string normalized = CloudSyncTransportHelpers.NormalizeRelativePath(relativePath);
         using var request = CreateRequest(HttpMethod.Get, BuildObjectUri(normalized));
-        using HttpResponseMessage response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        using HttpResponseMessage response = await CloudSyncHttpDiagnostics
+            .SendWithDiagnosticsAsync(_httpClient, request, "WebDAV", "下载文件", cancellationToken)
+            .ConfigureAwait(false);
 
         if (response.StatusCode == HttpStatusCode.NotFound)
         {
             return null;
         }
 
-        response.EnsureSuccessStatusCode();
+        CloudSyncHttpDiagnostics.EnsureSuccess(response, "WebDAV", "下载文件");
         return await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -118,7 +122,9 @@ internal sealed class WebDavSyncTransport : ICloudSyncTransport
         using var request = CreateRequest(HttpMethod.Get, BuildObjectUri(normalized));
         request.Headers.Range = CloudSyncTransportHelpers.CreateRangeHeader(offset, length);
 
-        using HttpResponseMessage response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        using HttpResponseMessage response = await CloudSyncHttpDiagnostics
+            .SendWithDiagnosticsAsync(_httpClient, request, "WebDAV", "分片读取", cancellationToken)
+            .ConfigureAwait(false);
         if (response.StatusCode == HttpStatusCode.NotFound)
         {
             return null;
@@ -129,7 +135,7 @@ internal sealed class WebDavSyncTransport : ICloudSyncTransport
             return new CloudSyncRangeResult([], response.Content.Headers.ContentRange?.Length ?? 0, Math.Max(0, offset));
         }
 
-        response.EnsureSuccessStatusCode();
+        CloudSyncHttpDiagnostics.EnsureSuccess(response, "WebDAV", "分片读取");
         byte[] body = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
         if (response.StatusCode == HttpStatusCode.PartialContent)
@@ -160,7 +166,9 @@ internal sealed class WebDavSyncTransport : ICloudSyncTransport
         request.Headers.TryAddWithoutValidation("Depth", "1");
         request.Content = new StringContent(PropfindRequestBody, Encoding.UTF8, "application/xml");
 
-        using HttpResponseMessage response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        using HttpResponseMessage response = await CloudSyncHttpDiagnostics
+            .SendWithDiagnosticsAsync(_httpClient, request, "WebDAV", "列举目录", cancellationToken)
+            .ConfigureAwait(false);
         if (response.StatusCode == HttpStatusCode.NotFound)
         {
             return [];
@@ -168,7 +176,7 @@ internal sealed class WebDavSyncTransport : ICloudSyncTransport
 
         if (response.StatusCode != HttpStatusCode.MultiStatus && !response.IsSuccessStatusCode)
         {
-            response.EnsureSuccessStatusCode();
+            CloudSyncHttpDiagnostics.EnsureSuccess(response, "WebDAV", "列举目录");
         }
 
         string xml = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
@@ -179,13 +187,15 @@ internal sealed class WebDavSyncTransport : ICloudSyncTransport
     {
         string normalized = CloudSyncTransportHelpers.NormalizeRelativePath(relativePath);
         using var request = CreateRequest(HttpMethod.Head, BuildObjectUri(normalized));
-        using HttpResponseMessage response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        using HttpResponseMessage response = await CloudSyncHttpDiagnostics
+            .SendWithDiagnosticsAsync(_httpClient, request, "WebDAV", "检查文件", cancellationToken)
+            .ConfigureAwait(false);
         if (response.StatusCode == HttpStatusCode.NotFound)
         {
             return false;
         }
 
-        response.EnsureSuccessStatusCode();
+        CloudSyncHttpDiagnostics.EnsureSuccess(response, "WebDAV", "检查文件");
         return true;
     }
 
@@ -252,7 +262,9 @@ internal sealed class WebDavSyncTransport : ICloudSyncTransport
 
         Uri uri = BuildCollectionUri(relativeCollectionPath);
         using var request = CreateRequest(MkcolMethod, uri);
-        using HttpResponseMessage response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        using HttpResponseMessage response = await CloudSyncHttpDiagnostics
+            .SendWithDiagnosticsAsync(_httpClient, request, "WebDAV", "创建目录", cancellationToken)
+            .ConfigureAwait(false);
 
         if (response.IsSuccessStatusCode
             || response.StatusCode == HttpStatusCode.MethodNotAllowed
@@ -263,7 +275,7 @@ internal sealed class WebDavSyncTransport : ICloudSyncTransport
             return;
         }
 
-        response.EnsureSuccessStatusCode();
+        CloudSyncHttpDiagnostics.EnsureSuccess(response, "WebDAV", "创建目录");
     }
 
     private List<CloudSyncObjectInfo> ParsePropfindResponse(string xmlText, string normalizedPrefix)

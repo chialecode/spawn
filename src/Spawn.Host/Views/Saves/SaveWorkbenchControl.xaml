@@ -207,7 +207,12 @@
                                      BorderBrush="{DynamicResource AccentBrush}"
                                      BorderThickness="1"
                                      Foreground="{DynamicResource PrimaryTextBrush}"
-                                     CaretBrush="{DynamicResource AccentBrush}" />
+                                     CaretBrush="{DynamicResource AccentBrush}">
+                                <TextBox.InputBindings>
+                                    <KeyBinding Key="Return" Command="{Binding SaveEditNoteCommand}" />
+                                    <KeyBinding Key="Escape" Command="{Binding CancelEditNoteCommand}" />
+                                </TextBox.InputBindings>
+                            </TextBox>
                             <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
                                 <Button Style="{StaticResource PrimaryCapsuleButtonStyle}"
                                         Height="26"
@@ -233,7 +238,7 @@
                                     BorderThickness="1"
                                     Padding="6,1"
                                     Margin="0,0,6,4">
-                                <TextBlock Text="{Binding SelectedNode.BranchName}"
+                                <TextBlock Text="{Binding SelectedNode.BranchDisplayName}"
                                            FontSize="11.5"
                                            FontWeight="SemiBold"
                                            Foreground="{DynamicResource AccentBrush}" />
@@ -298,7 +303,7 @@
                                 Padding="14,0"
                                 FontSize="12.5"
                                 Margin="0,0,6,4"
-                                Content="回滚到此节点"
+                                Content="载入到游戏"
                                 ToolTip="{Binding RollbackButtonToolTip}"
                                 Command="{Binding RequestRollbackSelectedCommand}"
                                 IsEnabled="{Binding CanRollbackSelected}" />
@@ -308,7 +313,7 @@
                                 Padding="12,0"
                                 FontSize="12.5"
                                 Margin="0,0,6,4"
-                                Content="从此节点分叉"
+                                Content="从此节点开新路线"
                                 Command="{Binding OpenForkPopoverFromSelectedCommand}"
                                 IsEnabled="{Binding CanForkFromSelected}" />
 
@@ -360,9 +365,9 @@
                                                 Command="{Binding OpenSaveFolderCommand}" />
                                         <Border Height="1" Background="{DynamicResource DividerBrush}" Margin="6,4" />
                                         <Button Style="{StaticResource DangerMenuItemButtonStyle}"
-                                                Content="删除此快照"
+                                                Content="删除此快照…"
                                                 Click="OnAnyPopupMenuItemClick"
-                                                Command="{Binding DeleteSelectedSnapshotCommand}"
+                                                Command="{Binding RequestDeleteSelectedSnapshotCommand}"
                                                 IsEnabled="{Binding CanDeleteSelectedSnapshot}" />
                                     </StackPanel>
                                 </Border>
@@ -371,62 +376,119 @@
                     </WrapPanel>
                 </Border>
 
-                <!-- Inline Rollback Confirmation Card -->
-                <Border Grid.Row="2"
-                        Background="{DynamicResource WarningSoftBannerBackgroundBrush}"
-                        BorderBrush="{DynamicResource WarningSoftBannerBorderBrush}"
-                        BorderThickness="0,0,0,1"
-                        Padding="14,10"
-                        Visibility="{Binding IsRollbackConfirmOpen, Converter={StaticResource BoolToVis}}">
-                    <StackPanel>
-                        <TextBlock Text="确认回滚到此存档快照？"
-                                   FontSize="13"
-                                   FontWeight="SemiBold"
-                                   Foreground="{DynamicResource WarningAmberBrush}" />
-                        <TextBlock Text="回滚前将自动为当前磁盘存档创建「回滚安全点」快照，再采用先写暂存后批量替换的原子回滚。"
-                                   FontSize="12"
-                                   Foreground="{DynamicResource PrimaryTextBrush}"
-                                   TextWrapping="Wrap"
-                                   Margin="0,3,0,6" />
-                        <CheckBox Style="{StaticResource ModernSwitchCheckBoxStyle}"
-                                  Content="同时还原 [config] 配置文件（默认仅还原 [save]）"
-                                  FontSize="12"
-                                  IsChecked="{Binding RollbackIncludeConfig, Mode=TwoWay}"
-                                  Margin="0,0,0,8" />
+                <!-- Inline Rollback & Delete Snapshot Confirmation Cards -->
+                <StackPanel Grid.Row="2">
+                    <Border Background="{DynamicResource WarningSoftBannerBackgroundBrush}"
+                            BorderBrush="{DynamicResource WarningSoftBannerBorderBrush}"
+                            BorderThickness="0,0,0,1"
+                            Padding="14,10"
+                            Visibility="{Binding IsRollbackConfirmOpen, Converter={StaticResource BoolToVis}}">
+                        <StackPanel>
+                            <TextBlock Text="确认将此快照载入到游戏？"
+                                       FontSize="13"
+                                       FontWeight="SemiBold"
+                                       Foreground="{DynamicResource WarningAmberBrush}" />
+                            <TextBlock Text="载入前将自动为当前磁盘存档创建安全保护快照，再原子替换游戏存档文件。"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource PrimaryTextBrush}"
+                                       TextWrapping="Wrap"
+                                       Margin="0,3,0,6" />
+                            <CheckBox Style="{StaticResource ModernSwitchCheckBoxStyle}"
+                                      Content="同时还原配置文件（默认仅还原游戏存档）"
+                                      FontSize="12"
+                                      IsChecked="{Binding RollbackIncludeConfig, Mode=TwoWay}"
+                                      Margin="0,0,0,6" />
+                            <CheckBox Style="{StaticResource ModernSwitchCheckBoxStyle}"
+                                      Content="回滚并直接开启新路线（避免自动生成临时分支名）"
+                                      FontSize="12"
+                                      IsChecked="{Binding RollbackForkNewBranch, Mode=TwoWay}"
+                                      Margin="0,0,0,6" />
+                            <TextBox Height="28"
+                                     Padding="8,3"
+                                     Margin="0,0,0,8"
+                                     FontSize="12"
+                                     Background="{DynamicResource CapsuleInputBackgroundBrush}"
+                                     BorderBrush="{DynamicResource ControlBorderBrush}"
+                                     BorderThickness="1"
+                                     Foreground="{DynamicResource PrimaryTextBrush}"
+                                     CaretBrush="{DynamicResource AccentBrush}"
+                                     Text="{Binding RollbackForkNewBranchName, UpdateSourceTrigger=PropertyChanged}"
+                                     ToolTip="输入要开启的新路线名称（例如 boss-retry、ending-b）"
+                                     Visibility="{Binding RollbackForkNewBranch, Converter={StaticResource BoolToVis}}">
+                                <TextBox.InputBindings>
+                                    <KeyBinding Key="Return" Command="{Binding ConfirmRollbackSelectedCommand}" />
+                                    <KeyBinding Key="Escape" Command="{Binding CancelRollbackConfirmCommand}" />
+                                </TextBox.InputBindings>
+                            </TextBox>
 
-                        <TextBlock Text="{Binding RollbackModMismatchWarning}"
-                                   FontSize="12"
-                                   Foreground="{DynamicResource DangerTextBrush}"
-                                   TextWrapping="Wrap"
-                                   Margin="0,0,0,8"
-                                   Visibility="{Binding RollbackRequiresModMismatchConfirm, Converter={StaticResource BoolToVis}}" />
+                            <TextBlock Text="{Binding RollbackModMismatchWarning}"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource DangerTextBrush}"
+                                       TextWrapping="Wrap"
+                                       Margin="0,0,0,8"
+                                       Visibility="{Binding RollbackRequiresModMismatchConfirm, Converter={StaticResource BoolToVis}}" />
 
-                        <WrapPanel Orientation="Horizontal">
-                            <Button Style="{StaticResource PrimaryCapsuleButtonStyle}"
-                                    Height="28"
-                                    Padding="12,0"
-                                    FontSize="12"
-                                    Margin="0,0,6,0"
-                                    Content="确认原子回滚"
-                                    Command="{Binding ConfirmRollbackSelectedCommand}"
-                                    Visibility="{Binding RollbackRequiresModMismatchConfirm, Converter={StaticResource InvBoolToVis}}" />
-                            <Button Style="{StaticResource WarningPrimaryCapsuleButtonStyle}"
-                                    Height="28"
-                                    Padding="12,0"
-                                    FontSize="12"
-                                    Margin="0,0,6,0"
-                                    Content="忽略 Mod 差异强制回滚"
-                                    Command="{Binding ForceRollbackIgnoringModMismatchCommand}"
-                                    Visibility="{Binding RollbackRequiresModMismatchConfirm, Converter={StaticResource BoolToVis}}" />
-                            <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
-                                    Height="28"
-                                    Padding="10,0"
-                                    FontSize="12"
-                                    Content="取消"
-                                    Command="{Binding CancelRollbackConfirmCommand}" />
-                        </WrapPanel>
-                    </StackPanel>
-                </Border>
+                            <WrapPanel Orientation="Horizontal">
+                                <Button Style="{StaticResource PrimaryCapsuleButtonStyle}"
+                                        Height="28"
+                                        Padding="12,0"
+                                        FontSize="12"
+                                        Margin="0,0,6,0"
+                                        Content="确认载入到游戏"
+                                        Command="{Binding ConfirmRollbackSelectedCommand}"
+                                        Visibility="{Binding RollbackRequiresModMismatchConfirm, Converter={StaticResource InvBoolToVis}}" />
+                                <Button Style="{StaticResource WarningPrimaryCapsuleButtonStyle}"
+                                        Height="28"
+                                        Padding="12,0"
+                                        FontSize="12"
+                                        Margin="0,0,6,0"
+                                        Content="忽略 Mod 差异强制载入"
+                                        Command="{Binding ForceRollbackIgnoringModMismatchCommand}"
+                                        Visibility="{Binding RollbackRequiresModMismatchConfirm, Converter={StaticResource BoolToVis}}" />
+                                <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                                        Height="28"
+                                        Padding="10,0"
+                                        FontSize="12"
+                                        Content="取消"
+                                        Command="{Binding CancelRollbackConfirmCommand}" />
+                            </WrapPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Inline Delete Snapshot Danger Confirmation -->
+                    <Border Background="{DynamicResource WarningSoftBannerBackgroundBrush}"
+                            BorderBrush="{DynamicResource DangerTextBrush}"
+                            BorderThickness="0,0,0,1"
+                            Padding="14,10"
+                            Visibility="{Binding IsDeleteSnapshotConfirmOpen, Converter={StaticResource BoolToVis}}">
+                        <StackPanel>
+                            <TextBlock Text="确认删除此快照？"
+                                       FontSize="13"
+                                       FontWeight="SemiBold"
+                                       Foreground="{DynamicResource DangerTextBrush}" />
+                            <TextBlock Text="{Binding DeleteSnapshotConfirmText}"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource PrimaryTextBrush}"
+                                       TextWrapping="Wrap"
+                                       Margin="0,3,0,8" />
+                            <WrapPanel Orientation="Horizontal">
+                                <Button Style="{StaticResource WarningPrimaryCapsuleButtonStyle}"
+                                        Height="28"
+                                        Padding="12,0"
+                                        FontSize="12"
+                                        Margin="0,0,6,0"
+                                        Content="确认永久删除"
+                                        Command="{Binding ConfirmDeleteSelectedSnapshotCommand}" />
+                                <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                                        Height="28"
+                                        Padding="10,0"
+                                        FontSize="12"
+                                        Content="取消"
+                                        Command="{Binding CancelDeleteSelectedSnapshotCommand}" />
+                            </WrapPanel>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
 
                 <!-- Inspector Sub-Tabs: 文件清单 | 变更对比 -->
                 <Border Grid.Row="3"
@@ -542,8 +604,9 @@
                                         <TextBlock FontFamily="{StaticResource SpawnMonoFont}"
                                                    FontSize="10.5"
                                                    Foreground="{DynamicResource MutedTextBrush}"
+                                                   ToolTip="内容完整性校验摘要 (BLAKE3)"
                                                    Margin="0,2,0,0">
-                                            <Run Text="BLAKE3 " />
+                                            <Run Text="校验 " />
                                             <Run Text="{Binding ShortHash, Mode=OneWay}" />
                                             <Run Text=" · " />
                                             <Run Text="{Binding LastWriteText, Mode=OneWay}" />
@@ -768,140 +831,174 @@
                                PopupAnimation="Fade"
                                Opened="OnManagedPopupOpened"
                                Closed="OnManagedPopupClosed">
-                            <Border Width="210"
-                                    Margin="8"
-                                    Padding="6"
-                                    CornerRadius="12"
-                                    Background="{DynamicResource FloatingMenuBackgroundBrush}"
-                                    BorderBrush="{DynamicResource DividerBrush}"
-                                    BorderThickness="1">
-                                <Border.Effect>
-                                    <DropShadowEffect BlurRadius="16" ShadowDepth="4" Opacity="0.16" Color="#000000" />
-                                </Border.Effect>
-                                <StackPanel>
-                                    <Button Style="{StaticResource FloatingMenuItemButtonStyle}"
-                                            Content="从当前 HEAD 新建分支"
-                                            Click="OnAnyPopupMenuItemClick"
-                                            Command="{Binding OpenForkPopoverFromHeadCommand}" />
-                                    <Button Style="{StaticResource FloatingMenuItemButtonStyle}"
-                                            Content="重命名 / 修改分支颜色"
-                                            Click="OnAnyPopupMenuItemClick"
-                                            Command="{Binding OpenRenameBranchPopoverCommand}" />
-                                    <Border Height="1" Background="{DynamicResource DividerBrush}" Margin="6,4" />
-                                    <Button Style="{StaticResource DangerMenuItemButtonStyle}"
-                                            Content="切回主分支并删除当前分支"
-                                            ToolTip="自动切回默认主分支并删除当前分支及其未固定快照"
-                                            Click="OnAnyPopupMenuItemClick"
-                                            Command="{Binding DeleteActiveBranchCommand}"
-                                            IsEnabled="{Binding CanDeleteActiveBranch}" />
-                                </StackPanel>
-                            </Border>
-                        </Popup>
-                    </Grid>
-                </WrapPanel>
-
-                <!-- Right: Quick Note Input + SINGLE Primary CTA (创建快照) + Workbench ⋯ -->
-                <WrapPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Border Width="188"
-                            Height="34"
-                            CornerRadius="17"
-                            Background="{DynamicResource CapsuleInputBackgroundBrush}"
-                            BorderBrush="{DynamicResource ControlBorderBrush}"
-                            BorderThickness="1"
-                            Padding="11,0"
-                            Margin="0,2,8,2">
-                        <Grid>
-                            <TextBlock Text="快照备注（可选）…"
-                                       FontSize="12"
-                                       Foreground="{DynamicResource MutedTextBrush}"
-                                       VerticalAlignment="Center"
-                                       IsHitTestVisible="False"
-                                       Visibility="{Binding QuickSnapshotNote, Converter={StaticResource StrNotEmptyToVis}, ConverterParameter=Invert}" />
-                            <TextBox Text="{Binding QuickSnapshotNote, UpdateSourceTrigger=PropertyChanged}"
-                                     Background="Transparent"
-                                     BorderThickness="0"
-                                     Foreground="{DynamicResource PrimaryTextBrush}"
-                                     CaretBrush="{DynamicResource AccentBrush}"
-                                     FontSize="12"
-                                     VerticalContentAlignment="Center" />
+                                <Border Width="244"
+                                        Margin="8"
+                                        Padding="6"
+                                        CornerRadius="12"
+                                        Background="{DynamicResource FloatingMenuBackgroundBrush}"
+                                        BorderBrush="{DynamicResource DividerBrush}"
+                                        BorderThickness="1">
+                                    <Border.Effect>
+                                        <DropShadowEffect BlurRadius="16" ShadowDepth="4" Opacity="0.16" Color="#000000" />
+                                    </Border.Effect>
+                                    <StackPanel>
+                                        <Button Style="{StaticResource FloatingMenuItemButtonStyle}"
+                                                Content="从当前存档新建分支路线"
+                                                Click="OnAnyPopupMenuItemClick"
+                                                Command="{Binding OpenForkPopoverFromHeadCommand}" />
+                                        <Button Style="{StaticResource FloatingMenuItemButtonStyle}"
+                                                Content="重命名 / 修改路线颜色"
+                                                Click="OnAnyPopupMenuItemClick"
+                                                Command="{Binding OpenRenameBranchPopoverCommand}" />
+                                        <StackPanel Visibility="{Binding HasBackgroundDeletableBranches, Converter={StaticResource BoolToVis}}">
+                                            <Border Height="1" Background="{DynamicResource DividerBrush}" Margin="6,4" />
+                                            <TextBlock Text="后台删除其他路线（不改写磁盘）"
+                                                       FontSize="11"
+                                                       Foreground="{DynamicResource MutedTextBrush}"
+                                                       Margin="10,2,8,4" />
+                                            <ItemsControl ItemsSource="{Binding BackgroundDeletableBranches}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate DataType="{x:Type savesVm:SaveBranchItemViewModel}">
+                                                        <Button Style="{StaticResource DangerMenuItemButtonStyle}"
+                                                                Click="OnAnyPopupMenuItemClick"
+                                                                Command="{Binding PlacementTarget.Tag.RequestDeleteBranchCommand, RelativeSource={RelativeSource AncestorType=Popup}}"
+                                                                CommandParameter="{Binding}">
+                                                            <TextBlock TextTrimming="CharacterEllipsis">
+                                                                <Run Text="删除「" />
+                                                                <Run Text="{Binding DisplayName, Mode=OneWay}" />
+                                                                <Run Text="」(" />
+                                                                <Run Text="{Binding SnapshotCount, Mode=OneWay}" />
+                                                                <Run Text=")" />
+                                                            </TextBlock>
+                                                        </Button>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </StackPanel>
+                                        <Border Height="1" Background="{DynamicResource DividerBrush}" Margin="6,4" />
+                                        <Button Style="{StaticResource DangerMenuItemButtonStyle}"
+                                                Content="切回主线并删除当前路线…"
+                                                ToolTip="先创建安全保护快照并切回默认主线，再删除当前路线及其未固定快照"
+                                                Click="OnAnyPopupMenuItemClick"
+                                                Command="{Binding RequestDeleteActiveBranchCommand}"
+                                                IsEnabled="{Binding CanDeleteActiveBranch}" />
+                                    </StackPanel>
+                                </Border>
+                            </Popup>
                         </Grid>
-                    </Border>
+                    </WrapPanel>
 
-                    <!-- SINGLE Primary Action Button in Toolbar -->
-                    <Button Style="{StaticResource PrimaryCapsuleButtonStyle}"
-                            Height="34"
-                            Padding="16,0"
-                            FontSize="13"
-                            Margin="0,2,6,2"
-                            Content="创建快照"
-                            Command="{Binding CreateSnapshotCommand}"
-                            IsEnabled="{Binding CanCreateSnapshot}" />
+                    <!-- Right: Quick Note Input + SINGLE Primary CTA (创建快照) + Workbench ⋯ -->
+                    <WrapPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Border Width="188"
+                                Height="34"
+                                CornerRadius="17"
+                                Background="{DynamicResource CapsuleInputBackgroundBrush}"
+                                BorderBrush="{DynamicResource ControlBorderBrush}"
+                                BorderThickness="1"
+                                Padding="11,0"
+                                Margin="0,2,8,2">
+                            <Grid>
+                                <TextBlock Text="快照备注（可选，回车创建）…"
+                                           FontSize="12"
+                                           Foreground="{DynamicResource MutedTextBrush}"
+                                           VerticalAlignment="Center"
+                                           IsHitTestVisible="False"
+                                           Visibility="{Binding QuickSnapshotNote, Converter={StaticResource StrNotEmptyToVis}, ConverterParameter=Invert}" />
+                                <TextBox Text="{Binding QuickSnapshotNote, UpdateSourceTrigger=PropertyChanged}"
+                                         Background="Transparent"
+                                         BorderThickness="0"
+                                         Foreground="{DynamicResource PrimaryTextBrush}"
+                                         CaretBrush="{DynamicResource AccentBrush}"
+                                         FontSize="12"
+                                         VerticalContentAlignment="Center">
+                                    <TextBox.InputBindings>
+                                        <KeyBinding Key="Return" Command="{Binding CreateSnapshotCommand}" />
+                                    </TextBox.InputBindings>
+                                </TextBox>
+                            </Grid>
+                        </Border>
 
-                    <!-- Workbench ⋯ Popup (PlacementTarget.Tag bridged!) -->
-                    <Grid Margin="0,2,0,2" VerticalAlignment="Center">
-                        <ToggleButton x:Name="SaveWorkbenchMoreToggle"
-                                      Style="{StaticResource SaveMorePopupToggleStyle}"
-                                      Tag="{Binding}"
-                                      ToolTip="更多存档操作"
-                                      AutomationProperties.Name="更多存档操作" />
-                        <Popup IsOpen="{Binding IsChecked, ElementName=SaveWorkbenchMoreToggle, Mode=TwoWay}"
-                               PlacementTarget="{Binding ElementName=SaveWorkbenchMoreToggle}"
-                               DataContext="{Binding PlacementTarget.Tag, RelativeSource={RelativeSource Self}}"
-                               Placement="Bottom"
-                               HorizontalOffset="-206"
-                               VerticalOffset="6"
-                               StaysOpen="False"
-                               AllowsTransparency="True"
-                               PopupAnimation="Fade"
-                               Opened="OnManagedPopupOpened"
-                               Closed="OnManagedPopupClosed">
-                            <Border Width="244"
-                                    Margin="8"
-                                    Padding="6"
-                                    CornerRadius="12"
-                                    Background="{DynamicResource FloatingMenuBackgroundBrush}"
-                                    BorderBrush="{DynamicResource DividerBrush}"
-                                    BorderThickness="1">
-                                <Border.Effect>
-                                    <DropShadowEffect BlurRadius="16" ShadowDepth="4" Opacity="0.16" Color="#000000" />
-                                </Border.Effect>
-                                <StackPanel>
-                                    <CheckBox Style="{StaticResource ModernSwitchCheckBoxStyle}"
-                                              Margin="10,6,8,6"
-                                              FontSize="12.5"
-                                              Content="手动快照同时包含 [config]"
-                                              IsChecked="{Binding IncludeConfigOnSnapshot, Mode=TwoWay}" />
-                                    <CheckBox Style="{StaticResource ModernSwitchCheckBoxStyle}"
-                                              Margin="10,2,8,6"
-                                              FontSize="12.5"
-                                              Content="创建后立即固定 (★)"
-                                              IsChecked="{Binding PinNewSnapshot, Mode=TwoWay}" />
-                                    <Border Height="1" Background="{DynamicResource DividerBrush}" Margin="6,4" />
-                                    <Button Style="{StaticResource FloatingMenuItemButtonStyle}"
-                                            Content="云同步面板（32MB SPPK）"
-                                            Click="OnAnyPopupMenuItemClick"
-                                            Command="{Binding ToggleCloudDrawerCommand}" />
-                                    <Button Style="{StaticResource FloatingMenuItemButtonStyle}"
-                                            Content="刷新 Ludusavi 存档路径探测"
-                                            Click="OnAnyPopupMenuItemClick"
-                                            Command="{Binding RefreshSaveLocationsCommand}" />
-                                    <Button Style="{StaticResource FloatingMenuItemButtonStyle}"
-                                            Content="导入旧版修改器前快照"
-                                            Click="OnAnyPopupMenuItemClick"
-                                            Command="{Binding ImportLegacyPreTrainerSnapshotsCommand}" />
-                                    <Button Style="{StaticResource FloatingMenuItemButtonStyle}"
-                                            Content="打开游戏存档文件夹"
-                                            Click="OnAnyPopupMenuItemClick"
-                                            Command="{Binding OpenSaveFolderCommand}" />
-                                    <Button Style="{StaticResource FloatingMenuItemButtonStyle}"
-                                            Content="存档与云同步全局设置…"
-                                            Click="OnAnyPopupMenuItemClick"
-                                            Command="{Binding OpenSavesSettingsCommand}" />
-                                </StackPanel>
-                            </Border>
-                        </Popup>
-                    </Grid>
-                </WrapPanel>
+                        <!-- SINGLE Primary Action Button in Toolbar -->
+                        <Button Style="{StaticResource PrimaryCapsuleButtonStyle}"
+                                Height="34"
+                                Padding="16,0"
+                                FontSize="13"
+                                Margin="0,2,6,2"
+                                Content="创建快照"
+                                Command="{Binding CreateSnapshotCommand}"
+                                IsEnabled="{Binding CanCreateSnapshot}" />
+
+                        <!-- Workbench ⋯ Popup (PlacementTarget.Tag bridged!) -->
+                        <Grid Margin="0,2,0,2" VerticalAlignment="Center">
+                            <ToggleButton x:Name="SaveWorkbenchMoreToggle"
+                                          Style="{StaticResource SaveMorePopupToggleStyle}"
+                                          Tag="{Binding}"
+                                          ToolTip="更多存档操作"
+                                          AutomationProperties.Name="更多存档操作" />
+                            <Popup IsOpen="{Binding IsChecked, ElementName=SaveWorkbenchMoreToggle, Mode=TwoWay}"
+                                   PlacementTarget="{Binding ElementName=SaveWorkbenchMoreToggle}"
+                                   DataContext="{Binding PlacementTarget.Tag, RelativeSource={RelativeSource Self}}"
+                                   Placement="Bottom"
+                                   HorizontalOffset="-206"
+                                   VerticalOffset="6"
+                                   StaysOpen="False"
+                                   AllowsTransparency="True"
+                                   PopupAnimation="Fade"
+                                   Opened="OnManagedPopupOpened"
+                                   Closed="OnManagedPopupClosed">
+                                <Border Width="244"
+                                        Margin="8"
+                                        Padding="6"
+                                        CornerRadius="12"
+                                        Background="{DynamicResource FloatingMenuBackgroundBrush}"
+                                        BorderBrush="{DynamicResource DividerBrush}"
+                                        BorderThickness="1">
+                                    <Border.Effect>
+                                        <DropShadowEffect BlurRadius="16" ShadowDepth="4" Opacity="0.16" Color="#000000" />
+                                    </Border.Effect>
+                                    <StackPanel>
+                                        <CheckBox Style="{StaticResource ModernSwitchCheckBoxStyle}"
+                                                  Margin="10,6,8,6"
+                                                  FontSize="12.5"
+                                                  Content="手动快照同时包含配置文件"
+                                                  ToolTip="同时备份 [config] 类别的游戏配置文件"
+                                                  IsChecked="{Binding IncludeConfigOnSnapshot, Mode=TwoWay}" />
+                                        <CheckBox Style="{StaticResource ModernSwitchCheckBoxStyle}"
+                                                  Margin="10,2,8,6"
+                                                  FontSize="12.5"
+                                                  Content="创建后立即固定 (★)"
+                                                  IsChecked="{Binding PinNewSnapshot, Mode=TwoWay}" />
+                                        <Border Height="1" Background="{DynamicResource DividerBrush}" Margin="6,4" />
+                                        <Button Style="{StaticResource FloatingMenuItemButtonStyle}"
+                                                Content="存档路径配置（自定义目录/文件）"
+                                                Click="OnAnyPopupMenuItemClick"
+                                                Command="{Binding TogglePathsDrawerCommand}" />
+                                        <Button Style="{StaticResource FloatingMenuItemButtonStyle}"
+                                                Content="云同步面板"
+                                                Click="OnAnyPopupMenuItemClick"
+                                                Command="{Binding ToggleCloudDrawerCommand}" />
+                                        <Button Style="{StaticResource FloatingMenuItemButtonStyle}"
+                                                Content="刷新存档路径探测"
+                                                Click="OnAnyPopupMenuItemClick"
+                                                Command="{Binding RefreshSaveLocationsCommand}" />
+                                        <Button Style="{StaticResource FloatingMenuItemButtonStyle}"
+                                                Content="导入旧版修改器前备份"
+                                                Click="OnAnyPopupMenuItemClick"
+                                                Command="{Binding ImportLegacyPreTrainerSnapshotsCommand}" />
+                                        <Button Style="{StaticResource FloatingMenuItemButtonStyle}"
+                                                Content="打开游戏存档目录"
+                                                Click="OnAnyPopupMenuItemClick"
+                                                Command="{Binding OpenSaveFolderCommand}" />
+                                        <Button Style="{StaticResource FloatingMenuItemButtonStyle}"
+                                                Content="存档与云同步全局设置…"
+                                                Click="OnAnyPopupMenuItemClick"
+                                                Command="{Binding OpenSavesSettingsCommand}" />
+                                    </StackPanel>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                    </WrapPanel>
             </DockPanel>
         </Border>
 
@@ -943,7 +1040,7 @@
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
                                 <TextBlock Grid.Column="0"
-                                           Text="筛选备注 / 分支 / 哈希…"
+                                           Text="筛选备注 / 路线 / 日期…"
                                            FontSize="11.5"
                                            Foreground="{DynamicResource MutedTextBrush}"
                                            VerticalAlignment="Center"
@@ -975,18 +1072,28 @@
                         </Border>
                     </WrapPanel>
 
-                    <!-- Right: Auto-Backup Toggles & Cloud Sync Drawer Toggle -->
+                    <!-- Right: Auto-Backup Toggles & Paths/Cloud Drawer Toggles -->
                     <WrapPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
                         <CheckBox Style="{StaticResource ModernSwitchCheckBoxStyle}"
                                   Content="退出自动备份"
+                                  ToolTip="通过 SPAWN 启动游戏时自动生效：退出游戏后自动保存一份快照"
                                   FontSize="12"
-                                  Margin="0,2,12,2"
+                                  Margin="0,2,10,2"
                                   IsChecked="{Binding PostExitSnapshotEnabled, Mode=TwoWay}" />
                         <CheckBox Style="{StaticResource ModernSwitchCheckBoxStyle}"
-                                  Content="静默防撕裂热备"
+                                  Content="实时防撕裂热备"
+                                  ToolTip="通过 SPAWN 启动游戏时自动生效：监听游戏存档写入稳定后自动备份"
                                   FontSize="12"
-                                  Margin="0,2,12,2"
+                                  Margin="0,2,10,2"
                                   IsChecked="{Binding AutoWatchEnabled, Mode=TwoWay}" />
+                        <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                                Height="28"
+                                Padding="10,0"
+                                FontSize="12"
+                                Margin="0,2,6,2"
+                                Content="路径配置"
+                                ToolTip="展开存档路径配置，查看已探测路径、安全拦截提示或添加自定义目录/文件"
+                                Command="{Binding TogglePathsDrawerCommand}" />
                         <Button Height="28"
                                 Padding="11,0"
                                 FontSize="12"
@@ -1013,7 +1120,7 @@
                     </WrapPanel>
                 </DockPanel>
 
-                <!-- Sub-metrics hairline summary -->
+                <!-- Sub-metrics hairline summary (with live Watcher status & clickable Paths summary) -->
                 <DockPanel LastChildFill="False" Margin="0,6,0,0">
                     <TextBlock DockPanel.Dock="Left"
                                Text="{Binding TreeMetricsSummaryText}"
@@ -1022,32 +1129,69 @@
                                Foreground="{DynamicResource SecondaryTextBrush}"
                                TextTrimming="CharacterEllipsis" />
                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
-                        <Ellipse Width="7"
-                                 Height="7"
-                                 Margin="8,0,5,0"
-                                 VerticalAlignment="Center">
-                            <Ellipse.Style>
-                                <Style TargetType="Ellipse">
-                                    <Setter Property="Fill" Value="{DynamicResource MutedTextBrush}" />
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding IsWatcherActive}" Value="True">
-                                            <Setter Property="Fill" Value="{DynamicResource RunningGreenBrush}" />
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </Ellipse.Style>
-                        </Ellipse>
-                        <TextBlock Text="{Binding ResolvedLocationsSummaryText}"
-                                   FontSize="11.5"
-                                   Foreground="{DynamicResource MutedTextBrush}"
-                                   TextTrimming="CharacterEllipsis" />
+                        <Border CornerRadius="4"
+                                Background="{DynamicResource SubtleSurfaceBrush}"
+                                Padding="6,1"
+                                Margin="8,0,8,0"
+                                ToolTip="{Binding WatcherStatusDetailText}">
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <Ellipse Width="7"
+                                         Height="7"
+                                         Margin="0,0,5,0"
+                                         VerticalAlignment="Center">
+                                    <Ellipse.Style>
+                                        <Style TargetType="Ellipse">
+                                            <Setter Property="Fill" Value="{DynamicResource MutedTextBrush}" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsWatcherActive}" Value="True">
+                                                    <Setter Property="Fill" Value="{DynamicResource RunningGreenBrush}" />
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding IsWatcherError}" Value="True">
+                                                    <Setter Property="Fill" Value="{DynamicResource DangerTextBrush}" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Ellipse.Style>
+                                </Ellipse>
+                                <TextBlock Text="{Binding WatcherStatusBadgeText}"
+                                           FontSize="11"
+                                           VerticalAlignment="Center">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Foreground" Value="{DynamicResource SecondaryTextBrush}" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsWatcherActive}" Value="True">
+                                                    <Setter Property="Foreground" Value="{DynamicResource RunningGreenBrush}" />
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding IsWatcherError}" Value="True">
+                                                    <Setter Property="Foreground" Value="{DynamicResource DangerTextBrush}" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                                <TextBlock Text=" · 通过 SPAWN 启动自动生效"
+                                           FontSize="10.5"
+                                           Foreground="{DynamicResource MutedTextBrush}"
+                                           VerticalAlignment="Center"
+                                           Visibility="{Binding IsWatcherActive, Converter={StaticResource InvBoolToVis}}" />
+                            </StackPanel>
+                        </Border>
+
+                        <Button Style="{StaticResource AccentLinkButtonStyle}"
+                                Command="{Binding TogglePathsDrawerCommand}"
+                                ToolTip="点击展开存档路径配置，查看现存路径、未生成路径与拦截原因">
+                            <TextBlock Text="{Binding ResolvedLocationsSummaryText}"
+                                       FontSize="11.5"
+                                       TextTrimming="CharacterEllipsis" />
+                        </Button>
                     </StackPanel>
                 </DockPanel>
             </StackPanel>
         </Border>
 
         <!-- ================================================================ -->
-        <!-- ROW 2: Inline Fork / Rename Panels & Collapsible Cloud Drawer    -->
+        <!-- ROW 2: Banners, Paths Drawer, Inline Fork/Rename/Delete & Cloud  -->
         <!-- ================================================================ -->
         <StackPanel Grid.Row="2">
             <!-- Busy Banner -->
@@ -1061,6 +1205,344 @@
                            Foreground="{DynamicResource AccentBrush}" />
             </Border>
 
+            <!-- Watcher Error Detail Banner -->
+            <Border Background="{DynamicResource WarningSoftBannerBackgroundBrush}"
+                    BorderBrush="{DynamicResource DangerTextBrush}"
+                    BorderThickness="0,0,0,1"
+                    Padding="12,6"
+                    Visibility="{Binding IsWatcherError, Converter={StaticResource BoolToVis}}">
+                <TextBlock Text="{Binding WatcherStatusDetailText}"
+                           FontSize="12"
+                           Foreground="{DynamicResource DangerTextBrush}"
+                           TextWrapping="Wrap" />
+            </Border>
+
+            <!-- One-Time Legacy PreTrainer Migration Banner -->
+            <Border Background="{DynamicResource InfoBannerBackgroundBrush}"
+                    BorderBrush="{DynamicResource InfoBannerBorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="12,8"
+                    Margin="0,8,0,0"
+                    Visibility="{Binding ShowLegacyPreTrainerBanner, Converter={StaticResource BoolToVis}}">
+                <DockPanel LastChildFill="False">
+                    <TextBlock DockPanel.Dock="Left"
+                               Text="{Binding LegacyPreTrainerBannerText}"
+                               FontSize="12"
+                               Foreground="{DynamicResource PrimaryTextBrush}"
+                               VerticalAlignment="Center"
+                               TextWrapping="Wrap" />
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Button Style="{StaticResource PrimaryCapsuleButtonStyle}"
+                                Height="26"
+                                Padding="12,0"
+                                FontSize="11.5"
+                                Margin="8,0,6,0"
+                                Content="一键无损导入"
+                                Command="{Binding ImportLegacyPreTrainerSnapshotsCommand}" />
+                        <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                                Height="26"
+                                Padding="10,0"
+                                FontSize="11.5"
+                                Content="不再提示"
+                                Command="{Binding DismissLegacyImportBannerCommand}" />
+                    </StackPanel>
+                </DockPanel>
+            </Border>
+
+            <!-- Detached HEAD ("历史回溯中") Guidance Banner -->
+            <Border Background="{DynamicResource WarningSoftBannerBackgroundBrush}"
+                    BorderBrush="{DynamicResource WarningSoftBannerBorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="12,9"
+                    Margin="0,8,0,0"
+                    Visibility="{Binding IsDetachedHead, Converter={StaticResource BoolToVis}}">
+                <DockPanel LastChildFill="False">
+                    <StackPanel DockPanel.Dock="Left" VerticalAlignment="Center" Margin="0,0,12,0">
+                        <TextBlock Text="当前处于「历史回溯中」状态"
+                                   FontSize="12.5"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource WarningAmberBrush}" />
+                        <TextBlock Text="游戏当前加载的是历史时间点存档。建议先新建一条分支路线再继续游玩，或一键切回主线最新进度。"
+                                   FontSize="11.5"
+                                   Foreground="{DynamicResource PrimaryTextBrush}"
+                                   TextWrapping="Wrap"
+                                   Margin="0,2,0,0" />
+                    </StackPanel>
+                    <WrapPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Button Style="{StaticResource PrimaryCapsuleButtonStyle}"
+                                Height="28"
+                                Padding="12,0"
+                                FontSize="12"
+                                Margin="0,2,6,2"
+                                Content="以此节点新建分支路线"
+                                Command="{Binding OpenForkPopoverFromHeadCommand}" />
+                        <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                                Height="28"
+                                Padding="12,0"
+                                FontSize="12"
+                                Margin="0,2,0,2"
+                                Content="回到主线最新"
+                                Command="{Binding ReturnToMainLatestCommand}"
+                                IsEnabled="{Binding CanMutateDiskSaves}" />
+                    </WrapPanel>
+                </DockPanel>
+            </Border>
+
+            <!-- Inline Delete Branch Danger Confirmation Panel -->
+            <Border Background="{DynamicResource WarningSoftBannerBackgroundBrush}"
+                    BorderBrush="{DynamicResource DangerTextBrush}"
+                    BorderThickness="1"
+                    CornerRadius="10"
+                    Padding="14,10"
+                    Margin="0,8,0,0"
+                    Visibility="{Binding IsDeleteBranchConfirmOpen, Converter={StaticResource BoolToVis}}">
+                <DockPanel LastChildFill="False">
+                    <StackPanel DockPanel.Dock="Left" VerticalAlignment="Center" Margin="0,0,12,0">
+                        <TextBlock Text="{Binding DeleteBranchConfirmTitle}"
+                                   FontSize="13"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource DangerTextBrush}" />
+                        <TextBlock Text="{Binding DeleteBranchConfirmDescription}"
+                                   FontSize="12"
+                                   Foreground="{DynamicResource PrimaryTextBrush}"
+                                   TextWrapping="Wrap"
+                                   Margin="0,3,0,0" />
+                    </StackPanel>
+                    <WrapPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Button Style="{StaticResource WarningPrimaryCapsuleButtonStyle}"
+                                Height="30"
+                                Padding="14,0"
+                                FontSize="12"
+                                Margin="0,2,6,2"
+                                Content="确认删除路线"
+                                Command="{Binding ConfirmDeleteBranchCommand}" />
+                        <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                                Height="30"
+                                Padding="12,0"
+                                FontSize="12"
+                                Margin="0,2,0,2"
+                                Content="取消"
+                                Command="{Binding CancelDeleteBranchCommand}" />
+                    </WrapPanel>
+                </DockPanel>
+            </Border>
+
+            <!-- Expandable Save Paths Config Drawer (P0-3 Custom Locations + Warnings) -->
+            <Border Background="{DynamicResource SubtleSurfaceBrush}"
+                    BorderBrush="{DynamicResource DividerBrush}"
+                    BorderThickness="1"
+                    CornerRadius="10"
+                    Padding="14,11"
+                    Margin="0,8,0,0"
+                    Visibility="{Binding IsPathsDrawerOpen, Converter={StaticResource BoolToVis}}">
+                <StackPanel>
+                    <DockPanel LastChildFill="False">
+                        <TextBlock DockPanel.Dock="Left"
+                                   Text="存档路径配置（支持添加自定义存档目录、单文件或 HKCU 注册表键）"
+                                   FontSize="13"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource PrimaryTextBrush}"
+                                   VerticalAlignment="Center" />
+                        <WrapPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                            <Button Style="{StaticResource PrimaryCapsuleButtonStyle}"
+                                    Height="28"
+                                    Padding="11,0"
+                                    FontSize="11.5"
+                                    Margin="0,2,6,2"
+                                    Content="+ 添加自定义目录"
+                                    Command="{Binding AddCustomFolderCommand}" />
+                            <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                                    Height="28"
+                                    Padding="11,0"
+                                    FontSize="11.5"
+                                    Margin="0,2,6,2"
+                                    Content="+ 添加单文件"
+                                    Command="{Binding AddCustomFileCommand}" />
+                            <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                                    Height="28"
+                                    Padding="10,0"
+                                    FontSize="11.5"
+                                    Margin="0,2,6,2"
+                                    Content="刷新探测"
+                                    Command="{Binding RefreshSaveLocationsCommand}" />
+                            <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                                    Height="28"
+                                    Padding="10,0"
+                                    FontSize="11.5"
+                                    Margin="0,2,0,2"
+                                    Content="收起"
+                                    Command="{Binding TogglePathsDrawerCommand}" />
+                        </WrapPanel>
+                    </DockPanel>
+
+                    <!-- Add Custom HKCU Registry Key Row -->
+                    <DockPanel LastChildFill="True" Margin="0,8,0,0">
+                        <Button DockPanel.Dock="Right"
+                                Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                                Height="28"
+                                Padding="11,0"
+                                FontSize="11.5"
+                                Margin="8,0,0,0"
+                                Content="+ 添加注册表键"
+                                Command="{Binding AddCustomRegistryKeyCommand}" />
+                        <Grid>
+                            <TextBlock Text="可选：输入 HKCU\Software\开发商\游戏名 添加注册表存档键…"
+                                       FontSize="11.5"
+                                       Foreground="{DynamicResource MutedTextBrush}"
+                                       Margin="10,0,0,0"
+                                       VerticalAlignment="Center"
+                                       IsHitTestVisible="False"
+                                       Visibility="{Binding CustomRegistryKeyInput, Converter={StaticResource StrNotEmptyToVis}, ConverterParameter=Invert}" />
+                            <TextBox Height="28"
+                                     Padding="8,3"
+                                     FontSize="11.5"
+                                     FontFamily="{StaticResource SpawnMonoFont}"
+                                     Background="{DynamicResource CapsuleInputBackgroundBrush}"
+                                     BorderBrush="{DynamicResource ControlBorderBrush}"
+                                     BorderThickness="1"
+                                     Foreground="{DynamicResource PrimaryTextBrush}"
+                                     CaretBrush="{DynamicResource AccentBrush}"
+                                     Text="{Binding CustomRegistryKeyInput, UpdateSourceTrigger=PropertyChanged}">
+                                <TextBox.InputBindings>
+                                    <KeyBinding Key="Return" Command="{Binding AddCustomRegistryKeyCommand}" />
+                                </TextBox.InputBindings>
+                            </TextBox>
+                        </Grid>
+                    </DockPanel>
+
+                    <!-- Probed & Custom Locations List -->
+                    <ItemsControl ItemsSource="{Binding ResolvedLocationItems}"
+                                  Margin="0,8,0,0"
+                                  Visibility="{Binding HasResolvedLocationItems, Converter={StaticResource BoolToVis}}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate DataType="{x:Type savesVm:ResolvedSaveLocationItemViewModel}">
+                                <Border BorderBrush="{DynamicResource DividerBrush}"
+                                        BorderThickness="0,1,0,0"
+                                        Padding="0,6">
+                                    <DockPanel LastChildFill="True">
+                                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center" Margin="8,0,0,0">
+                                            <TextBlock Text="{Binding MetricsText}"
+                                                       FontFamily="{StaticResource SpawnMonoFont}"
+                                                       FontSize="11"
+                                                       Foreground="{DynamicResource MutedTextBrush}"
+                                                       VerticalAlignment="Center"
+                                                       Margin="0,0,8,0" />
+                                            <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                                                    Height="24"
+                                                    Padding="8,0"
+                                                    FontSize="11"
+                                                    Margin="0,0,4,0"
+                                                    Content="打开"
+                                                    Command="{Binding DataContext.OpenSpecificLocationFolderCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                    CommandParameter="{Binding}"
+                                                    Visibility="{Binding Exists, Converter={StaticResource BoolToVis}}" />
+                                            <Button Style="{StaticResource DangerMenuItemButtonStyle}"
+                                                    Height="24"
+                                                    Padding="8,0"
+                                                    FontSize="11"
+                                                    Content="移除"
+                                                    Command="{Binding DataContext.RemoveCustomLocationCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                    CommandParameter="{Binding}"
+                                                    Visibility="{Binding IsCustom, Converter={StaticResource BoolToVis}}" />
+                                        </StackPanel>
+
+                                        <StackPanel VerticalAlignment="Center">
+                                            <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                <Border CornerRadius="4"
+                                                        Background="{DynamicResource SaveTagSaveBgBrush}"
+                                                        Padding="5,1"
+                                                        Margin="0,0,6,2">
+                                                    <TextBlock Text="{Binding CategoryTag}"
+                                                               FontFamily="{StaticResource SpawnMonoFont}"
+                                                               FontSize="10.5"
+                                                               FontWeight="SemiBold"
+                                                               Foreground="{DynamicResource SaveTagSaveFgBrush}" />
+                                                </Border>
+                                                <Border CornerRadius="4"
+                                                        Padding="5,1"
+                                                        Margin="0,0,6,2">
+                                                    <Border.Style>
+                                                        <Style TargetType="Border">
+                                                            <Setter Property="Background" Value="{DynamicResource SubtleSurfaceBrush}" />
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding Exists}" Value="True">
+                                                                    <Setter Property="Background" Value="{DynamicResource RunningGreenSoftBrush}" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Border.Style>
+                                                    <TextBlock Text="{Binding ExistsBadgeText}" FontSize="10.5" FontWeight="SemiBold">
+                                                        <TextBlock.Style>
+                                                            <Style TargetType="TextBlock">
+                                                                <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}" />
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding Exists}" Value="True">
+                                                                        <Setter Property="Foreground" Value="{DynamicResource RunningGreenBrush}" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </TextBlock.Style>
+                                                    </TextBlock>
+                                                </Border>
+                                                <Border CornerRadius="4"
+                                                        Background="{DynamicResource SaveBranchLane0SoftBrush}"
+                                                        Padding="5,1"
+                                                        Margin="0,0,6,2">
+                                                    <TextBlock Text="{Binding SourceLabel}"
+                                                               FontSize="10.5"
+                                                               Foreground="{DynamicResource AccentBrush}" />
+                                                </Border>
+                                            </WrapPanel>
+                                            <TextBlock Text="{Binding ResolvedFullPath}"
+                                                       ToolTip="{Binding LogicalTemplatePath}"
+                                                       FontFamily="{StaticResource SpawnMonoFont}"
+                                                       FontSize="11.5"
+                                                       Foreground="{DynamicResource PrimaryTextBrush}"
+                                                       TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+                                    </DockPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <TextBlock Text="暂未探测到存档路径，请点击上方按钮手动添加该游戏的存档目录或单文件。"
+                               FontSize="12"
+                               Foreground="{DynamicResource MutedTextBrush}"
+                               Margin="0,8,0,0"
+                               Visibility="{Binding HasResolvedLocationItems, Converter={StaticResource InvBoolToVis}}" />
+
+                    <!-- Safety Fence Warnings -->
+                    <Border CornerRadius="6"
+                            Background="{DynamicResource WarningSoftBannerBackgroundBrush}"
+                            BorderBrush="{DynamicResource WarningSoftBannerBorderBrush}"
+                            BorderThickness="1"
+                            Padding="10,7"
+                            Margin="0,8,0,0"
+                            Visibility="{Binding HasResolvedLocationWarnings, Converter={StaticResource BoolToVis}}">
+                        <StackPanel>
+                            <TextBlock Text="安全围栏拦截 / 探测提示："
+                                       FontSize="11.5"
+                                       FontWeight="SemiBold"
+                                       Foreground="{DynamicResource WarningAmberBrush}" />
+                            <ItemsControl ItemsSource="{Binding ResolvedLocationWarnings}" Margin="0,3,0,0">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding}"
+                                                   FontSize="11.5"
+                                                   Foreground="{DynamicResource SecondaryTextBrush}"
+                                                   TextWrapping="Wrap"
+                                                   Margin="0,1,0,0" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </Border>
+
             <!-- Fork New Branch Inline Panel -->
             <Border Background="{DynamicResource SubtleSurfaceBrush}"
                     BorderBrush="{DynamicResource AccentBrush}"
@@ -1072,7 +1554,7 @@
                 <StackPanel>
                     <DockPanel LastChildFill="False">
                         <TextBlock DockPanel.Dock="Left"
-                                   Text="创建新存档分支（分叉时间线）"
+                                   Text="创建新存档分支路线"
                                    FontSize="13.5"
                                    FontWeight="SemiBold"
                                    Foreground="{DynamicResource PrimaryTextBrush}" />
@@ -1086,10 +1568,10 @@
                     </DockPanel>
 
                     <WrapPanel Orientation="Horizontal" Margin="0,9,0,0" VerticalAlignment="Center">
-                        <TextBox Width="196"
+                        <TextBox Width="178"
                                  Height="30"
                                  Padding="9,4"
-                                 Margin="0,0,10,6"
+                                 Margin="0,0,8,6"
                                  FontSize="12.5"
                                  Background="{DynamicResource CapsuleInputBackgroundBrush}"
                                  BorderBrush="{DynamicResource ControlBorderBrush}"
@@ -1097,9 +1579,39 @@
                                  Foreground="{DynamicResource PrimaryTextBrush}"
                                  CaretBrush="{DynamicResource AccentBrush}"
                                  Text="{Binding ForkBranchNameInput, UpdateSourceTrigger=PropertyChanged}"
-                                 ToolTip="输入新分支名称（例如 boss-rush、bad-ending）" />
+                                 ToolTip="输入新分支路线名称（例如 boss-rush、bad-ending）">
+                            <TextBox.InputBindings>
+                                <KeyBinding Key="Return" Command="{Binding ConfirmForkBranchCommand}" />
+                                <KeyBinding Key="Escape" Command="{Binding CancelForkPopoverCommand}" />
+                            </TextBox.InputBindings>
+                        </TextBox>
 
-                        <!-- 8-Color Lane Swatch Picker -->
+                        <Grid Width="190" Height="30" Margin="0,0,10,6">
+                            <TextBlock Text="路线说明（可选）…"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource MutedTextBrush}"
+                                       Margin="10,0,0,0"
+                                       VerticalAlignment="Center"
+                                       IsHitTestVisible="False"
+                                       Visibility="{Binding ForkBranchDescriptionInput, Converter={StaticResource StrNotEmptyToVis}, ConverterParameter=Invert}" />
+                            <TextBox Height="30"
+                                     Padding="9,4"
+                                     FontSize="12"
+                                     Background="{DynamicResource CapsuleInputBackgroundBrush}"
+                                     BorderBrush="{DynamicResource ControlBorderBrush}"
+                                     BorderThickness="1"
+                                     Foreground="{DynamicResource PrimaryTextBrush}"
+                                     CaretBrush="{DynamicResource AccentBrush}"
+                                     Text="{Binding ForkBranchDescriptionInput, UpdateSourceTrigger=PropertyChanged}"
+                                     ToolTip="可选：填写这条存档路线的用途说明">
+                                <TextBox.InputBindings>
+                                    <KeyBinding Key="Return" Command="{Binding ConfirmForkBranchCommand}" />
+                                    <KeyBinding Key="Escape" Command="{Binding CancelForkPopoverCommand}" />
+                                </TextBox.InputBindings>
+                            </TextBox>
+                        </Grid>
+
+                        <!-- 8-Color Lane Swatch Picker with Selected Highlight Ring -->
                         <ItemsControl ItemsSource="{Binding BranchColorPalette}" Margin="0,0,12,6" VerticalAlignment="Center">
                             <ItemsControl.ItemsPanel>
                                 <ItemsPanelTemplate>
@@ -1109,8 +1621,8 @@
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate DataType="{x:Type savesVm:SaveBranchColorOption}">
                                     <Button Cursor="Hand"
-                                            Width="22"
-                                            Height="22"
+                                            Width="24"
+                                            Height="24"
                                             Margin="2,0"
                                             ToolTip="{Binding Label}"
                                             FocusVisualStyle="{x:Null}"
@@ -1118,10 +1630,28 @@
                                             CommandParameter="{Binding ColorHex}">
                                         <Button.Template>
                                             <ControlTemplate TargetType="Button">
-                                                <Border CornerRadius="11"
-                                                        Background="{Binding SwatchBrush}"
-                                                        BorderBrush="{DynamicResource PageBackgroundBrush}"
-                                                        BorderThickness="2" />
+                                                <Border CornerRadius="12"
+                                                        Padding="2">
+                                                    <Border.Style>
+                                                        <Style TargetType="Border">
+                                                            <Setter Property="BorderBrush" Value="Transparent" />
+                                                            <Setter Property="BorderThickness" Value="2" />
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsSelectedForFork}" Value="True">
+                                                                    <Setter Property="BorderBrush" Value="{DynamicResource PrimaryTextBrush}" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Border.Style>
+                                                    <Border CornerRadius="10" Background="{Binding SwatchBrush}">
+                                                        <Ellipse Width="6"
+                                                                 Height="6"
+                                                                 Fill="White"
+                                                                 HorizontalAlignment="Center"
+                                                                 VerticalAlignment="Center"
+                                                                 Visibility="{Binding IsSelectedForFork, Converter={StaticResource BoolToVis}}" />
+                                                    </Border>
+                                                </Border>
                                             </ControlTemplate>
                                         </Button.Template>
                                     </Button>
@@ -1130,7 +1660,7 @@
                         </ItemsControl>
 
                         <CheckBox Style="{StaticResource ModernSwitchCheckBoxStyle}"
-                                  Content="分叉后立即切换并检出"
+                                  Content="分叉后立即载入到游戏"
                                   FontSize="12"
                                   Margin="0,0,12,6"
                                   IsChecked="{Binding SwitchToForkedBranch, Mode=TwoWay}"
@@ -1141,7 +1671,7 @@
                                 Padding="14,0"
                                 FontSize="12.5"
                                 Margin="0,0,6,6"
-                                Content="创建分支"
+                                Content="创建路线"
                                 Command="{Binding ConfirmForkBranchCommand}" />
                         <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
                                 Height="30"
@@ -1163,7 +1693,7 @@
                     Margin="0,8,0,0"
                     Visibility="{Binding IsRenameBranchPanelOpen, Converter={StaticResource BoolToVis}}">
                 <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock Text="重命名当前分支："
+                    <TextBlock Text="重命名当前路线："
                                FontSize="12.5"
                                FontWeight="SemiBold"
                                VerticalAlignment="Center"
@@ -1177,7 +1707,12 @@
                              BorderBrush="{DynamicResource ControlBorderBrush}"
                              BorderThickness="1"
                              Foreground="{DynamicResource PrimaryTextBrush}"
-                             Text="{Binding RenameBranchNameInput, UpdateSourceTrigger=PropertyChanged}" />
+                             Text="{Binding RenameBranchNameInput, UpdateSourceTrigger=PropertyChanged}">
+                        <TextBox.InputBindings>
+                            <KeyBinding Key="Return" Command="{Binding ConfirmRenameBranchCommand}" />
+                            <KeyBinding Key="Escape" Command="{Binding CancelRenameBranchCommand}" />
+                        </TextBox.InputBindings>
+                    </TextBox>
                     <ItemsControl ItemsSource="{Binding BranchColorPalette}" Margin="0,0,12,4" VerticalAlignment="Center">
                         <ItemsControl.ItemsPanel>
                             <ItemsPanelTemplate>
@@ -1187,8 +1722,8 @@
                         <ItemsControl.ItemTemplate>
                             <DataTemplate DataType="{x:Type savesVm:SaveBranchColorOption}">
                                 <Button Cursor="Hand"
-                                        Width="20"
-                                        Height="20"
+                                        Width="22"
+                                        Height="22"
                                         Margin="2,0"
                                         ToolTip="{Binding Label}"
                                         FocusVisualStyle="{x:Null}"
@@ -1196,10 +1731,27 @@
                                         CommandParameter="{Binding ColorHex}">
                                     <Button.Template>
                                         <ControlTemplate TargetType="Button">
-                                            <Border CornerRadius="10"
-                                                    Background="{Binding SwatchBrush}"
-                                                    BorderBrush="{DynamicResource PageBackgroundBrush}"
-                                                    BorderThickness="1.5" />
+                                            <Border CornerRadius="11" Padding="1.5">
+                                                <Border.Style>
+                                                    <Style TargetType="Border">
+                                                        <Setter Property="BorderBrush" Value="Transparent" />
+                                                        <Setter Property="BorderThickness" Value="2" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsSelectedForRename}" Value="True">
+                                                                <Setter Property="BorderBrush" Value="{DynamicResource PrimaryTextBrush}" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Border.Style>
+                                                <Border CornerRadius="9" Background="{Binding SwatchBrush}">
+                                                    <Ellipse Width="5"
+                                                             Height="5"
+                                                             Fill="White"
+                                                             HorizontalAlignment="Center"
+                                                             VerticalAlignment="Center"
+                                                             Visibility="{Binding IsSelectedForRename, Converter={StaticResource BoolToVis}}" />
+                                                </Border>
+                                            </Border>
                                         </ControlTemplate>
                                     </Button.Template>
                                 </Button>
@@ -1223,7 +1775,7 @@
                 </WrapPanel>
             </Border>
 
-            <!-- Collapsible Cloud Sync Drawer (32MB SPPK Plan + Execute) -->
+            <!-- Collapsible Cloud Sync Drawer -->
             <Border Background="{DynamicResource SubtleSurfaceBrush}"
                     BorderBrush="{DynamicResource DividerBrush}"
                     BorderThickness="1"
@@ -1232,75 +1784,163 @@
                     Margin="0,8,0,0"
                     Visibility="{Binding IsCloudDrawerOpen, Converter={StaticResource BoolToVis}}">
                 <StackPanel>
-                    <DockPanel LastChildFill="False">
-                        <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" VerticalAlignment="Center">
-                            <TextBlock Text="去中心化云同步（32MB SPPK 增量封包）"
+                    <!-- Empty State Guidance Card when no cloud endpoint is configured -->
+                    <DockPanel LastChildFill="False"
+                               Visibility="{Binding HasNoCloudEndpoints, Converter={StaticResource BoolToVis}}">
+                        <StackPanel DockPanel.Dock="Left" VerticalAlignment="Center" Margin="0,0,12,0">
+                            <TextBlock Text="尚未配置云同步端点"
                                        FontSize="13.5"
                                        FontWeight="SemiBold"
-                                       Foreground="{DynamicResource PrimaryTextBrush}"
-                                       VerticalAlignment="Center" />
-                            <ComboBox Style="{StaticResource SaveThemeComboBoxStyle}"
-                                      Background="{DynamicResource CapsuleInputBackgroundBrush}"
-                                      BorderBrush="{DynamicResource ControlBorderBrush}"
-                                      BorderThickness="1"
-                                      Width="220"
-                                      Height="28"
-                                      Margin="12,0,8,0"
-                                      FontSize="12"
-                                      ItemsSource="{Binding AvailableCloudEndpoints}"
-                                      SelectedItem="{Binding SelectedCloudEndpoint, Mode=TwoWay}"
-                                      DisplayMemberPath="DisplayName" />
-                            <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
-                                    Height="28"
-                                    Padding="10,0"
-                                    FontSize="12"
-                                    Content="管理云端点"
-                                    Command="{Binding OpenSavesSettingsCommand}" />
+                                       Foreground="{DynamicResource PrimaryTextBrush}" />
+                            <TextBlock Text="前往「存档与云同步设置」添加本地同步目录、NAS / WebDAV 或 S3 / R2 存储桶，即可在多台电脑之间安全同步进度。"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource SecondaryTextBrush}"
+                                       TextWrapping="Wrap"
+                                       Margin="0,3,0,0" />
                         </StackPanel>
-
-                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
-                            <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
-                                    Height="28"
-                                    Padding="12,0"
-                                    FontSize="12"
-                                    Margin="0,0,6,0"
-                                    Content="检查同步计划"
-                                    Command="{Binding PlanCloudSyncCommand}"
-                                    IsEnabled="{Binding IsCloudSyncBusy, Converter={StaticResource EqToBool}, ConverterParameter=False}" />
-                            <Button Style="{StaticResource PrimaryCapsuleButtonStyle}"
-                                    Height="28"
-                                    Padding="14,0"
-                                    FontSize="12"
-                                    Content="执行同步"
-                                    Command="{Binding ExecuteCloudSyncCommand}"
-                                    IsEnabled="{Binding CanExecuteDirectCloudSync}" />
-                        </StackPanel>
+                        <Button DockPanel.Dock="Right"
+                                Style="{StaticResource PrimaryCapsuleButtonStyle}"
+                                Height="30"
+                                Padding="14,0"
+                                FontSize="12"
+                                VerticalAlignment="Center"
+                                Content="前往配置云端点"
+                                Command="{Binding OpenSavesSettingsCommand}" />
                     </DockPanel>
 
-                    <TextBlock Text="{Binding CloudPlanSummaryText}"
-                               FontSize="12"
-                               Foreground="{DynamicResource SecondaryTextBrush}"
-                               TextWrapping="Wrap"
-                               Margin="0,8,0,0" />
-                    <TextBlock Text="{Binding CloudPlanTransferMetricsText}"
-                               FontFamily="{StaticResource SpawnMonoFont}"
-                               FontSize="11.5"
-                               Foreground="{DynamicResource AccentBrush}"
-                               Margin="0,3,0,0"
-                               Visibility="{Binding CloudPlanTransferMetricsText, Converter={StaticResource StrNotEmptyToVis}}" />
+                    <!-- Configured Cloud Endpoint Controls -->
+                    <StackPanel Visibility="{Binding HasCloudEndpoints, Converter={StaticResource BoolToVis}}">
+                        <DockPanel LastChildFill="False">
+                            <WrapPanel DockPanel.Dock="Left" Orientation="Horizontal" VerticalAlignment="Center">
+                                <TextBlock Text="跨设备云同步"
+                                           ToolTip="底层使用不可变 32MB SPPK 增量分包与 64 代父指针链防覆盖"
+                                           FontSize="13.5"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource PrimaryTextBrush}"
+                                           VerticalAlignment="Center" />
+                                <ComboBox Style="{StaticResource SaveThemeComboBoxStyle}"
+                                          Background="{DynamicResource CapsuleInputBackgroundBrush}"
+                                          BorderBrush="{DynamicResource ControlBorderBrush}"
+                                          BorderThickness="1"
+                                          Width="210"
+                                          Height="28"
+                                          Margin="10,2,8,2"
+                                          FontSize="12"
+                                          ItemsSource="{Binding AvailableCloudEndpoints}"
+                                          SelectedItem="{Binding SelectedCloudEndpoint, Mode=TwoWay}"
+                                          DisplayMemberPath="DisplayName" />
+                                <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                                        Height="28"
+                                        Padding="10,0"
+                                        FontSize="12"
+                                        Margin="0,2,0,2"
+                                        Content="管理云端点"
+                                        Command="{Binding OpenSavesSettingsCommand}" />
+                            </WrapPanel>
 
-                    <StackPanel Margin="0,8,0,0" Visibility="{Binding IsCloudSyncBusy, Converter={StaticResource BoolToVis}}">
-                        <TextBlock Text="{Binding CloudSyncProgressText}"
+                            <WrapPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                                <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                                        Height="28"
+                                        Padding="11,0"
+                                        FontSize="12"
+                                        Margin="0,2,6,2"
+                                        Content="检查同步状态"
+                                        Command="{Binding PlanCloudSyncCommand}"
+                                        IsEnabled="{Binding IsCloudSyncBusy, Converter={StaticResource EqToBool}, ConverterParameter=False}" />
+                                <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                                        Height="28"
+                                        Padding="11,0"
+                                        FontSize="12"
+                                        Margin="0,2,6,2"
+                                        Content="推送全部分支"
+                                        ToolTip="同步当前路线并将全部本地侧分支一并推送至云端"
+                                        Command="{Binding PushAllBranchesCommand}"
+                                        IsEnabled="{Binding CanExecuteDirectCloudSync}" />
+                                <Button Style="{StaticResource PrimaryCapsuleButtonStyle}"
+                                        Height="28"
+                                        Padding="14,0"
+                                        FontSize="12"
+                                        Margin="0,2,0,2"
+                                        Content="立即同步"
+                                        Command="{Binding ExecuteCloudSyncCommand}"
+                                        IsEnabled="{Binding CanExecuteDirectCloudSync}" />
+                            </WrapPanel>
+                        </DockPanel>
+
+                        <!-- Cross-Machine Stable CloudGameKey Binding & Branch Sync Scope -->
+                        <WrapPanel Orientation="Horizontal" Margin="0,8,0,0" VerticalAlignment="Center">
+                            <TextBlock Text="云端槽位键："
+                                       FontSize="11.5"
+                                       Foreground="{DynamicResource SecondaryTextBrush}"
+                                       VerticalAlignment="Center"
+                                       ToolTip="两台电脑对同一游戏使用相同的云端槽位键即可跨设备同步（默认自动按 Steam / GOG / 标题生成）" />
+                            <TextBox Width="210"
+                                     Height="26"
+                                     Padding="8,2"
+                                     Margin="4,2,6,2"
+                                     FontFamily="{StaticResource SpawnMonoFont}"
+                                     FontSize="11.5"
+                                     Background="{DynamicResource CapsuleInputBackgroundBrush}"
+                                     BorderBrush="{DynamicResource ControlBorderBrush}"
+                                     BorderThickness="1"
+                                     Foreground="{DynamicResource PrimaryTextBrush}"
+                                     CaretBrush="{DynamicResource AccentBrush}"
+                                     Text="{Binding CloudGameKeyInput, UpdateSourceTrigger=PropertyChanged}">
+                                <TextBox.InputBindings>
+                                    <KeyBinding Key="Return" Command="{Binding SaveCloudGameKeyCommand}" />
+                                </TextBox.InputBindings>
+                            </TextBox>
+                            <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                                    Height="26"
+                                    Padding="10,0"
+                                    FontSize="11.5"
+                                    Margin="0,2,6,2"
+                                    Content="保存键名"
+                                    Command="{Binding SaveCloudGameKeyCommand}" />
+                            <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                                    Height="26"
+                                    Padding="10,0"
+                                    FontSize="11.5"
+                                    Margin="0,2,12,2"
+                                    Content="恢复自动"
+                                    Command="{Binding ResetCloudGameKeyCommand}"
+                                    Visibility="{Binding HasCustomCloudGameKey, Converter={StaticResource BoolToVis}}" />
+                            <CheckBox Style="{StaticResource ModernSwitchCheckBoxStyle}"
+                                      Content="同步时一并推送全部分支路线"
+                                      FontSize="11.5"
+                                      Margin="0,2,0,2"
+                                      IsChecked="{Binding SyncAllBranchesToCloud, Mode=TwoWay}" />
+                        </WrapPanel>
+
+                        <TextBlock Text="{Binding CloudSyncScopeText}"
                                    FontSize="11.5"
-                                   Foreground="{DynamicResource SecondaryTextBrush}" />
-                        <ProgressBar Minimum="0"
-                                     Maximum="100"
-                                     Value="{Binding CloudSyncProgressPercent, Mode=OneWay}"
-                                     Height="5"
-                                     Margin="0,4,0,0"
-                                     BorderThickness="0"
-                                     Background="{DynamicResource DividerBrush}"
-                                     Foreground="{DynamicResource AccentBrush}" />
+                                   Foreground="{DynamicResource MutedTextBrush}"
+                                   Margin="0,4,0,0" />
+                        <TextBlock Text="{Binding CloudPlanSummaryText}"
+                                   FontSize="12"
+                                   Foreground="{DynamicResource SecondaryTextBrush}"
+                                   TextWrapping="Wrap"
+                                   Margin="0,5,0,0" />
+                        <TextBlock Text="{Binding CloudPlanTransferMetricsText}"
+                                   FontFamily="{StaticResource SpawnMonoFont}"
+                                   FontSize="11.5"
+                                   Foreground="{DynamicResource AccentBrush}"
+                                   Margin="0,3,0,0"
+                                   Visibility="{Binding CloudPlanTransferMetricsText, Converter={StaticResource StrNotEmptyToVis}}" />
+
+                        <StackPanel Margin="0,8,0,0" Visibility="{Binding IsCloudSyncBusy, Converter={StaticResource BoolToVis}}">
+                            <TextBlock Text="{Binding CloudSyncProgressText}"
+                                       FontSize="11.5"
+                                       Foreground="{DynamicResource SecondaryTextBrush}" />
+                            <ProgressBar Minimum="0"
+                                         Maximum="100"
+                                         Value="{Binding CloudSyncProgressPercent, Mode=OneWay}"
+                                         Height="5"
+                                         Margin="0,4,0,0"
+                                         BorderThickness="0"
+                                         Background="{DynamicResource DividerBrush}"
+                                         Foreground="{DynamicResource AccentBrush}" />
+                        </StackPanel>
                     </StackPanel>
                 </StackPanel>
             </Border>
@@ -1317,7 +1957,8 @@
 
             <!-- Left (*): Virtualized Recycling Branching Save Tree ListBox -->
             <Grid Grid.Column="0">
-                <ListBox ItemsSource="{Binding GraphRows}"
+                <ListBox x:Name="SaveTreeListBox"
+                         ItemsSource="{Binding GraphRows}"
                          SelectedItem="{Binding SelectedNode, Mode=TwoWay}"
                          Background="Transparent"
                          BorderThickness="0"
@@ -1344,6 +1985,31 @@
                             <Setter Property="Margin" Value="0" />
                             <Setter Property="HorizontalContentAlignment" Value="Stretch" />
                             <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+                            <Setter Property="Tag" Value="{Binding DataContext, RelativeSource={RelativeSource AncestorType=UserControl}}" />
+                            <EventSetter Event="PreviewMouseRightButtonDown" Handler="OnTreeItemPreviewMouseRightButtonDown" />
+                            <Setter Property="ContextMenu">
+                                <Setter.Value>
+                                    <ContextMenu DataContext="{Binding PlacementTarget.Tag, RelativeSource={RelativeSource Self}}">
+                                        <MenuItem Header="载入到游戏（回滚）"
+                                                  Command="{Binding RequestRollbackSelectedCommand}"
+                                                  IsEnabled="{Binding CanRollbackSelected}" />
+                                        <MenuItem Header="从此节点新建分支路线"
+                                                  Command="{Binding OpenForkPopoverFromSelectedCommand}"
+                                                  IsEnabled="{Binding CanForkFromSelected}" />
+                                        <Separator />
+                                        <MenuItem Header="{Binding SelectedNodePinActionText}"
+                                                  Command="{Binding TogglePinSelectedCommand}" />
+                                        <MenuItem Header="编辑备注"
+                                                  Command="{Binding BeginEditNoteCommand}" />
+                                        <MenuItem Header="导出快照副本到文件夹…"
+                                                  Command="{Binding ExportSelectedSnapshotCommand}" />
+                                        <Separator />
+                                        <MenuItem Header="删除此快照…"
+                                                  Command="{Binding RequestDeleteSelectedSnapshotCommand}"
+                                                  IsEnabled="{Binding CanDeleteSelectedSnapshot}" />
+                                    </ContextMenu>
+                                </Setter.Value>
+                            </Setter>
                             <Setter Property="Template">
                                 <Setter.Value>
                                     <ControlTemplate TargetType="ListBoxItem">
@@ -1411,7 +2077,7 @@
                                                             Padding="6,1"
                                                             Margin="0,0,5,0"
                                                             VerticalAlignment="Center">
-                                                        <TextBlock Text="{Binding Name}"
+                                                        <TextBlock Text="{Binding DisplayName}"
                                                                    FontFamily="{StaticResource SpawnMonoFont}"
                                                                    FontSize="10.5"
                                                                    FontWeight="SemiBold"
@@ -1490,42 +2156,119 @@
                     </ListBox.ItemTemplate>
                 </ListBox>
 
-                <!-- Gentle Empty State -->
-                <StackPanel HorizontalAlignment="Center"
-                            VerticalAlignment="Center"
-                            MaxWidth="420"
-                            Visibility="{Binding HasVisibleGraphRows, Converter={StaticResource InvBoolToVis}}">
-                    <Border Width="48"
-                            Height="48"
-                            CornerRadius="12"
-                            Background="{DynamicResource SubtleSurfaceBrush}"
-                            BorderBrush="{DynamicResource DividerBrush}"
-                            BorderThickness="1"
-                            HorizontalAlignment="Center">
-                        <Path Data="M6,4 V20 M18,6 V10 C18,13 15,14 12,14 H6 M4,6 A2,2 0 1,0 8,6 A2,2 0 1,0 4,6 M16,6 A2,2 0 1,0 20,6 A2,2 0 1,0 16,6 M4,18 A2,2 0 1,0 8,18 A2,2 0 1,0 4,18"
-                              Stroke="{DynamicResource MutedTextBrush}"
-                              StrokeThickness="1.6"
-                              StrokeStartLineCap="Round"
-                              StrokeEndLineCap="Round"
-                              Stretch="Uniform"
-                              Width="22"
-                              Height="22"
-                              HorizontalAlignment="Center"
-                              VerticalAlignment="Center" />
-                    </Border>
-                    <TextBlock Text="尚无符合条件的存档快照"
-                               FontSize="15"
-                               FontWeight="SemiBold"
-                               Foreground="{DynamicResource PrimaryTextBrush}"
-                               HorizontalAlignment="Center"
-                               Margin="0,12,0,0" />
-                    <TextBlock Text="点击右上角「创建快照」为当前存档建立第一个时间节点，之后可从任意历史节点分叉出多条剧情线或挑战分支。"
-                               FontSize="12.5"
-                               Foreground="{DynamicResource SecondaryTextBrush}"
-                               TextAlignment="Center"
-                               TextWrapping="Wrap"
-                               Margin="0,6,0,0" />
-                </StackPanel>
+                <!-- Three Differentiated Empty States with Direct CTAs -->
+                <Grid Visibility="{Binding HasVisibleGraphRows, Converter={StaticResource InvBoolToVis}}">
+                    <!-- Empty State 1: Save paths detected, 0 snapshots yet -->
+                    <StackPanel HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                MaxWidth="440"
+                                Visibility="{Binding ShowEmptyNoSnapshotsWithPaths, Converter={StaticResource BoolToVis}}">
+                        <Border Width="48"
+                                Height="48"
+                                CornerRadius="12"
+                                Background="{DynamicResource SubtleSurfaceBrush}"
+                                BorderBrush="{DynamicResource DividerBrush}"
+                                BorderThickness="1"
+                                HorizontalAlignment="Center">
+                            <Path Data="M6,4 V20 M18,6 V10 C18,13 15,14 12,14 H6 M4,6 A2,2 0 1,0 8,6 A2,2 0 1,0 4,6 M16,6 A2,2 0 1,0 20,6 A2,2 0 1,0 16,6 M4,18 A2,2 0 1,0 8,18 A2,2 0 1,0 4,18"
+                                  Stroke="{DynamicResource MutedTextBrush}"
+                                  StrokeThickness="1.6"
+                                  StrokeStartLineCap="Round"
+                                  StrokeEndLineCap="Round"
+                                  Stretch="Uniform"
+                                  Width="22"
+                                  Height="22"
+                                  HorizontalAlignment="Center"
+                                  VerticalAlignment="Center" />
+                        </Border>
+                        <TextBlock Text="尚未创建第一个存档快照"
+                                   FontSize="15"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource PrimaryTextBrush}"
+                                   HorizontalAlignment="Center"
+                                   Margin="0,12,0,0" />
+                        <TextBlock Text="已定位到该游戏的存档路径规则。点击下方按钮建立第一个时间节点，之后可随时回滚或开启多条独立分支路线。"
+                                   FontSize="12.5"
+                                   Foreground="{DynamicResource SecondaryTextBrush}"
+                                   TextAlignment="Center"
+                                   TextWrapping="Wrap"
+                                   Margin="0,6,0,14" />
+                        <WrapPanel HorizontalAlignment="Center">
+                            <Button Style="{StaticResource PrimaryCapsuleButtonStyle}"
+                                    Height="34"
+                                    Padding="16,0"
+                                    FontSize="12.5"
+                                    Margin="0,0,8,0"
+                                    Content="创建第一个快照"
+                                    Command="{Binding CreateSnapshotCommand}"
+                                    IsEnabled="{Binding CanCreateSnapshot}" />
+                            <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                                    Height="34"
+                                    Padding="14,0"
+                                    FontSize="12.5"
+                                    Content="查看存档路径"
+                                    Command="{Binding TogglePathsDrawerCommand}" />
+                        </WrapPanel>
+                    </StackPanel>
+
+                    <!-- Empty State 2: No save paths detected at all -->
+                    <StackPanel HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                MaxWidth="440"
+                                Visibility="{Binding ShowEmptyNoPathsDetected, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="尚未探测到该游戏的存档路径"
+                                   FontSize="15"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource PrimaryTextBrush}"
+                                   HorizontalAlignment="Center" />
+                        <TextBlock Text="可能是小众游戏、非标准存档目录，或被安全围栏跳过。您可以一键手动添加自定义存档目录、单文件或 HKCU 注册表键。"
+                                   FontSize="12.5"
+                                   Foreground="{DynamicResource SecondaryTextBrush}"
+                                   TextAlignment="Center"
+                                   TextWrapping="Wrap"
+                                   Margin="0,6,0,14" />
+                        <WrapPanel HorizontalAlignment="Center">
+                            <Button Style="{StaticResource PrimaryCapsuleButtonStyle}"
+                                    Height="34"
+                                    Padding="16,0"
+                                    FontSize="12.5"
+                                    Margin="0,0,8,0"
+                                    Content="配置自定义存档路径"
+                                    Command="{Binding TogglePathsDrawerCommand}" />
+                            <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                                    Height="34"
+                                    Padding="14,0"
+                                    FontSize="12.5"
+                                    Content="重新探测路径"
+                                    Command="{Binding RefreshSaveLocationsCommand}" />
+                        </WrapPanel>
+                    </StackPanel>
+
+                    <!-- Empty State 3: Snapshots exist, but filter/search matched nothing -->
+                    <StackPanel HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                MaxWidth="420"
+                                Visibility="{Binding ShowEmptyFilterNoMatch, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="当前筛选条件下没有匹配的快照"
+                                   FontSize="15"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource PrimaryTextBrush}"
+                                   HorizontalAlignment="Center" />
+                        <TextBlock Text="尝试切换回「全部树」或清空搜索关键词以查看该游戏的全部存档时间线。"
+                                   FontSize="12.5"
+                                   Foreground="{DynamicResource SecondaryTextBrush}"
+                                   TextAlignment="Center"
+                                   TextWrapping="Wrap"
+                                   Margin="0,6,0,14" />
+                        <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                                Height="34"
+                                Padding="16,0"
+                                FontSize="12.5"
+                                HorizontalAlignment="Center"
+                                Content="重置筛选与搜索"
+                                Command="{Binding ResetTreeFiltersCommand}" />
+                    </StackPanel>
+                </Grid>
             </Grid>
 
             <!-- Right (Desktop >= 740 DIP): Fixed 348px Hairline-Separated Node Inspector -->
@@ -1575,11 +2318,11 @@
                     <DropShadowEffect BlurRadius="24" ShadowDepth="6" Opacity="0.24" Color="#000000" />
                 </Border.Effect>
                 <StackPanel>
-                    <TextBlock Text="检测到双端存档分叉冲突（Divergence Wizard）"
+                    <TextBlock Text="检测到双端存档分叉冲突"
                                FontSize="16"
                                FontWeight="SemiBold"
                                Foreground="{DynamicResource WarningAmberBrush}" />
-                    <TextBlock Text="本机与远端设备离线推进了不同的存档进度，互不为祖先。SPAWN 绝不静默覆盖，无论您选择哪一项，另一端历史都会完整保留为固定分支（★）显示在存档树中。"
+                    <TextBlock Text="本机与另一台设备离线推进了不同的游戏进度。SPAWN 绝不静默覆盖，无论您选择哪一项，另一端历史都会完整保留为固定路线（★）显示在存档树中；采用云端前若检测到未备份磁盘改动也会自动保护。"
                                FontSize="12.5"
                                Foreground="{DynamicResource SecondaryTextBrush}"
                                TextWrapping="Wrap"

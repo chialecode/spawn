@@ -14,7 +14,18 @@ public static class SaveTreeLayoutBuilder
         SaveGameStateRecord? state,
         IReadOnlyList<SaveBranchRecord> branches,
         IReadOnlyList<SaveSnapshotRecord> snapshots,
-        long totalDeduplicatedBytes)
+        long totalDeduplicatedBytes) =>
+        BuildGraph(gameId, state, branches, snapshots, totalDeduplicatedBytes, syncedSnapshotIds: null);
+
+    public static SaveTreeGraphDto BuildGraph(
+        string gameId,
+        SaveGameStateRecord? state,
+        IReadOnlyList<SaveBranchRecord> branches,
+        IReadOnlyList<SaveSnapshotRecord> snapshots,
+        long totalDeduplicatedBytes,
+        IReadOnlySet<string>? syncedSnapshotIds,
+        string? effectiveCloudGameKey = null,
+        int unimportedLegacyPreTrainerCount = 0)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(gameId);
         ArgumentNullException.ThrowIfNull(branches);
@@ -44,6 +55,8 @@ public static class SaveTreeLayoutBuilder
                 TotalDeduplicatedBytes = Math.Max(0, totalDeduplicatedBytes),
                 HasUnresolvedCloudConflict = state?.HasUnresolvedCloudConflict ?? false,
                 LastSyncedAtUtc = state?.LastSyncedAtUtc,
+                EffectiveCloudGameKey = effectiveCloudGameKey,
+                UnimportedLegacyPreTrainerCount = Math.Max(0, unimportedLegacyPreTrainerCount),
             };
         }
 
@@ -205,7 +218,8 @@ public static class SaveTreeLayoutBuilder
             List<string> childIds = childrenByParent.TryGetValue(snap.SnapshotId, out List<string>? kids)
                 ? kids
                 : [];
-            bool isCloudSynced = state?.LastSyncedAtUtc is { } syncedUtc && snap.CreatedAtUtc <= syncedUtc;
+            bool isCloudSynced = syncedSnapshotIds is not null
+                && syncedSnapshotIds.Contains(snap.SnapshotId);
 
             int fromLane = laneBySnap[snap.SnapshotId];
             nodes.Add(new SaveTreeNodeDto
@@ -282,6 +296,8 @@ public static class SaveTreeLayoutBuilder
             TotalDeduplicatedBytes = Math.Max(0, totalDeduplicatedBytes),
             HasUnresolvedCloudConflict = state?.HasUnresolvedCloudConflict ?? false,
             LastSyncedAtUtc = state?.LastSyncedAtUtc,
+            EffectiveCloudGameKey = effectiveCloudGameKey,
+            UnimportedLegacyPreTrainerCount = Math.Max(0, unimportedLegacyPreTrainerCount),
         };
     }
 

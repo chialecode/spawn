@@ -1,4 +1,6 @@
+using System.Globalization;
 using Spawn.Contracts;
+using Spawn.Host.Helpers;
 
 namespace Spawn.Host.Controls;
 
@@ -109,13 +111,20 @@ public static class SaveTreeGraphLayoutEngine
         }
 
         // 1. Apply optional filter before topological ordering.
+        //    For CurrentBranch filter, walk the full ParentSnapshotId ancestor chain from the branch tip/nodes
+        //    so newly forked branches still show their shared historical lineage instead of going blank.
+        HashSet<string>? currentBranchLineageIds = null;
+        if (filterMode == SaveTreeFilterMode.CurrentBranch && !string.IsNullOrWhiteSpace(activeBranchId))
+        {
+            currentBranchLineageIds = ComputeBranchAncestorLineage(graph, activeBranchId);
+        }
+
         string trimmedQuery = searchKeyword?.Trim() ?? string.Empty;
         var filteredNodes = new List<SaveTreeNodeDto>(graph.Nodes.Count);
         foreach (SaveTreeNodeDto node in graph.Nodes)
         {
-            if (filterMode == SaveTreeFilterMode.CurrentBranch
-                && !string.IsNullOrWhiteSpace(activeBranchId)
-                && !string.Equals(node.Snapshot.BranchId, activeBranchId, StringComparison.OrdinalIgnoreCase))
+            if (currentBranchLineageIds is not null
+                && !currentBranchLineageIds.Contains(node.Snapshot.SnapshotId))
             {
                 continue;
             }
@@ -553,9 +562,66 @@ public static class SaveTreeGraphLayoutEngine
         return result;
     }
 
+    private static HashSet<string> ComputeBranchAncestorLineage(SaveTreeGraphDto graph, string activeBranchId)
+    {
+        var allById = graph.Nodes.ToDictionary(n => n.Snapshot.SnapshotId, StringComparer.OrdinalIgnoreCase);
+        var lineage = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var queue = new Queue<string>();
+
+        void EnqueueIfValid(string? snapshotId)
+        {
+            if (!string.IsNullOrWhiteSpace(snapshotId)
+                && allById.ContainsKey(snapshotId)
+                && lineage.Add(snapshotId))
+            {
+                queue.Enqueue(snapshotId);
+            }
+        }
+
+        // Seed with all snapshots belonging directly to the active branch.
+        foreach (SaveTreeNodeDto node in graph.Nodes)
+        {
+            if (string.Equals(node.Snapshot.BranchId, activeBranchId, StringComparison.OrdinalIgnoreCase))
+            {
+                EnqueueIfValid(node.Snapshot.SnapshotId);
+            }
+        }
+
+        // Also seed with the branch's HeadSnapshotId and BaseSnapshotId (handles empty newly-forked branches).
+        SaveBranchRecord? activeBranch = graph.Branches.FirstOrDefault(
+            b => string.Equals(b.BranchId, activeBranchId, StringComparison.OrdinalIgnoreCase));
+        if (activeBranch is not null)
+        {
+            EnqueueIfValid(activeBranch.HeadSnapshotId);
+            EnqueueIfValid(activeBranch.BaseSnapshotId);
+        }
+
+        if (string.Equals(graph.ActiveBranchId, activeBranchId, StringComparison.OrdinalIgnoreCase))
+        {
+            EnqueueIfValid(graph.CurrentHeadSnapshotId);
+        }
+
+        // Walk ancestor chain along ParentSnapshotId / MergeParentSnapshotId to root.
+        while (queue.Count > 0)
+        {
+            string currentId = queue.Dequeue();
+            if (!allById.TryGetValue(currentId, out SaveTreeNodeDto? current))
+            {
+                continue;
+            }
+
+            EnqueueIfValid(current.ParentSnapshotId);
+            EnqueueIfValid(current.MergeParentSnapshotId);
+        }
+
+        return lineage;
+    }
+
     private static bool MatchesSearch(SaveTreeNodeDto node, string keyword)
     {
         if (node.BranchName.Contains(keyword, StringComparison.OrdinalIgnoreCase)
+            || (string.Equals(node.BranchName, "main", StringComparison.OrdinalIgnoreCase)
+                && "主线 (main)".Contains(keyword, StringComparison.OrdinalIgnoreCase))
             || node.Snapshot.ShortId.Contains(keyword, StringComparison.OrdinalIgnoreCase)
             || node.Snapshot.SnapshotId.Contains(keyword, StringComparison.OrdinalIgnoreCase)
             || (!string.IsNullOrWhiteSpace(node.Snapshot.Note)
@@ -564,9 +630,27 @@ public static class SaveTreeGraphLayoutEngine
             return true;
         }
 
+        string triggerLabel = UiFormatters.FormatSaveTriggerLabel(node.Snapshot.TriggerKind);
+        if (triggerLabel.Contains(keyword, StringComparison.OrdinalIgnoreCase)
+            || node.Snapshot.TriggerKind.ToString().Contains(keyword, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        DateTimeOffset localTime = node.Snapshot.CreatedAtUtc.ToLocalTime();
+        string dateDash = localTime.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+        string dateSlash = localTime.ToString("yyyy/MM/dd", CultureInfo.InvariantCulture);
+        if (dateDash.Contains(keyword, StringComparison.OrdinalIgnoreCase)
+            || dateSlash.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
         foreach (string tip in node.BranchTipNames)
         {
-            if (tip.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+            if (tip.Contains(keyword, StringComparison.OrdinalIgnoreCase)
+                || (string.Equals(tip, "main", StringComparison.OrdinalIgnoreCase)
+                    && "主线 (main)".Contains(keyword, StringComparison.OrdinalIgnoreCase)))
             {
                 return true;
             }

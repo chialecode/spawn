@@ -12,9 +12,24 @@ namespace Spawn.Host.ViewModels.Saves;
 /// <summary>
 /// Selectable branch color swatch option used in Fork Branch and Rename Branch popovers.
 /// </summary>
-public sealed record SaveBranchColorOption(string ColorHex, string Label)
+public sealed partial class SaveBranchColorOption : ObservableObject
 {
-    public Brush SwatchBrush { get; } = CreateBrush(ColorHex);
+    public string ColorHex { get; }
+    public string Label { get; }
+    public Brush SwatchBrush { get; }
+
+    [ObservableProperty]
+    private bool _isSelectedForFork;
+
+    [ObservableProperty]
+    private bool _isSelectedForRename;
+
+    public SaveBranchColorOption(string colorHex, string label)
+    {
+        ColorHex = colorHex;
+        Label = label;
+        SwatchBrush = CreateBrush(colorHex);
+    }
 
     private static SolidColorBrush CreateBrush(string hex)
     {
@@ -43,6 +58,10 @@ public sealed record SaveBranchColorOption(string ColorHex, string Label)
 /// </summary>
 public sealed record SaveBranchTipPillViewModel(string Name, string ColorHex, bool IsActiveBranch)
 {
+    public string DisplayName => string.Equals(Name, "main", StringComparison.OrdinalIgnoreCase)
+        ? "主线 (main)"
+        : Name;
+
     public Brush AccentBrush { get; } = CreateFrozenColorBrush(ColorHex, alpha: 255);
     public Brush SoftBackgroundBrush { get; } = CreateFrozenColorBrush(ColorHex, alpha: 34);
 
@@ -84,13 +103,17 @@ public sealed partial class SaveBranchItemViewModel : ObservableObject
     [ObservableProperty]
     private bool _isActive;
 
+    public string DisplayName => FormatBranchDisplayName(Name, IsDefault);
+
+    public bool CanBackgroundDelete => !IsDefault && !IsActive;
+
     public string DisplayLabel => string.Create(
         CultureInfo.InvariantCulture,
-        $"{Name} ({SnapshotCount})");
+        $"{DisplayName} ({SnapshotCount})");
 
     public string ComboSummaryText => IsActive
-        ? $"{Name} · 当前分支"
-        : Name;
+        ? $"{DisplayName} · 当前路线"
+        : DisplayName;
 
     public SaveBranchItemViewModel(SaveBranchRecord record, bool isActive)
     {
@@ -99,7 +122,21 @@ public sealed partial class SaveBranchItemViewModel : ObservableObject
         ColorBrush = ParseFrozenBrush(record.ColorHex);
     }
 
-    partial void OnIsActiveChanged(bool value) => OnPropertyChanged(nameof(ComboSummaryText));
+    partial void OnIsActiveChanged(bool value)
+    {
+        OnPropertyChanged(nameof(ComboSummaryText));
+        OnPropertyChanged(nameof(CanBackgroundDelete));
+    }
+
+    public static string FormatBranchDisplayName(string? name, bool isDefault = false)
+    {
+        if (isDefault || string.Equals(name, "main", StringComparison.OrdinalIgnoreCase))
+        {
+            return "主线 (main)";
+        }
+
+        return string.IsNullOrWhiteSpace(name) ? "主线 (main)" : name.Trim();
+    }
 
     private static SolidColorBrush ParseFrozenBrush(string? hex)
     {
@@ -162,9 +199,11 @@ public sealed partial class SaveSnapshotRowViewModel : ObservableObject
     [ObservableProperty]
     private string? _note;
 
+    public string BranchDisplayName => SaveBranchItemViewModel.FormatBranchDisplayName(BranchName);
+
     public string DisplayTitle => !string.IsNullOrWhiteSpace(Note)
         ? Note!.Trim()
-        : $"{UiFormatters.FormatSaveTriggerLabel(TriggerKind)} · {BranchName}";
+        : $"{UiFormatters.FormatSaveTriggerLabel(TriggerKind)} · {BranchDisplayName}";
 
     public string TriggerLabel => UiFormatters.FormatSaveTriggerLabel(TriggerKind);
 
@@ -181,7 +220,7 @@ public sealed partial class SaveSnapshotRowViewModel : ObservableObject
         _ => "M5,4 H19 V20 L12,16 L5,20 Z",
     };
 
-    public string HeadBadgeText => IsDetachedHead ? "游离 HEAD" : "HEAD";
+    public string HeadBadgeText => IsDetachedHead ? "历史回溯中" : "当前存档";
 
     public string TimestampText => Snapshot.CreatedAtUtc
         .ToLocalTime()
@@ -399,7 +438,7 @@ public sealed partial class SaveSidebarGameItemViewModel : ObservableObject
             string timePart = LastSnapshotAtUtc.HasValue
                 ? LastSnapshotAtUtc.Value.ToLocalTime().ToString("MM-dd HH:mm", CultureInfo.InvariantCulture)
                 : "刚刚";
-            return $"{ActiveBranchName} · {timePart}";
+            return $"{SaveBranchItemViewModel.FormatBranchDisplayName(ActiveBranchName)} · {timePart}";
         }
     }
 
@@ -456,6 +495,7 @@ public sealed partial class ManagedSaveGameOverviewItemViewModel : ObservableObj
     public BitmapImage? GameIcon => Game?.SmallIcon;
     public string GameInitials => Game?.InitialsText ?? "S";
     public string ActiveBranchName => string.IsNullOrWhiteSpace(Overview.ActiveBranchName) ? "main" : Overview.ActiveBranchName;
+    public string ActiveBranchDisplayName => SaveBranchItemViewModel.FormatBranchDisplayName(ActiveBranchName);
     public int BranchCount => Overview.BranchCount;
     public int SnapshotCount => Overview.SnapshotCount;
     public int PinnedCount => Overview.PinnedCount;
@@ -552,4 +592,35 @@ public sealed partial class CloudEndpointItemViewModel : ObservableObject
     }
 
     partial void OnLastTestResultTextChanged(string value) => OnPropertyChanged(nameof(HasTestResult));
+}
+
+/// <summary>
+/// Single probed or user-configured save/config/registry target displayed inside the workbench Paths Config drawer.
+/// </summary>
+public sealed class ResolvedSaveLocationItemViewModel
+{
+    public ResolvedSaveLocation Location { get; }
+    public string ResolvedFullPath => Location.ResolvedFullPath;
+    public string LogicalTemplatePath => Location.LogicalTemplatePath;
+    public SaveFileCategory Category => Location.Category;
+    public string CategoryTag => UiFormatters.FormatSaveFileCategoryTag(Location.Category);
+    public bool IsSaveCategory => Location.Category == SaveFileCategory.Save;
+    public bool IsConfigCategory => Location.Category == SaveFileCategory.Config;
+    public bool IsRegistryCategory => Location.Category == SaveFileCategory.RegistryExport;
+    public string SourceLabel => Location.SourceLabel;
+    public bool Exists => Location.Exists;
+    public bool IsCustom => Location.IsCustom;
+    public string? CustomLocationId => Location.CustomLocationId;
+    public string ExistsBadgeText => Exists ? "现存有效" : "未生成";
+
+    public string MetricsText => IsRegistryCategory
+        ? (Exists ? "注册表项已存在" : "注册表项尚未生成")
+        : (Exists
+            ? string.Create(CultureInfo.InvariantCulture, $"{Location.FileCount} 文件 · {UiFormatters.FormatByteSize(Location.TotalBytes)}")
+            : "尚未在磁盘生成");
+
+    public ResolvedSaveLocationItemViewModel(ResolvedSaveLocation location)
+    {
+        Location = location ?? throw new ArgumentNullException(nameof(location));
+    }
 }

@@ -59,9 +59,25 @@ public sealed record SaveGameStateRecord
     public bool IncludeConfigFiles { get; init; }
     public int MaxRollingSnapshots { get; init; } = SaveSettingsDto.DefaultRollingRetentionCount;
     public string? CloudEndpointId { get; init; }
+    public string? CloudGameKey { get; init; }
+    public bool SyncAllBranchesToCloud { get; init; }
     public DateTimeOffset? LastSyncedAtUtc { get; init; }
     public bool HasUnresolvedCloudConflict { get; init; }
     public DateTimeOffset UpdatedAtUtc { get; init; } = DateTimeOffset.UtcNow;
+}
+
+/// <summary>
+/// User-configured per-game custom save directory, file, or <c>HKCU</c> registry key (<c>save_custom_locations</c>).
+/// </summary>
+public sealed record SaveCustomLocationRecord
+{
+    public required string LocationId { get; init; }
+    public required string GameId { get; init; }
+    public required string PathOrRegistryKey { get; init; }
+    public SaveCustomLocationKind LocationKind { get; init; } = SaveCustomLocationKind.Directory;
+    public SaveFileCategory Category { get; init; } = SaveFileCategory.Save;
+    public string? Label { get; init; }
+    public DateTimeOffset CreatedAtUtc { get; init; } = DateTimeOffset.UtcNow;
 }
 
 /// <summary>
@@ -178,6 +194,9 @@ public sealed record ResolvedSaveLocation
     public string SourceLabel { get; init; } = "Ludusavi";
     public bool Exists { get; init; }
     public bool IsSafe { get; init; } = true;
+    public bool IsCustom { get; init; }
+    public string? CustomLocationId { get; init; }
+    public string? SafetyWarning { get; init; }
     public int FileCount { get; init; }
     public long TotalBytes { get; init; }
 }
@@ -249,6 +268,8 @@ public sealed record SaveTreeGraphDto
     public long TotalDeduplicatedBytes { get; init; }
     public bool HasUnresolvedCloudConflict { get; init; }
     public DateTimeOffset? LastSyncedAtUtc { get; init; }
+    public string? EffectiveCloudGameKey { get; init; }
+    public int UnimportedLegacyPreTrainerCount { get; init; }
 
     [JsonIgnore]
     public double DeduplicationRatio =>
@@ -382,6 +403,8 @@ public sealed record SwitchBranchRequest
     public bool CreateSafetySnapshot { get; init; } = true;
     public bool IncludeConfigFiles { get; init; }
     public SaveModMismatchPolicy ModMismatchPolicy { get; init; } = SaveModMismatchPolicy.AbortAndPrompt;
+    public string? SafetySnapshotBranchId { get; init; }
+    public bool ForceSafetySnapshotEvenIfUnchanged { get; init; }
 }
 
 /// <summary>
@@ -532,6 +555,8 @@ public sealed record CloudSyncPlanPreview
 {
     public required string GameId { get; init; }
     public string? EndpointId { get; init; }
+    public string? ResolvedCloudGameKey { get; init; }
+    public SaveCloudSyncScope SyncScope { get; init; } = SaveCloudSyncScope.ActiveBranchOnly;
     public CloudSyncRelation Relation { get; init; } = CloudSyncRelation.NotConfigured;
     public required string Message { get; init; }
     public SaveSnapshotRecord? LocalHeadSnapshot { get; init; }
@@ -543,6 +568,8 @@ public sealed record CloudSyncPlanPreview
     public int MissingLocalChunkCount { get; init; }
     public long EstimatedDownloadBytes { get; init; }
     public int SaveFileCount { get; init; }
+    public int UnsyncedBranchCount { get; init; }
+    public int PendingBranchPushCount { get; init; }
 }
 
 /// <summary>
@@ -563,10 +590,14 @@ public sealed record CloudSyncExecutionReport
     public required bool Succeeded { get; init; }
     public CloudSyncRelation Relation { get; init; }
     public required string Message { get; init; }
+    public string? GameId { get; init; }
+    public string? GameTitle { get; init; }
+    public string? CloudGameKey { get; init; }
     public int UploadedPackCount { get; init; }
     public long UploadedBytes { get; init; }
     public int DownloadedChunkCount { get; init; }
     public long DownloadedBytes { get; init; }
+    public int SyncedBranchCount { get; init; }
     public string? ResultHeadSnapshotId { get; init; }
     public string? DivergenceBackupBranchId { get; init; }
     public string? DivergenceBackupBranchName { get; init; }
@@ -587,6 +618,8 @@ public sealed record SaveSettingsDto
 
     public bool AutoWatchByDefault { get; init; } = true;
     public bool PostExitSnapshotByDefault { get; init; } = true;
+    public bool AutoCloudPushOnGameExit { get; init; }
+    public bool CheckRemoteUpdatesBeforeLaunch { get; init; }
     public int QuiescentDebounceMs { get; init; } = DefaultQuiescentDebounceMs;
     public int DefaultMaxRollingSnapshots { get; init; } = DefaultRollingRetentionCount;
     public int DefaultMaxSnapshotSizeMb { get; init; } = DefaultSnapshotMaxSizeMb;

@@ -608,12 +608,15 @@ public sealed class SppkPackfileAndCloudSyncTests : IDisposable
         Assert.Equal(1, push1.UploadedPackCount);
         Assert.Equal(s1.SnapshotId, push1.ResultHeadSnapshotId);
 
-        // Verify remote layout: repo.json, packs/*.sppk, snapshots/<GameId>/<S1>.json, heads/<GameId>/<MachineA>.json
+        // Verify remote layout: repo.json, packs/*.sppk, snapshots/<CloudGameKeySegment>/<S1>.json, heads/<CloudGameKeySegment>/<MachineA>.json
+        string expectedCloudKey = await machineA.SyncService.ResolveCloudGameKeyAsync(gameId);
+        Assert.Equal(expectedCloudKey, planPush1.ResolvedCloudGameKey);
+        string keySegment = CloudGameKeyResolver.ToRemotePathSegment(expectedCloudKey);
         string syncDir = Path.Combine(sharedRemoteRoot, "spawn-sync");
         Assert.True(File.Exists(Path.Combine(syncDir, "repo.json")));
         Assert.Single(Directory.GetFiles(Path.Combine(syncDir, "packs"), "pack-*.sppk"));
-        Assert.True(File.Exists(Path.Combine(syncDir, "snapshots", gameId, $"{s1.SnapshotId}.json")));
-        Assert.True(File.Exists(Path.Combine(syncDir, "heads", gameId, $"{machineA.MachineId}.json")));
+        Assert.True(File.Exists(Path.Combine(syncDir, "snapshots", keySegment, $"{s1.SnapshotId}.json")));
+        Assert.True(File.Exists(Path.Combine(syncDir, "heads", keySegment, $"{machineA.MachineId}.json")));
 
         // Verify Machine A's cas_chunks.pack_id & save_game_state.last_synced_at_utc updated
         SaveGameStateRecord? stateAAfterPush1 = await machineA.Database.GetSaveGameStateAsync(gameId);

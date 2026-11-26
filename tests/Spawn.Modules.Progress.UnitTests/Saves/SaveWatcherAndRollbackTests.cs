@@ -158,6 +158,7 @@ public sealed class SaveWatcherAndRollbackTests
 
         await watcher.StartAsync();
 
+        var baselineCaptured = new TaskCompletionSource<SaveTreeChangedEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
         var quiescentCaptured = new TaskCompletionSource<SaveTreeChangedEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
         var postExitCaptured = new TaskCompletionSource<SaveTreeChangedEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -165,7 +166,11 @@ public sealed class SaveWatcherAndRollbackTests
         {
             if (ev.Reason == "SnapshotCreated")
             {
-                if (!quiescentCaptured.Task.IsCompleted)
+                if (!baselineCaptured.Task.IsCompleted)
+                {
+                    baselineCaptured.TrySetResult(ev);
+                }
+                else if (!quiescentCaptured.Task.IsCompleted)
                 {
                     quiescentCaptured.TrySetResult(ev);
                 }
@@ -176,7 +181,7 @@ public sealed class SaveWatcherAndRollbackTests
             }
         };
 
-        // 1. Simulate game start event on ISpawnEventBus -> watcher attaches automatically
+        // 1. Simulate game start event on ISpawnEventBus -> watcher attaches automatically & captures startup baseline
         await env.EventBus.PublishAsync(new ActiveGameSessionChangedEvent(
             GameId: env.Game.GameId,
             Session: new ActiveGameSession
@@ -191,6 +196,10 @@ public sealed class SaveWatcherAndRollbackTests
             CurrentState: PlaySessionActivityState.Active));
 
         Assert.Equal(SaveWatcherStatusKind.Watching, watcher.GetStatus(env.Game.GameId).Status);
+        SaveTreeChangedEvent baselineEvent = await baselineCaptured.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        SaveSnapshotRecord? baselineSnap = await env.Database.GetSaveSnapshotByIdAsync(baselineEvent.SnapshotId!);
+        Assert.NotNull(baselineSnap);
+        Assert.Equal(SaveSnapshotTriggerKind.AutoQuiescent, baselineSnap!.TriggerKind);
 
         // 2. Write save file -> watcher debounces and creates an AutoQuiescent snapshot!
         await env.WriteSaveFileAsync("world.sav", "QUICKSAVE-AFTER-BOSS");
@@ -200,6 +209,7 @@ public sealed class SaveWatcherAndRollbackTests
         SaveSnapshotRecord? qSnap = await env.Database.GetSaveSnapshotByIdAsync(qEvent.SnapshotId!);
         Assert.NotNull(qSnap);
         Assert.Equal(SaveSnapshotTriggerKind.AutoQuiescent, qSnap!.TriggerKind);
+        Assert.NotEqual(baselineSnap.SnapshotId, qSnap.SnapshotId);
 
         // 3. Mutate save right before exit and publish Stopped -> watcher stops FS watching and creates PostExit snapshot!
         await env.WriteSaveFileAsync("world.sav", "FINAL-EXIT-SAVE");
@@ -233,6 +243,7 @@ public sealed class SaveWatcherAndRollbackTests
             {
                 QuiescentDebounceOverride = TimeSpan.FromMilliseconds(50),
                 PostExitSettleDelay = TimeSpan.FromMilliseconds(20),
+                CaptureBaselineOnStartIfEmpty = false,
             });
 
         var errorStatuses = new System.Collections.Concurrent.ConcurrentBag<SaveWatcherStatusDto>();

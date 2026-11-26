@@ -213,6 +213,7 @@ public sealed partial class LudusaviRuleResolver : ILudusaviRuleResolver
                 expanded,
                 game.InstallDir,
                 _knownFolderProvider,
+                spawnDataRoot: _database.DataRootPath,
                 isUserCustomPath: true);
             if (!isSafe)
             {
@@ -327,6 +328,7 @@ public sealed partial class LudusaviRuleResolver : ILudusaviRuleResolver
                 expandedCustom,
                 game.InstallDir,
                 _knownFolderProvider,
+                spawnDataRoot: _database.DataRootPath,
                 isUserCustomPath: true);
             if (!isSafeFs)
             {
@@ -604,6 +606,7 @@ public sealed partial class LudusaviRuleResolver : ILudusaviRuleResolver
                 resolvedPath,
                 game.InstallDir,
                 _knownFolderProvider,
+                spawnDataRoot: _database.DataRootPath,
                 isUserCustomPath: false);
             if (!trustedSafe)
             {

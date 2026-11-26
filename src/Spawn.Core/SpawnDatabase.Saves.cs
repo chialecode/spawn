@@ -25,6 +25,11 @@ public sealed partial class SpawnDatabase
     public const string SaveAutoCloudPushOnGameExitSettingKey = "saves.auto_cloud_push_on_exit";
     public const string SaveCheckRemoteUpdatesBeforeLaunchSettingKey = "saves.check_remote_before_launch";
 
+    /// <summary>
+    /// Root data directory backing this <see cref="SpawnDatabase"/> instance (isolated in tests, channel-specific in runtime).
+    /// </summary>
+    public string DataRootPath => _paths.DataRoot;
+
     // -------------------------------------------------------------------------
     // Schema v4 -> v5 Idempotent Migration (Save Time Machine, Branches & Cloud Sync)
     // -------------------------------------------------------------------------

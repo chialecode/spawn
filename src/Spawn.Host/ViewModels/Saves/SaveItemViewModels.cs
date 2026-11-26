@@ -609,6 +609,7 @@ public sealed class ResolvedSaveLocationItemViewModel
     public bool IsRegistryCategory => Location.Category == SaveFileCategory.RegistryExport;
     public string SourceLabel => Location.SourceLabel;
     public bool Exists => Location.Exists;
+    public bool CanOpenFolder => Exists && !IsRegistryCategory;
     public bool IsCustom => Location.IsCustom;
     public string? CustomLocationId => Location.CustomLocationId;
     public string ExistsBadgeText => Exists ? "现存有效" : "未生成";

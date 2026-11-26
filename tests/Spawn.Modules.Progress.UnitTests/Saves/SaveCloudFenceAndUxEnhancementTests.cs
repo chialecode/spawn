@@ -287,6 +287,87 @@ public sealed class SaveCloudFenceAndUxEnhancementTests : IDisposable
         Assert.True(graphAfterAllPush.Nodes.Single(n => n.Snapshot.SnapshotId == s3Alt.SnapshotId).IsCloudSynced);
     }
 
+    [Fact]
+    public async Task PushAllBranchesAsync_EqualLengthChineseSideBranches_NeverCollideInRemoteStorage()
+    {
+        string remoteSyncRoot = Path.Combine(_tempRoot, "p02-cjk-side-branches");
+        Directory.CreateDirectory(remoteSyncRoot);
+
+        await using var machine = await RealMachineHarness.CreateAsync(_tempRoot, "p02-cjk-pc", "Desktop-CJK");
+        string gameId = SpawnId.NewUlid();
+        await machine.SeedGameAsync(gameId, "Elden Ring", steamAppId: 1245620);
+        await machine.RuleResolver.EnsureBuiltInRulesSeededAsync();
+        await machine.AddLocalEndpointAsync(remoteSyncRoot);
+
+        string saveFile = Path.Combine(machine.AppDataRoaming, "EldenRing", "76561198000000033", "ER0000.sl2");
+        Directory.CreateDirectory(Path.GetDirectoryName(saveFile)!);
+        await File.WriteAllTextAsync(saveFile, "MAIN-BASE", Encoding.UTF8);
+        SaveSnapshotRecord sMain = (await machine.TimeMachine.CreateSnapshotAsync(new CreateSaveSnapshotRequest { GameId = gameId, Note = "Main Base" })).Snapshot!;
+
+        // Two equal-length Chinese side branches ("二周目" and "三周目") that naive ASCII sanitization would collapse to "___"!
+        Assert.NotEqual(
+            CloudGameKeyResolver.ToSideBranchPathSegment("二周目"),
+            CloudGameKeyResolver.ToSideBranchPathSegment("三周目"));
+        Assert.Equal("boss-alt", CloudGameKeyResolver.ToSideBranchPathSegment("boss-alt"));
+
+        ForkBranchResult forkNg2 = await machine.TimeMachine.CreateBranchAsync(new ForkBranchRequest
+        {
+            GameId = gameId,
+            FromSnapshotId = sMain.SnapshotId,
+            BranchName = "二周目",
+            SwitchToNewBranch = true,
+            CreateSafetySnapshotIfSwitching = false,
+        });
+        Assert.True(forkNg2.Succeeded, forkNg2.Message);
+        await File.WriteAllTextAsync(saveFile, "NG2-PROGRESS", Encoding.UTF8);
+        SaveSnapshotRecord sNg2 = (await machine.TimeMachine.CreateSnapshotAsync(new CreateSaveSnapshotRequest { GameId = gameId, Note = "二周目进度" })).Snapshot!;
+
+        ForkBranchResult forkNg3 = await machine.TimeMachine.CreateBranchAsync(new ForkBranchRequest
+        {
+            GameId = gameId,
+            FromSnapshotId = sMain.SnapshotId,
+            BranchName = "三周目",
+            SwitchToNewBranch = true,
+            CreateSafetySnapshotIfSwitching = false,
+        });
+        Assert.True(forkNg3.Succeeded, forkNg3.Message);
+        await File.WriteAllTextAsync(saveFile, "NG3-PROGRESS", Encoding.UTF8);
+        SaveSnapshotRecord sNg3 = (await machine.TimeMachine.CreateSnapshotAsync(new CreateSaveSnapshotRequest { GameId = gameId, Note = "三周目进度" })).Snapshot!;
+
+        // Switch back to main and push all branches
+        SaveTreeGraphDto beforePush = await machine.TimeMachine.GetSaveTreeGraphAsync(gameId);
+        SaveBranchRecord mainBranch = beforePush.Branches.Single(b => b.IsDefault);
+        Assert.True((await machine.TimeMachine.SwitchBranchAsync(new SwitchBranchRequest
+        {
+            GameId = gameId,
+            TargetBranchId = mainBranch.BranchId,
+            CreateSafetySnapshot = false,
+        })).Succeeded);
+
+        CloudSyncExecutionReport pushAll = await machine.CloudSync.PushAllBranchesAsync(gameId);
+        Assert.True(pushAll.Succeeded, pushAll.Message);
+        Assert.True(pushAll.SyncedBranchCount >= 3);
+
+        // Verify TWO distinct remote branch directories & head documents exist under branches/steam_1245620/!
+        string keySeg = CloudGameKeyResolver.ToRemotePathSegment("steam:1245620");
+        string branchesDir = Path.Combine(remoteSyncRoot, "spawn-sync", "branches", keySeg);
+        Assert.True(Directory.Exists(branchesDir));
+        string[] branchDirs = Directory.GetDirectories(branchesDir);
+        Assert.Equal(2, branchDirs.Length);
+
+        string[] headJsons = branchDirs
+            .SelectMany(d => Directory.GetFiles(d, "*.json"))
+            .Select(f => File.ReadAllText(f, Encoding.UTF8))
+            .ToArray();
+        Assert.Equal(2, headJsons.Length);
+        Assert.Contains(headJsons, j => j.Contains(sNg2.SnapshotId, StringComparison.Ordinal));
+        Assert.Contains(headJsons, j => j.Contains(sNg3.SnapshotId, StringComparison.Ordinal));
+
+        SaveTreeGraphDto afterPush = await machine.TimeMachine.GetSaveTreeGraphAsync(gameId);
+        Assert.True(afterPush.Nodes.Single(n => n.Snapshot.SnapshotId == sNg2.SnapshotId).IsCloudSynced);
+        Assert.True(afterPush.Nodes.Single(n => n.Snapshot.SnapshotId == sNg3.SnapshotId).IsCloudSynced);
+    }
+
     // =========================================================================
     // P0-3: manifest.yaml parser, TrustedSavePathFence & Custom Locations
     // =========================================================================
@@ -394,13 +475,17 @@ public sealed class SaveCloudFenceAndUxEnhancementTests : IDisposable
         ResolvedSaveLayout layoutWithCustom = await machine.RuleResolver.ResolveGameSaveLayoutAsync(wukongId);
         Assert.Contains(layoutWithCustom.SaveLocations, l => l.IsCustom && l.CustomLocationId == addedRec.LocationId);
 
-        // Reject forbidden targets with clear InvalidOperationException
+        // Reject forbidden targets (including isolated sandbox's own SPAWN DataRoot!) with clear InvalidOperationException
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             machine.RuleResolver.AddCustomLocationAsync(wukongId, @"C:\Windows\System32", SaveCustomLocationKind.Directory));
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             machine.RuleResolver.AddCustomLocationAsync(wukongId, Path.Combine(customDir, "evil.exe"), SaveCustomLocationKind.File));
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             machine.RuleResolver.AddCustomLocationAsync(wukongId, @"HKLM\Software\Bad", SaveCustomLocationKind.RegistryKey));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            machine.RuleResolver.AddCustomLocationAsync(wukongId, machine.Paths.DataRoot, SaveCustomLocationKind.Directory));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            machine.RuleResolver.AddCustomLocationAsync(wukongId, Path.Combine(machine.Paths.DataRoot, "cas"), SaveCustomLocationKind.Directory));
 
         // Remove custom location
         Assert.True(await machine.RuleResolver.RemoveCustomLocationAsync(addedRec.LocationId));

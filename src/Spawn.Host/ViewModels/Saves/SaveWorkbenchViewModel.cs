@@ -1021,40 +1021,8 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
     }
 
     [RelayCommand]
-    public async Task PushAllBranchesAsync()
-    {
-        if (_currentGame is null || _cloudSyncService is null || _saveService is null || IsCloudSyncBusy)
-        {
-            return;
-        }
-
-        bool prevSyncAll = SyncAllBranchesToCloud;
-        if (!prevSyncAll)
-        {
-            SaveGameStateRecord baseState = _gameState ?? await _saveService.GetGameStateAsync(_currentGame.GameId).ConfigureAwait(true);
-            _gameState = await _saveService.UpdateGameStateAsync(baseState with
-            {
-                SyncAllBranchesToCloud = true,
-                UpdatedAtUtc = DateTimeOffset.UtcNow,
-            }).ConfigureAwait(true);
-        }
-
-        try
-        {
-            await ExecuteCloudSyncCoreAsync(divergenceResolution: null).ConfigureAwait(true);
-        }
-        finally
-        {
-            if (!prevSyncAll && _currentGame is not null && _gameState is not null)
-            {
-                _gameState = await _saveService.UpdateGameStateAsync(_gameState with
-                {
-                    SyncAllBranchesToCloud = false,
-                    UpdatedAtUtc = DateTimeOffset.UtcNow,
-                }).ConfigureAwait(true);
-            }
-        }
-    }
+    public Task PushAllBranchesAsync() =>
+        ExecuteCloudSyncCoreAsync(divergenceResolution: null, forcePushAllBranches: true);
 
     [RelayCommand]
     public async Task CreateSnapshotAsync()
@@ -2047,7 +2015,9 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
     [RelayCommand]
     private void CancelDivergenceModal() => IsDivergenceModalOpen = false;
 
-    private async Task ExecuteCloudSyncCoreAsync(CloudDivergenceResolution? divergenceResolution)
+    private async Task ExecuteCloudSyncCoreAsync(
+        CloudDivergenceResolution? divergenceResolution,
+        bool forcePushAllBranches = false)
     {
         if (_currentGame is null || _cloudSyncService is null || IsCloudSyncBusy)
         {
@@ -2060,9 +2030,14 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
             return;
         }
 
+        string targetGameId = _currentGame.GameId;
+        string? targetEndpointId = SelectedCloudEndpoint?.EndpointId;
+
         IsCloudSyncBusy = true;
         CloudSyncProgressPercent = 5;
-        CloudSyncProgressText = "正在准备云端增量同步与版本校验…";
+        CloudSyncProgressText = forcePushAllBranches
+            ? "正在同步当前路线并推送全部侧分支至云端…"
+            : "正在准备云端增量同步与版本校验…";
         NotifyAllDerivedStates();
 
         try
@@ -2075,28 +2050,40 @@ public sealed partial class SaveWorkbenchViewModel : ObservableObject, IDisposab
                     : 50.0;
             });
 
-            CloudSyncExecutionReport report = await _cloudSyncService.ExecuteSyncAsync(
-                _currentGame.GameId,
-                SelectedCloudEndpoint?.EndpointId,
-                divergenceResolution,
-                progress).ConfigureAwait(true);
+            CloudSyncExecutionReport report = forcePushAllBranches && divergenceResolution is null
+                ? await _cloudSyncService.PushAllBranchesAsync(
+                    targetGameId,
+                    targetEndpointId,
+                    progress).ConfigureAwait(true)
+                : await _cloudSyncService.ExecuteSyncAsync(
+                    targetGameId,
+                    targetEndpointId,
+                    divergenceResolution,
+                    progress).ConfigureAwait(true);
+
+            bool stillSameGame = _currentGame is not null
+                && string.Equals(_currentGame.GameId, targetGameId, StringComparison.OrdinalIgnoreCase);
 
             if (report.Relation == CloudSyncRelation.Diverged && divergenceResolution is null)
             {
-                CloudSyncPlan = await _cloudSyncService.PlanSyncAsync(
-                    _currentGame.GameId,
-                    SelectedCloudEndpoint?.EndpointId).ConfigureAwait(true);
-                HasUnresolvedCloudConflict = true;
-                IsDivergenceModalOpen = true;
+                if (stillSameGame)
+                {
+                    CloudSyncPlan = await _cloudSyncService.PlanSyncAsync(
+                        targetGameId,
+                        targetEndpointId).ConfigureAwait(true);
+                    HasUnresolvedCloudConflict = true;
+                    IsDivergenceModalOpen = true;
+                }
+
                 return;
             }
 
-            if (report.Succeeded)
+            if (report.Succeeded && stillSameGame)
             {
                 CloudSyncPlan = null;
                 HasUnresolvedCloudConflict = false;
                 LastSyncedAtUtc = DateTimeOffset.UtcNow;
-                await ReloadCurrentGameAndNotifyParentAsync(_currentGame.GameId, report.ResultHeadSnapshotId).ConfigureAwait(true);
+                await ReloadCurrentGameAndNotifyParentAsync(targetGameId, report.ResultHeadSnapshotId).ConfigureAwait(true);
             }
 
             StatusFeedbackRequested?.Invoke(report.Message, !report.Succeeded);

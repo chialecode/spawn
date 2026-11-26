@@ -95,7 +95,7 @@ public sealed class SaveTimeMachineService : ISaveTimeMachineService
         _maxSnapshotBytesOverrideForTest = maxSnapshotBytesOverrideForTest;
 
         _fileCapture = new AntiTearFileCapture(_casStore, _ruleResolver, _timeProvider, afterReadConsistencyTestHook);
-        _restorer = new AtomicSaveRestorer(_casStore, _ruleResolver, _gameDataService);
+        _restorer = new AtomicSaveRestorer(_casStore, _ruleResolver, _gameDataService, _paths.DataRoot);
         _legacyBridge = new LegacyPreTrainerSnapshotBridge(_database, _paths, _casStore, _ruleResolver);
     }
 

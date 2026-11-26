@@ -135,6 +135,58 @@ public static class CloudGameKeyResolver
     public static string ToRemotePathSegment(string cloudGameKey) =>
         CloudSyncTransportHelpers.SanitizePathSegment(cloudGameKey);
 
+    /// <summary>
+    /// Converts a side branch display name (which may contain Chinese/Unicode characters or spaces/slashes)
+    /// into a deterministic, collision-free remote path segment safe for NTFS, WebDAV, and S3.
+    /// Pure safe ASCII branch names (e.g. <c>boss-alt</c>) stay unchanged; names requiring sanitization
+    /// (e.g. <c>二周目</c> vs <c>三周目</c>) include a deterministic 12-hex BLAKE3 suffix so distinct
+    /// equal-length Unicode branch names never collide on the same remote path.
+    /// </summary>
+    public static string ToSideBranchPathSegment(string branchName)
+    {
+        string trimmed = (branchName ?? string.Empty).Trim();
+        if (string.IsNullOrEmpty(trimmed))
+        {
+            return "branch";
+        }
+
+        string sanitized = CloudSyncTransportHelpers.SanitizePathSegment(trimmed);
+        if (string.Equals(sanitized, trimmed, StringComparison.Ordinal))
+        {
+            return sanitized;
+        }
+
+        // Deterministic collision-free encoding for Unicode or sanitized branch names.
+        string normalizedForHash = trimmed.Normalize(NormalizationForm.FormKC).ToLowerInvariant();
+        string hashHex = CasChunkStore.ComputeBlake3Hex(Encoding.UTF8.GetBytes(normalizedForHash))[..12];
+
+        var asciiPrefix = new StringBuilder(24);
+        bool prevDash = false;
+        foreach (char c in trimmed)
+        {
+            if (asciiPrefix.Length >= 24)
+            {
+                break;
+            }
+
+            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))
+            {
+                asciiPrefix.Append(char.ToLowerInvariant(c));
+                prevDash = false;
+            }
+            else if (c is '-' or '_' or ' ' && asciiPrefix.Length > 0 && !prevDash)
+            {
+                asciiPrefix.Append('-');
+                prevDash = true;
+            }
+        }
+
+        string prefix = asciiPrefix.ToString().Trim('-');
+        return string.IsNullOrEmpty(prefix)
+            ? $"b-u{hashHex}"
+            : $"{prefix}-u{hashHex}";
+    }
+
     private static async Task<string?> TryMatchCanonicalRuleNameAsync(
         SpawnDatabase database,
         GameRecord game,

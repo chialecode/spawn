@@ -2245,7 +2245,7 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
         CancellationToken ct)
     {
         string safeMachineId = CloudSyncTransportHelpers.SanitizePathSegment(settings.MachineId);
-        string safeBranchName = CloudSyncTransportHelpers.SanitizePathSegment(branchName);
+        string safeBranchName = CloudGameKeyResolver.ToSideBranchPathSegment(branchName);
 
         var headDoc = new RemoteMachineHeadDocument
         {

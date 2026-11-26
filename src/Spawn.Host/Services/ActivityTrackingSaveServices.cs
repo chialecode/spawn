@@ -167,4 +167,35 @@ public sealed class ActivityTrackingCloudSaveSyncService(
         using IDisposable scope = _tracker.BeginSaveSnapshotOrRollback();
         return await _inner.SyncAllConfiguredGamesAsync(progress, ct).ConfigureAwait(false);
     }
+
+    public Task<CloudSyncEndpointRecord> UpdateEndpointAsync(
+        CloudSyncEndpointRecord endpoint,
+        CloudSyncEndpointSecrets? secrets = null,
+        CancellationToken ct = default) =>
+        _inner.UpdateEndpointAsync(endpoint, secrets, ct);
+
+    public Task<bool> SetDefaultEndpointAsync(string endpointId, CancellationToken ct = default) =>
+        _inner.SetDefaultEndpointAsync(endpointId, ct);
+
+    public Task<string> ResolveCloudGameKeyAsync(string gameId, CancellationToken ct = default) =>
+        _inner.ResolveCloudGameKeyAsync(gameId, ct);
+
+    public async Task<CloudSyncExecutionReport> PushAllBranchesAsync(
+        string gameId,
+        string? endpointId = null,
+        IProgress<CloudSyncProgressTick>? progress = null,
+        CancellationToken ct = default)
+    {
+        using IDisposable scope = _tracker.BeginSaveSnapshotOrRollback();
+        return await _inner.PushAllBranchesAsync(gameId, endpointId, progress, ct).ConfigureAwait(false);
+    }
+
+    public async Task<CloudSyncExecutionReport?> HandleGameExitAutoPushAsync(string gameId, CancellationToken ct = default)
+    {
+        using IDisposable scope = _tracker.BeginSaveSnapshotOrRollback();
+        return await _inner.HandleGameExitAutoPushAsync(gameId, ct).ConfigureAwait(false);
+    }
+
+    public Task<CloudSyncPlanPreview?> CheckRemoteUpdateBeforeLaunchAsync(string gameId, CancellationToken ct = default) =>
+        _inner.CheckRemoteUpdateBeforeLaunchAsync(gameId, ct);
 }

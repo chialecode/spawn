@@ -18,11 +18,13 @@ public sealed class AtomicSaveRestorer
     private readonly CasChunkStore _casStore;
     private readonly ILudusaviRuleResolver _ruleResolver;
     private readonly IGameDataManagementService _gameDataService;
+    private readonly string? _spawnDataRoot;
 
     public AtomicSaveRestorer(
         CasChunkStore casStore,
         ILudusaviRuleResolver ruleResolver,
-        IGameDataManagementService gameDataService)
+        IGameDataManagementService gameDataService,
+        string? spawnDataRoot = null)
     {
         ArgumentNullException.ThrowIfNull(casStore);
         ArgumentNullException.ThrowIfNull(ruleResolver);
@@ -30,6 +32,7 @@ public sealed class AtomicSaveRestorer
         _casStore = casStore;
         _ruleResolver = ruleResolver;
         _gameDataService = gameDataService;
+        _spawnDataRoot = spawnDataRoot;
     }
 
     /// <summary>
@@ -87,6 +90,7 @@ public sealed class AtomicSaveRestorer
             var (trustedOk, trustedReason) = TrustedSavePathFence.ValidateTrustedFilesystemTarget(
                 normCandidate,
                 game.InstallDir,
+                spawnDataRoot: _spawnDataRoot,
                 isUserCustomPath: matchingTrusted.IsCustom);
             return trustedOk
                 ? new GameDataSafetyCheckResult(true)

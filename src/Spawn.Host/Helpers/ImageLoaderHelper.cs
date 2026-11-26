@@ -12,6 +12,23 @@ namespace Spawn.Host.Helpers;
 public static class ImageLoaderHelper
 {
     private static readonly ConcurrentDictionary<string, BitmapImage?> Cache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<string, BitmapImage?> FastPathCache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly SemaphoreSlim DecodeGate = new(initialCount: 4, maxCount: 4);
+
+    /// <summary>
+    /// Fast zero-disk-I/O cache probe safe to call on the UI thread when constructing lists of ViewModels.
+    /// </summary>
+    public static bool TryGetCached(string? filePath, int maxDecodeWidth, out BitmapImage? image)
+    {
+        image = null;
+        if (string.IsNullOrWhiteSpace(filePath))
+        {
+            return false;
+        }
+
+        string fastKey = BuildFastPathKey(filePath, maxDecodeWidth);
+        return FastPathCache.TryGetValue(fastKey, out image) && image is not null;
+    }
 
     public static BitmapImage? LoadFrozen(string? filePath, int maxDecodeWidth = 256)
     {
@@ -32,9 +49,15 @@ public static class ImageLoaderHelper
             return null;
         }
 
-        string cacheKey = $"{fullPath}|{maxDecodeWidth}|{lastWriteUtc.Ticks}";
+        string fastKey = $"{fullPath}|{maxDecodeWidth}";
+        string cacheKey = $"{fastKey}|{lastWriteUtc.Ticks}";
         if (Cache.TryGetValue(cacheKey, out BitmapImage? cached))
         {
+            if (cached is not null)
+            {
+                FastPathCache[fastKey] = cached;
+            }
+
             return cached;
         }
 
@@ -42,13 +65,74 @@ public static class ImageLoaderHelper
         if (Cache.Count > 512)
         {
             Cache.Clear();
+            FastPathCache.Clear();
         }
 
         Cache[cacheKey] = decoded;
+        if (decoded is not null)
+        {
+            FastPathCache[fastKey] = decoded;
+        }
+        else
+        {
+            FastPathCache.TryRemove(fastKey, out _);
+        }
+
         return decoded;
     }
 
-    public static void ClearCache() => Cache.Clear();
+    /// <summary>
+    /// Decodes a local image into a frozen <see cref="BitmapImage"/> on a bounded background worker pool
+    /// so UI threads never stall on disk I/O or WIC/Skia decoding.
+    /// </summary>
+    public static async Task<BitmapImage?> LoadFrozenAsync(
+        string? filePath,
+        int maxDecodeWidth = 256,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(filePath))
+        {
+            return null;
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        await DecodeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await Task.Run(() =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return LoadFrozen(filePath, maxDecodeWidth);
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return null;
+        }
+        finally
+        {
+            DecodeGate.Release();
+        }
+    }
+
+    public static void ClearCache()
+    {
+        Cache.Clear();
+        FastPathCache.Clear();
+    }
+
+    private static string BuildFastPathKey(string filePath, int maxDecodeWidth)
+    {
+        try
+        {
+            return $"{Path.GetFullPath(filePath)}|{maxDecodeWidth}";
+        }
+        catch
+        {
+            return $"{filePath}|{maxDecodeWidth}";
+        }
+    }
 
     private static BitmapImage? TryDecodeWithWic(string fullPath, int maxDecodeWidth)
     {

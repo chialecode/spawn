@@ -67,43 +67,83 @@ public sealed class GameLibraryService : IGameLibraryService
     private static string GetUserPinnedExeSettingKey(string gameId) =>
         $"launcher.user_pinned_exe.{gameId}";
 
+    private static string GetUserPinnedTitleSettingKey(string gameId) =>
+        $"launcher.user_pinned_title.{gameId}";
+
+    public IReadOnlyList<DiscoveredLibraryDirectory> DiscoverLocalPlatformLibraries() =>
+        GameDirectoryScanner.DiscoverLocalPlatformLibraryDirectories();
+
     public async Task<GameRecord?> ImportGameAsync(
         string directoryOrExePath,
         CancellationToken cancellationToken = default)
     {
-        var resolved = GameDirectoryScanner.ResolveImportTarget(directoryOrExePath);
+        GameImportBatchResult batch = await ImportGameDetailedAsync(directoryOrExePath, cancellationToken)
+            .ConfigureAwait(false);
+        return batch.PrimaryGame;
+    }
+
+    public async Task<GameImportBatchResult> ImportGameDetailedAsync(
+        string directoryOrExePath,
+        CancellationToken cancellationToken = default)
+    {
+        ResolvedImportTarget? resolved = GameDirectoryScanner.ResolveImportTargetDetailed(directoryOrExePath);
         if (resolved is null)
         {
-            return null;
+            return new GameImportBatchResult { FailureReason = "路径不存在或未指向有效的游戏目录 / .exe / .lnk 快捷方式。" };
         }
 
-        var (installDir, explicitExeRelPath) = resolved.Value;
+        string installDir = resolved.InstallDir;
+        string? explicitExeRelPath = resolved.ExplicitExeRelPath;
 
-        // When importing a directory (not an explicit .exe file), expand multi-game anthology/pack containers
+        // When importing a directory (not an explicit .exe/.lnk file), expand multi-game anthology/pack containers
         // into their standalone child game entries and retire any stale unpinned merged parent row.
         if (explicitExeRelPath is null)
         {
             var expandedDirs = GameDirectoryScanner.TryExpandMultiGameContainer(installDir);
             if (expandedDirs.Count >= 2)
             {
-                var importedChildren = await ImportExpandedChildDirectoriesAsync(expandedDirs, cancellationToken)
-                    .ConfigureAwait(false);
+                var (importedChildren, addedCount, updatedCount) = await ImportExpandedChildDirectoriesWithStatsAsync(
+                    expandedDirs,
+                    cancellationToken).ConfigureAwait(false);
                 if (importedChildren.Count >= 2)
                 {
                     await ReconcileStaleParentContainerAsync(installDir, cancellationToken).ConfigureAwait(false);
                 }
 
-                return importedChildren.Count > 0 ? importedChildren[0] : null;
+                return new GameImportBatchResult
+                {
+                    ImportedGames = importedChildren,
+                    AddedCount = addedCount,
+                    UpdatedCount = updatedCount,
+                    ExpandedAnthology = true,
+                    ResolvedFromShortcut = resolved.ResolvedFromShortcut,
+                    FailureReason = importedChildren.Count == 0 ? "合集目录展开后未识别到可导入的游戏主程序。" : null,
+                };
             }
         }
 
-        return await ImportSingleResolvedTargetAsync(installDir, explicitExeRelPath, cancellationToken)
-            .ConfigureAwait(false);
+        var singleResult = await ImportSingleResolvedTargetDetailedAsync(
+            installDir,
+            explicitExeRelPath,
+            resolved.LaunchArguments,
+            cancellationToken).ConfigureAwait(false);
+
+        if (singleResult is null)
+        {
+            return new GameImportBatchResult
+            {
+                ResolvedFromShortcut = resolved.ResolvedFromShortcut,
+                FailureReason = "未在该路径中识别到有效的游戏可执行文件。",
+            };
+        }
+
+        return singleResult with { ResolvedFromShortcut = resolved.ResolvedFromShortcut };
     }
 
-    private async Task<GameRecord?> ImportSingleResolvedTargetAsync(
+    private async Task<GameImportBatchResult?> ImportSingleResolvedTargetDetailedAsync(
         string installDir,
         string? explicitExeRelPath,
+        string? shortcutLaunchArguments,
         CancellationToken cancellationToken,
         bool allowContainerExpansion = true)
     {
@@ -116,6 +156,8 @@ public sealed class GameLibraryService : IGameLibraryService
         bool isUserPinnedExe = !hasExplicitExe
             && existing is not null
             && await IsExecutableUserPinnedAsync(existing.GameId, cancellationToken).ConfigureAwait(false);
+        bool isUserPinnedTitle = existing is not null
+            && await IsTitleUserPinnedAsync(existing.GameId, cancellationToken).ConfigureAwait(false);
 
         // Defense-in-depth: never persist an unpinned multi-game anthology container as a single game record.
         if (allowContainerExpansion && !hasExplicitExe && !isUserPinnedExe)
@@ -123,14 +165,21 @@ public sealed class GameLibraryService : IGameLibraryService
             var expandedDirs = GameDirectoryScanner.TryExpandMultiGameContainer(installDir);
             if (expandedDirs.Count >= 2)
             {
-                var importedChildren = await ImportExpandedChildDirectoriesAsync(expandedDirs, cancellationToken)
-                    .ConfigureAwait(false);
+                var (importedChildren, addedCount, updatedCount) = await ImportExpandedChildDirectoriesWithStatsAsync(
+                    expandedDirs,
+                    cancellationToken).ConfigureAwait(false);
                 if (importedChildren.Count >= 2)
                 {
                     await ReconcileStaleParentContainerAsync(installDir, cancellationToken).ConfigureAwait(false);
                 }
 
-                return importedChildren.Count > 0 ? importedChildren[0] : null;
+                return new GameImportBatchResult
+                {
+                    ImportedGames = importedChildren,
+                    AddedCount = addedCount,
+                    UpdatedCount = updatedCount,
+                    ExpandedAnthology = true,
+                };
             }
         }
 
@@ -154,7 +203,15 @@ public sealed class GameLibraryService : IGameLibraryService
             scanned,
             existing,
             preserveExistingExe: isUserPinnedExe && !hasExplicitExe,
+            preserveExistingTitle: isUserPinnedTitle,
             now);
+
+        if (!string.IsNullOrWhiteSpace(shortcutLaunchArguments)
+            && (existing is null || string.IsNullOrWhiteSpace(existing.LaunchArguments)))
+        {
+            merged = merged with { LaunchArguments = shortcutLaunchArguments.Trim() };
+        }
+
         var (record, shouldInvalidateBypassInDb) = await ApplyFourLayerStaticClassificationAndBypassPolicyAsync(
             merged,
             existing,
@@ -181,26 +238,80 @@ public sealed class GameLibraryService : IGameLibraryService
             cancellationToken).ConfigureAwait(false);
 
         // Re-read from DB in case synchronous event subscribers (e.g. Achievement module) enriched capture mode/label.
-        return await _database.GetGameByIdAsync(gameId, cancellationToken).ConfigureAwait(false) ?? record;
+        GameRecord persisted = await _database.GetGameByIdAsync(gameId, cancellationToken).ConfigureAwait(false) ?? record;
+        return new GameImportBatchResult
+        {
+            ImportedGames = [persisted],
+            AddedCount = isNewImport ? 1 : 0,
+            UpdatedCount = isNewImport ? 0 : 1,
+            ExpandedAnthology = false,
+        };
     }
 
     public async Task<IReadOnlyList<GameRecord>> ScanLibraryDirectoryAsync(
         string rootDirectory,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(rootDirectory) || !Directory.Exists(rootDirectory))
+        LibraryScanReport report = await ScanLibraryDirectoryDetailedAsync(rootDirectory, cancellationToken)
+            .ConfigureAwait(false);
+        return report.AllGames;
+    }
+
+    public async Task<LibraryScanReport> ScanLibraryDirectoryDetailedAsync(
+        string rootDirectory,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(rootDirectory))
         {
-            return [];
+            return new LibraryScanReport
+            {
+                RootDirectory = string.Empty,
+                RootAccessible = false,
+            };
         }
 
-        string normalizedRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(rootDirectory));
-        var candidateDirs = _scanner.DiscoverCandidateGameDirectories(normalizedRoot);
+        string normalizedRoot;
+        try
+        {
+            normalizedRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(rootDirectory));
+        }
+        catch
+        {
+            return new LibraryScanReport
+            {
+                RootDirectory = rootDirectory,
+                RootAccessible = false,
+                InaccessibleDirectories = [rootDirectory],
+            };
+        }
+
+        if (!Directory.Exists(normalizedRoot))
+        {
+            return new LibraryScanReport
+            {
+                RootDirectory = normalizedRoot,
+                RootAccessible = false,
+                InaccessibleDirectories = [normalizedRoot],
+            };
+        }
+
+        var candidateDirs = _scanner.DiscoverCandidateGameDirectories(normalizedRoot, out var discoveredInaccessible);
+        var inaccessibleDirs = new List<string>(discoveredInaccessible);
+        bool rootAccessible = !inaccessibleDirs.Contains(normalizedRoot, StringComparer.OrdinalIgnoreCase);
+
         if (candidateDirs.Count == 0)
         {
-            return [];
+            return new LibraryScanReport
+            {
+                RootDirectory = normalizedRoot,
+                RootAccessible = rootAccessible,
+                InaccessibleDirectories = inaccessibleDirs,
+            };
         }
 
-        var imported = new List<GameRecord>(candidateDirs.Count);
+        var addedGames = new List<GameRecord>();
+        var updatedGames = new List<GameRecord>();
+        var failedDirs = new List<string>();
         var candidateParentContainers = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             normalizedRoot,
@@ -222,28 +333,64 @@ public sealed class GameLibraryService : IGameLibraryService
                 if (expandedNested.Count >= 2)
                 {
                     candidateParentContainers.Add(normalizedCandidate);
-                    var nestedImported = await ImportExpandedChildDirectoriesAsync(expandedNested, cancellationToken)
-                        .ConfigureAwait(false);
-                    imported.AddRange(nestedImported);
+                    foreach (string childDir in expandedNested)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var childOutcome = await ImportSingleResolvedTargetDetailedAsync(
+                            childDir,
+                            explicitExeRelPath: null,
+                            shortcutLaunchArguments: null,
+                            cancellationToken,
+                            allowContainerExpansion: false).ConfigureAwait(false);
+                        if (childOutcome is { PrimaryGame: not null })
+                        {
+                            if (childOutcome.AddedCount > 0)
+                            {
+                                addedGames.Add(childOutcome.PrimaryGame);
+                            }
+                            else
+                            {
+                                updatedGames.Add(childOutcome.PrimaryGame);
+                            }
+                        }
+                    }
+
                     continue;
                 }
 
-                var game = await ImportSingleResolvedTargetAsync(
+                var outcome = await ImportSingleResolvedTargetDetailedAsync(
                     normalizedCandidate,
                     explicitExeRelPath: null,
+                    shortcutLaunchArguments: null,
                     cancellationToken,
                     allowContainerExpansion: false).ConfigureAwait(false);
-                if (game is not null)
+                if (outcome is { PrimaryGame: not null })
                 {
-                    imported.Add(game);
+                    if (outcome.AddedCount > 0)
+                    {
+                        addedGames.Add(outcome.PrimaryGame);
+                    }
+                    else
+                    {
+                        updatedGames.Add(outcome.PrimaryGame);
+                    }
                 }
             }
             catch (OperationCanceledException)
             {
                 throw;
             }
+            catch (Exception ex) when (ex is UnauthorizedAccessException or DirectoryNotFoundException)
+            {
+                inaccessibleDirs.Add(dir);
+                if (_logger.IsEnabled(LogLevel.Warning))
+                {
+                    _logger.LogWarning(ex, "Skipped inaccessible game candidate folder {Directory}.", dir);
+                }
+            }
             catch (Exception ex)
             {
+                failedDirs.Add(dir);
                 if (_logger.IsEnabled(LogLevel.Warning))
                 {
                     _logger.LogWarning(ex, "Skipped game candidate folder {Directory} due to scan error.", dir);
@@ -259,7 +406,15 @@ public sealed class GameLibraryService : IGameLibraryService
 
         await ReconcileAllStaleParentContainersAsync(cancellationToken).ConfigureAwait(false);
 
-        return imported;
+        return new LibraryScanReport
+        {
+            RootDirectory = normalizedRoot,
+            RootAccessible = rootAccessible,
+            AddedGames = addedGames,
+            UpdatedGames = updatedGames,
+            InaccessibleDirectories = inaccessibleDirs.Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+            FailedDirectories = failedDirs.Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+        };
     }
 
     public async Task<GameRecord?> RescanGameAsync(
@@ -279,6 +434,8 @@ public sealed class GameLibraryService : IGameLibraryService
 
         bool isUserPinnedExe = await IsExecutableUserPinnedAsync(existing.GameId, cancellationToken)
             .ConfigureAwait(false);
+        bool isUserPinnedTitle = await IsTitleUserPinnedAsync(existing.GameId, cancellationToken)
+            .ConfigureAwait(false);
 
         // If an unpinned existing record points to a multi-game anthology container, expand into standalone child games
         // and retire the stale merged parent row when safe.
@@ -287,8 +444,9 @@ public sealed class GameLibraryService : IGameLibraryService
             var expandedDirs = GameDirectoryScanner.TryExpandMultiGameContainer(existing.InstallDir);
             if (expandedDirs.Count >= 2)
             {
-                var importedChildren = await ImportExpandedChildDirectoriesAsync(expandedDirs, cancellationToken)
-                    .ConfigureAwait(false);
+                var (importedChildren, _, _) = await ImportExpandedChildDirectoriesWithStatsAsync(
+                    expandedDirs,
+                    cancellationToken).ConfigureAwait(false);
                 if (importedChildren.Count >= 2)
                 {
                     await ReconcileStaleParentContainerAsync(existing.InstallDir, cancellationToken).ConfigureAwait(false);
@@ -314,6 +472,7 @@ public sealed class GameLibraryService : IGameLibraryService
             scanned,
             existing,
             preserveExistingExe: isUserPinnedExe,
+            preserveExistingTitle: isUserPinnedTitle,
             now);
         var (updated, shouldInvalidateBypassInDb) = await ApplyFourLayerStaticClassificationAndBypassPolicyAsync(
             merged,
@@ -335,6 +494,118 @@ public sealed class GameLibraryService : IGameLibraryService
             cancellationToken).ConfigureAwait(false);
 
         return await _database.GetGameByIdAsync(existing.GameId, cancellationToken).ConfigureAwait(false) ?? updated;
+    }
+
+    public async Task<GameRecord?> RelocateGameDirectoryAsync(
+        string gameId,
+        string newInstallDir,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(gameId) || string.IsNullOrWhiteSpace(newInstallDir))
+        {
+            return null;
+        }
+
+        var existing = await _database.GetGameByIdAsync(gameId, cancellationToken).ConfigureAwait(false);
+        if (existing is null)
+        {
+            return null;
+        }
+
+        ResolvedImportTarget? resolved = GameDirectoryScanner.ResolveImportTargetDetailed(newInstallDir);
+        if (resolved is null || !Directory.Exists(resolved.InstallDir))
+        {
+            return null;
+        }
+
+        string targetInstallDir = Path.TrimEndingDirectorySeparator(Path.GetFullPath(resolved.InstallDir));
+        var conflictingGame = await _database.GetGameByInstallDirAsync(targetInstallDir, cancellationToken)
+            .ConfigureAwait(false);
+        if (conflictingGame is not null
+            && !string.Equals(conflictingGame.GameId, existing.GameId, StringComparison.Ordinal))
+        {
+            if (_logger.IsEnabled(LogLevel.Warning))
+            {
+                _logger.LogWarning(
+                    "Refused relocating game {GameId} to {TargetDir}: directory is already owned by game {ConflictId}.",
+                    existing.GameId,
+                    targetInstallDir,
+                    conflictingGame.GameId);
+            }
+
+            return null;
+        }
+
+        bool hasExplicitExe = !string.IsNullOrWhiteSpace(resolved.ExplicitExeRelPath);
+        bool isUserPinnedExe = await IsExecutableUserPinnedAsync(existing.GameId, cancellationToken)
+            .ConfigureAwait(false);
+        bool isUserPinnedTitle = await IsTitleUserPinnedAsync(existing.GameId, cancellationToken)
+            .ConfigureAwait(false);
+
+        string? existingRelExeInNewDir = File.Exists(Path.Combine(targetInstallDir, existing.ExecutableRelPath))
+            ? existing.ExecutableRelPath
+            : null;
+        string? preferredExeRelPath = hasExplicitExe
+            ? resolved.ExplicitExeRelPath
+            : existingRelExeInNewDir;
+
+        DateTimeOffset now = _timeProvider.GetUtcNow();
+        var scanned = await _scanner.ScanGameDirectoryAsync(
+            targetInstallDir,
+            existing.GameId,
+            explicitExeRelPath: preferredExeRelPath,
+            cancellationToken).ConfigureAwait(false);
+
+        if (scanned is null)
+        {
+            return null;
+        }
+
+        // Preserve GameId, all playtime/achievement/save/trainer history, launch arguments, and user-pinned title/exe!
+        var merged = MergeScannedIntoRecord(
+            existing.GameId,
+            scanned,
+            existing with { InstallDir = targetInstallDir },
+            preserveExistingExe: (isUserPinnedExe || !hasExplicitExe) && existingRelExeInNewDir is not null,
+            preserveExistingTitle: isUserPinnedTitle,
+            now);
+
+        if (hasExplicitExe && !string.IsNullOrWhiteSpace(resolved.ExplicitExeRelPath))
+        {
+            merged = merged with { ExecutableRelPath = resolved.ExplicitExeRelPath };
+        }
+
+        if (!string.IsNullOrWhiteSpace(resolved.LaunchArguments) && string.IsNullOrWhiteSpace(existing.LaunchArguments))
+        {
+            merged = merged with { LaunchArguments = resolved.LaunchArguments.Trim() };
+        }
+
+        var (relocated, shouldInvalidateBypassInDb) = await ApplyFourLayerStaticClassificationAndBypassPolicyAsync(
+            merged,
+            existing,
+            cancellationToken).ConfigureAwait(false);
+
+        await _database.UpsertGameAsync(relocated, cancellationToken).ConfigureAwait(false);
+        if (hasExplicitExe)
+        {
+            await _database.SetSettingAsync(GetUserPinnedExeSettingKey(existing.GameId), "1", cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        if (shouldInvalidateBypassInDb)
+        {
+            await _database.SetGameVerifiedOfflineBypassAsync(
+                relocated.GameId,
+                enabled: false,
+                confirmedAtUtc: null,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        await _eventBus.PublishAsync(
+            new GameImportedOrRescannedEvent(relocated, IsNewImport: false, OccurredUtc: now),
+            cancellationToken).ConfigureAwait(false);
+
+        return await _database.GetGameByIdAsync(existing.GameId, cancellationToken).ConfigureAwait(false) ?? relocated;
     }
 
     public async Task<GameRecord?> UpdateGameMetadataAsync(
@@ -391,6 +662,20 @@ public sealed class GameLibraryService : IGameLibraryService
         if (!string.IsNullOrWhiteSpace(update.ExecutableRelPath))
         {
             await _database.SetSettingAsync(GetUserPinnedExeSettingKey(gameId), "1", cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        if (update.PinTitle.HasValue)
+        {
+            await _database.SetSettingAsync(
+                GetUserPinnedTitleSettingKey(gameId),
+                update.PinTitle.Value ? "1" : null,
+                cancellationToken).ConfigureAwait(false);
+        }
+        else if (!string.IsNullOrWhiteSpace(update.Title)
+                 && !string.Equals(newTitle, existing.Title, StringComparison.Ordinal))
+        {
+            await _database.SetSettingAsync(GetUserPinnedTitleSettingKey(gameId), "1", cancellationToken)
                 .ConfigureAwait(false);
         }
 
@@ -463,6 +748,8 @@ public sealed class GameLibraryService : IGameLibraryService
 
         await _database.SetSettingAsync(GetUserPinnedExeSettingKey(gameId), null, cancellationToken)
             .ConfigureAwait(false);
+        await _database.SetSettingAsync(GetUserPinnedTitleSettingKey(gameId), null, cancellationToken)
+            .ConfigureAwait(false);
 
         // Delete ONLY SPAWN's isolated artwork cache folder under %LOCALAPPDATA%\spawn[-dev]\artwork\<gameId>.
         // NEVER touch existing.InstallDir or any user game files!
@@ -487,24 +774,42 @@ public sealed class GameLibraryService : IGameLibraryService
         return string.Equals(val, "1", StringComparison.Ordinal);
     }
 
-    private async Task<List<GameRecord>> ImportExpandedChildDirectoriesAsync(
+    private async Task<bool> IsTitleUserPinnedAsync(string gameId, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(gameId))
+        {
+            return false;
+        }
+
+        string? val = await _database.GetSettingAsync(GetUserPinnedTitleSettingKey(gameId), cancellationToken)
+            .ConfigureAwait(false);
+        return string.Equals(val, "1", StringComparison.Ordinal);
+    }
+
+    private async Task<(List<GameRecord> ImportedChildren, int AddedCount, int UpdatedCount)> ImportExpandedChildDirectoriesWithStatsAsync(
         IReadOnlyList<string> expandedDirs,
         CancellationToken cancellationToken)
     {
         var importedChildren = new List<GameRecord>(expandedDirs.Count);
+        int addedCount = 0;
+        int updatedCount = 0;
+
         foreach (string childDir in expandedDirs)
         {
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                var childRecord = await ImportSingleResolvedTargetAsync(
+                var outcome = await ImportSingleResolvedTargetDetailedAsync(
                     childDir,
                     explicitExeRelPath: null,
+                    shortcutLaunchArguments: null,
                     cancellationToken,
                     allowContainerExpansion: false).ConfigureAwait(false);
-                if (childRecord is not null)
+                if (outcome is { PrimaryGame: not null })
                 {
-                    importedChildren.Add(childRecord);
+                    importedChildren.Add(outcome.PrimaryGame);
+                    addedCount += outcome.AddedCount;
+                    updatedCount += outcome.UpdatedCount;
                 }
             }
             catch (OperationCanceledException)
@@ -520,7 +825,7 @@ public sealed class GameLibraryService : IGameLibraryService
             }
         }
 
-        return importedChildren;
+        return (importedChildren, addedCount, updatedCount);
     }
 
     /// <summary>
@@ -898,6 +1203,7 @@ public sealed class GameLibraryService : IGameLibraryService
         ScannedGameDescriptor scanned,
         GameRecord? existing,
         bool preserveExistingExe,
+        bool preserveExistingTitle,
         DateTimeOffset now)
     {
         if (existing is null)
@@ -931,6 +1237,14 @@ public sealed class GameLibraryService : IGameLibraryService
             ? existing.ExecutableRelPath
             : scanned.ExecutableRelPath;
 
+        // Preserve user-pinned custom title & sort title across rescans and directory relocations.
+        string mergedTitle = preserveExistingTitle && !string.IsNullOrWhiteSpace(existing.Title)
+            ? existing.Title
+            : scanned.Title;
+        string mergedSortTitle = preserveExistingTitle && !string.IsNullOrWhiteSpace(existing.Title)
+            ? existing.EffectiveSortTitle
+            : scanned.SortTitle;
+
         // Preserve gbe_fork activated state if already enabled.
         var captureMode = existing.AchievementCaptureMode == AchievementCaptureMode.GbeForkActivated
             ? AchievementCaptureMode.GbeForkActivated
@@ -942,8 +1256,8 @@ public sealed class GameLibraryService : IGameLibraryService
 
         return existing with
         {
-            Title = scanned.Title,
-            SortTitle = scanned.SortTitle,
+            Title = mergedTitle,
+            SortTitle = mergedSortTitle,
             InstallDir = scanned.InstallDir,
             ExecutableRelPath = exeRelPath,
             PlatformSource = scanned.PlatformSource,

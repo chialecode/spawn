@@ -66,7 +66,7 @@ public sealed partial class GameDataItemViewModel : ObservableObject
         _onOpenLocation = onOpenLocation;
         _onCopyPath = onCopyPath;
         _onSelectionChanged = onSelectionChanged;
-        _isSelected = entry.IsSafeToClean && (entry.DefaultSelected || entry.Exists);
+        _isSelected = entry.IsSafeToClean && entry.Exists && entry.DefaultSelected;
     }
 
     partial void OnIsSelectedChanged(bool value)
@@ -74,6 +74,7 @@ public sealed partial class GameDataItemViewModel : ObservableObject
         if (!Entry.IsSafeToClean && value)
         {
             _isSelected = false;
+            OnPropertyChanged(nameof(IsSelected));
             return;
         }
 

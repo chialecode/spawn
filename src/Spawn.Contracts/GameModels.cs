@@ -68,6 +68,7 @@ public sealed record GameMetadataUpdate
     public DateTimeOffset? SteamLastUpdatedUtc { get; init; }
     public bool? VerifiedOfflineBypass { get; init; }
     public DateTimeOffset? VerifiedOfflineBypassAtUtc { get; init; }
+    public bool? PinTitle { get; init; }
 }
 
 /// <summary>
@@ -151,3 +152,128 @@ public sealed record AntiCheatGuardSnapshot(
     double RemainingCooldownSeconds,
     string? ActiveProtectedGameId,
     IReadOnlyList<string> DetectedResidualProcesses);
+
+/// <summary>
+/// Outcome status of requesting a tracked game session to stop.
+/// </summary>
+public enum GameStopOutcomeKind
+{
+    NotRunning = 0,
+    StoppedGracefully = 1,
+    ForceKilled = 2,
+    GracefulTimeoutStillRunning = 3,
+    Failed = 4,
+}
+
+/// <summary>
+/// Detailed result returned by <see cref="IGameLaunchService.StopGameAsync(string, bool, TimeSpan?, CancellationToken)"/>.
+/// </summary>
+public sealed record GameStopResult
+{
+    public required bool Succeeded { get; init; }
+    public required GameStopOutcomeKind Outcome { get; init; }
+    public bool StillRunning { get; init; }
+    public required string Message { get; init; }
+
+    public static GameStopResult NotRunning() =>
+        new()
+        {
+            Succeeded = false,
+            Outcome = GameStopOutcomeKind.NotRunning,
+            StillRunning = false,
+            Message = "该游戏当前未在运行中。",
+        };
+
+    public static GameStopResult StoppedGracefully(string? message = null) =>
+        new()
+        {
+            Succeeded = true,
+            Outcome = GameStopOutcomeKind.StoppedGracefully,
+            StillRunning = false,
+            Message = message ?? "游戏已优雅退出。",
+        };
+
+    public static GameStopResult ForceKilled(string? message = null) =>
+        new()
+        {
+            Succeeded = true,
+            Outcome = GameStopOutcomeKind.ForceKilled,
+            StillRunning = false,
+            Message = message ?? "已强制结束游戏进程树。",
+        };
+
+    public static GameStopResult GracefulTimeout(string? message = null) =>
+        new()
+        {
+            Succeeded = false,
+            Outcome = GameStopOutcomeKind.GracefulTimeoutStillRunning,
+            StillRunning = true,
+            Message = message ?? "游戏未在优雅关闭等待时间内退出（可能存在未保存进度或关闭确认弹窗），未强杀进程；如需强制结束请显式选择强杀。",
+        };
+
+    public static GameStopResult Failed(string message, bool stillRunning = false) =>
+        new()
+        {
+            Succeeded = false,
+            Outcome = GameStopOutcomeKind.Failed,
+            StillRunning = stillRunning,
+            Message = message,
+        };
+}
+
+/// <summary>
+/// Read-only auto-discovered local game library root directory (Steam <c>steamapps\common</c> or GOG installation root).
+/// </summary>
+public sealed record DiscoveredLibraryDirectory(
+    string Path,
+    PlatformSource PlatformSource,
+    string DisplayLabel,
+    int DetectedGameHintCount = 0);
+
+/// <summary>
+/// Detailed result of importing a single game folder, executable, <c>.lnk</c> shortcut, or multi-game anthology container.
+/// </summary>
+public sealed record GameImportBatchResult
+{
+    public IReadOnlyList<GameRecord> ImportedGames { get; init; } = [];
+    public int AddedCount { get; init; }
+    public int UpdatedCount { get; init; }
+    public bool ExpandedAnthology { get; init; }
+    public bool ResolvedFromShortcut { get; init; }
+    public string? FailureReason { get; init; }
+
+    [JsonIgnore]
+    public int TotalCount => ImportedGames.Count;
+
+    [JsonIgnore]
+    public GameRecord? PrimaryGame => ImportedGames.Count > 0 ? ImportedGames[0] : null;
+
+    [JsonIgnore]
+    public bool Succeeded => ImportedGames.Count > 0;
+}
+
+/// <summary>
+/// Detailed report of scanning one library root directory, distinguishing genuinely new imports,
+/// updated existing entries, and inaccessible or failed directories.
+/// </summary>
+public sealed record LibraryScanReport
+{
+    public required string RootDirectory { get; init; }
+    public bool RootAccessible { get; init; } = true;
+    public IReadOnlyList<GameRecord> AddedGames { get; init; } = [];
+    public IReadOnlyList<GameRecord> UpdatedGames { get; init; } = [];
+    public IReadOnlyList<string> InaccessibleDirectories { get; init; } = [];
+    public IReadOnlyList<string> FailedDirectories { get; init; } = [];
+
+    [JsonIgnore]
+    public int AddedCount => AddedGames.Count;
+
+    [JsonIgnore]
+    public int UpdatedCount => UpdatedGames.Count;
+
+    [JsonIgnore]
+    public int InaccessibleCount => InaccessibleDirectories.Count;
+
+    [JsonIgnore]
+    public IReadOnlyList<GameRecord> AllGames => [.. AddedGames, .. UpdatedGames];
+}

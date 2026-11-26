@@ -1,19 +1,44 @@
 using System.Globalization;
 using System.IO;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Spawn.Contracts;
 using Spawn.Host.Helpers;
 
 namespace Spawn.Host.ViewModels;
 
+/// <summary>
+/// Tri-state indicator for a game's achievement capture channel dot
+/// (<c>Ready</c> green, <c>PendingGbeFork</c> amber, <c>None</c> muted gray).
+/// </summary>
+public enum AchievementChannelDotState
+{
+    None = 0,
+    PendingGbeFork = 1,
+    Ready = 2,
+}
+
 public sealed partial class GameListItemViewModel : ObservableObject
 {
-    private readonly record struct ArtworkFileStamp(string? FullPath, bool Exists, long Length, long LastWriteUtcTicks);
+    private static readonly HashSet<string> FallbackIconFileStems = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "icon",
+        "icon_online",
+        "sidebaricon",
+        "sidebaricon2x",
+    };
 
-    private ArtworkFileStamp _smallIconStamp;
-    private ArtworkFileStamp _coverImageStamp;
-    private bool _artworkInitialized;
+    private readonly Dispatcher? _uiDispatcher;
+    private readonly SynchronizationContext? _syncContext;
+
+    private string? _lastSmallIconPath;
+    private string? _lastCoverSourcePath;
+    private bool _isCoverIconFallback;
+    private int _artworkLoadVersion;
+    private CancellationTokenSource? _artworkLoadCts;
+
+    public Task PendingArtworkLoadTask { get; private set; } = Task.CompletedTask;
 
     [ObservableProperty]
     private GameRecord _record;
@@ -50,6 +75,18 @@ public sealed partial class GameListItemViewModel : ObservableObject
     public bool HasVerifiedOfflineBypassBadge => Record.AntiCheatTier == AntiCheatTier.Tier2 && Record.VerifiedOfflineBypass;
     public string VerifiedOfflineBypassBadgeText => HasVerifiedOfflineBypassBadge ? "离线无 AC 就绪" : string.Empty;
 
+    /// <summary>
+    /// True when <see cref="CoverImage"/> comes from a dedicated poster/cover/hero asset (safe for UniformToFill poster card rendering).
+    /// </summary>
+    public bool HasPosterCover => CoverImage is not null && !_isCoverIconFallback;
+
+    /// <summary>
+    /// True when <see cref="CoverImage"/> falls back to an extracted icon rather than a poster cover (should be centered without stretching).
+    /// </summary>
+    public bool HasFallbackIcon => CoverImage is not null && _isCoverIconFallback;
+
+    public bool IsCoverIconFallback => _isCoverIconFallback;
+
     public string InitialsText
     {
         get
@@ -67,6 +104,50 @@ public sealed partial class GameListItemViewModel : ObservableObject
     }
 
     public bool IsRunning => ActiveSession is not null && ActiveSession.State != PlaySessionActivityState.Stopped;
+
+    public PlaySessionActivityState LiveActivityState => ActiveSession?.State ?? PlaySessionActivityState.Stopped;
+
+    public string LiveActivityStateText => LiveActivityState switch
+    {
+        PlaySessionActivityState.Launching => "正在启动",
+        PlaySessionActivityState.ShellBreakingWatch => "等待游戏主进程",
+        PlaySessionActivityState.Active => "有效游玩中",
+        PlaySessionActivityState.Background => "后台切出",
+        PlaySessionActivityState.Afk => "挂机静默",
+        PlaySessionActivityState.Stopping => "正在退出",
+        _ => string.Empty,
+    };
+
+    public long CurrentSessionTotalSec => ActiveSession is null
+        ? 0
+        : Math.Max(0, ActiveSession.SessionActiveSec)
+          + Math.Max(0, ActiveSession.SessionBackgroundSec)
+          + Math.Max(0, ActiveSession.SessionAfkSec);
+
+    public string CurrentSessionDurationText => IsRunning
+        ? $"本次 {UiFormatters.FormatDurationHms(CurrentSessionTotalSec)}"
+        : string.Empty;
+
+    public string LiveSessionBadgeText
+    {
+        get
+        {
+            if (!IsRunning)
+            {
+                return string.Empty;
+            }
+
+            return LiveActivityState switch
+            {
+                PlaySessionActivityState.Active
+                    or PlaySessionActivityState.Background
+                    or PlaySessionActivityState.Afk => $"{LiveActivityStateText} · {CurrentSessionDurationText}",
+                _ => LiveActivityStateText,
+            };
+        }
+    }
+
+    public bool HasEverPlayed => Record.TotalPlaytimeSec > 0 || Record.LastPlayedUtc.HasValue || IsRunning;
 
     public string SidebarRightTag => IsRunning ? "运行中" : PlatformShortLabel;
 
@@ -100,17 +181,44 @@ public sealed partial class GameListItemViewModel : ObservableObject
                 AchievementCaptureMode.SteamLocalCache => "Steam 本地统计缓存 · 就绪",
                 AchievementCaptureMode.GbeForkActivated => "Goldberg GSE (已无损激活) · 就绪",
                 AchievementCaptureMode.PendingGbeForkActivation => "待激活离线成就补丁",
-                _ => "就绪 · 自动探测成就通道",
+                _ => "纯单机运行模式",
             };
         }
     }
 
-    public bool IsChannelPendingPatch => Record.AchievementCaptureMode == AchievementCaptureMode.PendingGbeForkActivation;
+    public AchievementChannelDotState ChannelDotState => ResolveChannelDotState(Record.AchievementCaptureMode);
+    public bool IsChannelReady => ChannelDotState == AchievementChannelDotState.Ready;
+    public bool IsChannelPendingPatch => ChannelDotState == AchievementChannelDotState.PendingGbeFork;
+    public bool IsChannelNone => ChannelDotState == AchievementChannelDotState.None;
+    public string ChannelDotHexColor => ResolveChannelDotHexColor(ChannelDotState);
+
+    public static AchievementChannelDotState ResolveChannelDotState(AchievementCaptureMode mode) => mode switch
+    {
+        AchievementCaptureMode.PendingGbeForkActivation => AchievementChannelDotState.PendingGbeFork,
+        AchievementCaptureMode.SteamEmulator
+            or AchievementCaptureMode.SteamLocalCache
+            or AchievementCaptureMode.GogCometLocal
+            or AchievementCaptureMode.GogNativeSave
+            or AchievementCaptureMode.GbeForkActivated => AchievementChannelDotState.Ready,
+        _ => AchievementChannelDotState.None,
+    };
+
+    public static string ResolveChannelDotHexColor(AchievementChannelDotState state) => state switch
+    {
+        AchievementChannelDotState.Ready => "#10B981",
+        AchievementChannelDotState.PendingGbeFork => "#F59E0B",
+        _ => "#9CA3AF",
+    };
 
     public string PlaytimeSummaryText
     {
         get
         {
+            if (!HasEverPlayed)
+            {
+                return "尚未游玩";
+            }
+
             long active = Record.TotalActiveSec + (ActiveSession?.SessionActiveSec ?? 0);
             long bg = Record.TotalBackgroundSec + (ActiveSession?.SessionBackgroundSec ?? 0);
             long afk = Record.TotalAfkSec + (ActiveSession?.SessionAfkSec ?? 0);
@@ -124,19 +232,43 @@ public sealed partial class GameListItemViewModel : ObservableObject
         {
             if (IsRunning)
             {
-                return "正在运行";
+                return LiveSessionBadgeText;
             }
 
             return Record.LastPlayedUtc.HasValue
                 ? $"上次游玩 {Record.LastPlayedUtc.Value.ToLocalTime():yyyy-MM-dd HH:mm}"
-                : "尚未启动";
+                : "尚未游玩";
         }
     }
 
     public GameListItemViewModel(GameRecord record)
     {
         _record = record ?? throw new ArgumentNullException(nameof(record));
-        ReloadArtwork();
+        _uiDispatcher = ResolveLiveUiDispatcher();
+        _syncContext = _uiDispatcher is null ? SynchronizationContext.Current : null;
+        ReloadArtwork(forceRefresh: true);
+    }
+
+    internal static Dispatcher? ResolveLiveUiDispatcher()
+    {
+        if (SynchronizationContext.Current is DispatcherSynchronizationContext)
+        {
+            return Dispatcher.FromThread(Thread.CurrentThread);
+        }
+
+        Dispatcher? appDispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (appDispatcher is not null && appDispatcher.CheckAccess())
+        {
+            return appDispatcher;
+        }
+
+        return null;
+    }
+
+    partial void OnCoverImageChanged(BitmapImage? value)
+    {
+        OnPropertyChanged(nameof(HasPosterCover));
+        OnPropertyChanged(nameof(HasFallbackIcon));
     }
 
     public void UpdateRecord(GameRecord updated)
@@ -149,7 +281,7 @@ public sealed partial class GameListItemViewModel : ObservableObject
             Record = updated;
         }
 
-        ReloadArtwork();
+        ReloadArtwork(forceRefresh: recordChanged);
 
         if (recordChanged)
         {
@@ -201,55 +333,209 @@ public sealed partial class GameListItemViewModel : ObservableObject
 
     public void NotifyPlaytimeTick()
     {
+        OnPropertyChanged(nameof(LiveActivityState));
+        OnPropertyChanged(nameof(LiveActivityStateText));
+        OnPropertyChanged(nameof(CurrentSessionTotalSec));
+        OnPropertyChanged(nameof(CurrentSessionDurationText));
+        OnPropertyChanged(nameof(LiveSessionBadgeText));
+        OnPropertyChanged(nameof(HasEverPlayed));
         OnPropertyChanged(nameof(PlaytimeSummaryText));
         OnPropertyChanged(nameof(LastPlayedSummaryText));
     }
 
-    private void ReloadArtwork()
+    private void ReloadArtwork(bool forceRefresh)
     {
         string? smallSource = Record.IconPath ?? Record.CoverImagePath;
         string? coverSource = Record.CoverImagePath ?? Record.HeroImagePath ?? Record.IconPath;
 
-        ArtworkFileStamp nextSmallStamp = CaptureArtworkStamp(smallSource);
-        ArtworkFileStamp nextCoverStamp = CaptureArtworkStamp(coverSource);
-
-        if (!_artworkInitialized || nextSmallStamp != _smallIconStamp)
+        bool nextIsFallback = IsIconFallbackArtwork(coverSource, Record.IconPath);
+        if (_isCoverIconFallback != nextIsFallback)
         {
-            _smallIconStamp = nextSmallStamp;
-            SmallIcon = ImageLoaderHelper.LoadFrozen(smallSource, maxDecodeWidth: 96);
+            _isCoverIconFallback = nextIsFallback;
+            OnPropertyChanged(nameof(IsCoverIconFallback));
+            OnPropertyChanged(nameof(HasPosterCover));
+            OnPropertyChanged(nameof(HasFallbackIcon));
         }
 
-        if (!_artworkInitialized || nextCoverStamp != _coverImageStamp)
+        bool smallPathChanged = !string.Equals(smallSource, _lastSmallIconPath, StringComparison.OrdinalIgnoreCase);
+        bool coverPathChanged = !string.Equals(coverSource, _lastCoverSourcePath, StringComparison.OrdinalIgnoreCase);
+
+        if (!forceRefresh && !smallPathChanged && !coverPathChanged)
         {
-            _coverImageStamp = nextCoverStamp;
-            CoverImage = ImageLoaderHelper.LoadFrozen(coverSource, maxDecodeWidth: 320);
+            return;
         }
 
-        _artworkInitialized = true;
-    }
+        _lastSmallIconPath = smallSource;
+        _lastCoverSourcePath = coverSource;
 
-    private static ArtworkFileStamp CaptureArtworkStamp(string? rawPath)
-    {
-        if (string.IsNullOrWhiteSpace(rawPath))
+        bool needAsyncSmall = false;
+        bool needAsyncCover = false;
+
+        if (string.IsNullOrWhiteSpace(smallSource))
         {
-            return default;
+            SmallIcon = null;
+        }
+        else if (ImageLoaderHelper.TryGetCached(smallSource, 96, out var cachedSmall))
+        {
+            SmallIcon = cachedSmall;
+        }
+        else
+        {
+            needAsyncSmall = true;
         }
 
+        if (string.IsNullOrWhiteSpace(coverSource))
+        {
+            CoverImage = null;
+        }
+        else if (ImageLoaderHelper.TryGetCached(coverSource, 320, out var cachedCover))
+        {
+            CoverImage = cachedCover;
+        }
+        else
+        {
+            needAsyncCover = true;
+        }
+
+        if (!needAsyncSmall && !needAsyncCover)
+        {
+            PendingArtworkLoadTask = Task.CompletedTask;
+            return;
+        }
+
+        int version = Interlocked.Increment(ref _artworkLoadVersion);
+        CancellationTokenSource? previousCts = Interlocked.Exchange(ref _artworkLoadCts, new CancellationTokenSource());
         try
         {
-            string fullPath = Path.GetFullPath(rawPath);
-            var info = new FileInfo(fullPath);
-            if (!info.Exists)
-            {
-                return new ArtworkFileStamp(fullPath, Exists: false, Length: 0, LastWriteUtcTicks: 0);
-            }
-
-            return new ArtworkFileStamp(fullPath, Exists: true, info.Length, info.LastWriteTimeUtc.Ticks);
+            previousCts?.Cancel();
+            previousCts?.Dispose();
         }
         catch
         {
-            return new ArtworkFileStamp(rawPath, Exists: false, Length: 0, LastWriteUtcTicks: 0);
+            // Ignore cancellation race.
         }
+
+        CancellationToken ct = _artworkLoadCts!.Token;
+        PendingArtworkLoadTask = LoadArtworkInBackgroundAsync(
+            version,
+            needAsyncSmall ? smallSource : null,
+            needAsyncCover ? coverSource : null,
+            ct);
+    }
+
+    private async Task LoadArtworkInBackgroundAsync(
+        int version,
+        string? smallSource,
+        string? coverSource,
+        CancellationToken cancellationToken)
+    {
+        BitmapImage? decodedSmall = null;
+        BitmapImage? decodedCover = null;
+
+        if (!string.IsNullOrWhiteSpace(smallSource))
+        {
+            decodedSmall = await ImageLoaderHelper.LoadFrozenAsync(smallSource, maxDecodeWidth: 96, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        if (!string.IsNullOrWhiteSpace(coverSource))
+        {
+            decodedCover = await ImageLoaderHelper.LoadFrozenAsync(coverSource, maxDecodeWidth: 320, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        if (cancellationToken.IsCancellationRequested || Volatile.Read(ref _artworkLoadVersion) != version)
+        {
+            return;
+        }
+
+        await PostToOwnerThreadAsync(() =>
+        {
+            if (Volatile.Read(ref _artworkLoadVersion) != version)
+            {
+                return;
+            }
+
+            if (!string.IsNullOrWhiteSpace(smallSource))
+            {
+                SmallIcon = decodedSmall;
+            }
+
+            if (!string.IsNullOrWhiteSpace(coverSource))
+            {
+                CoverImage = decodedCover;
+            }
+        }).ConfigureAwait(false);
+    }
+
+    private Task PostToOwnerThreadAsync(Action action)
+    {
+        if (_uiDispatcher is not null && !_uiDispatcher.HasShutdownStarted && !_uiDispatcher.HasShutdownFinished)
+        {
+            if (_uiDispatcher.CheckAccess())
+            {
+                action();
+                return Task.CompletedTask;
+            }
+
+            return _uiDispatcher.InvokeAsync(action, DispatcherPriority.Background).Task;
+        }
+
+        if (_syncContext is not null)
+        {
+            var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _syncContext.Post(_ =>
+            {
+                try
+                {
+                    action();
+                    tcs.TrySetResult();
+                }
+                catch (Exception ex)
+                {
+                    tcs.TrySetException(ex);
+                }
+            }, null);
+            return tcs.Task;
+        }
+
+        action();
+        return Task.CompletedTask;
+    }
+
+    internal static bool IsIconFallbackArtwork(string? coverSource, string? iconPath)
+    {
+        if (string.IsNullOrWhiteSpace(coverSource))
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(iconPath))
+        {
+            try
+            {
+                if (string.Equals(Path.GetFullPath(coverSource), Path.GetFullPath(iconPath), StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+            catch
+            {
+                if (string.Equals(coverSource, iconPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+        }
+
+        string ext = Path.GetExtension(coverSource);
+        if (string.Equals(ext, ".ico", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        string stem = Path.GetFileNameWithoutExtension(coverSource);
+        return FallbackIconFileStems.Contains(stem);
     }
 
     private void NotifyDerivedProperties()
@@ -263,11 +549,24 @@ public sealed partial class GameListItemViewModel : ObservableObject
         OnPropertyChanged(nameof(AntiCheatBadgeHexColor));
         OnPropertyChanged(nameof(HasVerifiedOfflineBypassBadge));
         OnPropertyChanged(nameof(VerifiedOfflineBypassBadgeText));
+        OnPropertyChanged(nameof(HasPosterCover));
+        OnPropertyChanged(nameof(HasFallbackIcon));
+        OnPropertyChanged(nameof(IsCoverIconFallback));
         OnPropertyChanged(nameof(InitialsText));
         OnPropertyChanged(nameof(IsRunning));
+        OnPropertyChanged(nameof(LiveActivityState));
+        OnPropertyChanged(nameof(LiveActivityStateText));
+        OnPropertyChanged(nameof(CurrentSessionTotalSec));
+        OnPropertyChanged(nameof(CurrentSessionDurationText));
+        OnPropertyChanged(nameof(LiveSessionBadgeText));
+        OnPropertyChanged(nameof(HasEverPlayed));
         OnPropertyChanged(nameof(SidebarRightTag));
         OnPropertyChanged(nameof(EffectiveChannelStatusText));
+        OnPropertyChanged(nameof(ChannelDotState));
+        OnPropertyChanged(nameof(IsChannelReady));
         OnPropertyChanged(nameof(IsChannelPendingPatch));
+        OnPropertyChanged(nameof(IsChannelNone));
+        OnPropertyChanged(nameof(ChannelDotHexColor));
         OnPropertyChanged(nameof(PlaytimeSummaryText));
         OnPropertyChanged(nameof(LastPlayedSummaryText));
     }

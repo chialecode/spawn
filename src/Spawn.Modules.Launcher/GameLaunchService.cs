@@ -28,6 +28,17 @@ public sealed class GameLaunchOptions
     public TimeSpan SensitiveWorkerShutdownBudget { get; set; } = TimeSpan.FromSeconds(2);
 
     /// <summary>
+    /// Generous grace period given to a running game after sending <c>CloseMainWindow</c> during graceful stop
+    /// so it can flush auto-saves or prompt the user cleanly without premature process-tree termination.
+    /// </summary>
+    public TimeSpan GracefulStopTimeout { get; set; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// Time budget to wait for SQLite session ledger flush after an explicit <c>forceKill: true</c> termination.
+    /// </summary>
+    public TimeSpan ForceKillWaitTimeout { get; set; } = TimeSpan.FromSeconds(3);
+
+    /// <summary>
     /// Forces <c>CREATE_NO_WINDOW</c> when launching child executables (used by headless automated tests).
     /// </summary>
     public bool ForceCreateNoWindow { get; set; }
@@ -364,10 +375,29 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
 
     public async Task<bool> StopGameAsync(string gameId, CancellationToken cancellationToken = default)
     {
+        var result = await StopGameAsync(
+            gameId,
+            forceKill: false,
+            gracefulTimeout: null,
+            cancellationToken).ConfigureAwait(false);
+        return result.Succeeded;
+    }
+
+    public async Task<GameStopResult> StopGameAsync(
+        string gameId,
+        bool forceKill,
+        TimeSpan? gracefulTimeout = null,
+        CancellationToken cancellationToken = default)
+    {
         if (string.IsNullOrWhiteSpace(gameId) || !_runningContexts.TryGetValue(gameId, out var ctx))
         {
-            return false;
+            return GameStopResult.NotRunning();
         }
+
+        PlaySessionActivityState stateBeforeStop = _activeSessions.TryGetValue(gameId, out var currentBeforeStop)
+            && currentBeforeStop.State is not PlaySessionActivityState.Stopping and not PlaySessionActivityState.Stopped
+            ? currentBeforeStop.State
+            : PlaySessionActivityState.Active;
 
         ctx.MarkStopRequested();
 
@@ -385,25 +415,137 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
         }
 
         var pidsToStop = CollectLiveSessionPids(ctx);
-        foreach (int pid in pidsToStop)
+
+        if (!forceKill)
         {
-            TryGracefulOrTerminateProcess(pid);
+            foreach (int pid in pidsToStop)
+            {
+                TryRequestGracefulClose(pid);
+            }
+
+            TimeSpan effectiveGracefulTimeout = gracefulTimeout ?? _options.GracefulStopTimeout;
+            if (effectiveGracefulTimeout < TimeSpan.Zero)
+            {
+                effectiveGracefulTimeout = TimeSpan.Zero;
+            }
+
+            bool exitedGracefully = await WaitForSessionCompletionAsync(ctx, effectiveGracefulTimeout, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (exitedGracefully)
+            {
+                return GameStopResult.StoppedGracefully();
+            }
+
+            // Re-check liveness at the boundary in case processes exited right as the grace window elapsed.
+            if (CollectLiveSessionPids(ctx).Count == 0)
+            {
+                TimeSpan flushWait = _options.ForceKillWaitTimeout > TimeSpan.Zero
+                    ? _options.ForceKillWaitTimeout
+                    : TimeSpan.FromSeconds(2);
+                _ = await WaitForSessionCompletionAsync(ctx, flushWait, cancellationToken).ConfigureAwait(false);
+                return GameStopResult.StoppedGracefully();
+            }
+
+            // Graceful close timed out while the game is still running: NEVER force-kill behind the player's back.
+            // Restore tracking state cleanly so playtime accounting continues uninterrupted.
+            ctx.ClearStopRequested();
+            if (_runningContexts.ContainsKey(gameId) && _activeSessions.TryGetValue(gameId, out var stillActive))
+            {
+                var restoredSession = stillActive with
+                {
+                    State = stateBeforeStop,
+                    TrackedProcessIds = CollectLiveSessionPids(ctx),
+                };
+                _activeSessions[gameId] = restoredSession;
+                await PublishSessionEventAsync(
+                    new ActiveGameSessionChangedEvent(
+                        GameId: gameId,
+                        Session: restoredSession,
+                        CurrentState: stateBeforeStop,
+                        OccurredUtc: _timeProvider.GetUtcNow()),
+                    publishToBus: true).ConfigureAwait(false);
+            }
+
+            return GameStopResult.GracefulTimeout();
         }
 
-        // Wait up to 3s for monitor loop to observe termination and flush SQLite ledger.
-        try
+        // Explicit forceKill == true: optional brief graceful window when explicitly specified, then terminate process tree.
+        if (gracefulTimeout is { } explicitGrace && explicitGrace > TimeSpan.Zero)
         {
-            using var waitCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            waitCts.CancelAfter(TimeSpan.FromSeconds(3));
-            await ctx.CompletionTcs.Task.WaitAsync(waitCts.Token).ConfigureAwait(false);
+            foreach (int pid in pidsToStop)
+            {
+                TryRequestGracefulClose(pid);
+            }
+
+            if (await WaitForSessionCompletionAsync(ctx, explicitGrace, cancellationToken).ConfigureAwait(false))
+            {
+                return GameStopResult.StoppedGracefully();
+            }
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+
+        foreach (int pid in CollectLiveSessionPids(ctx))
+        {
+            TryForceTerminateProcessTree(pid);
+        }
+
+        TimeSpan killWait = _options.ForceKillWaitTimeout > TimeSpan.Zero
+            ? _options.ForceKillWaitTimeout
+            : TimeSpan.FromSeconds(3);
+        bool completedAfterKill = await WaitForSessionCompletionAsync(ctx, killWait, cancellationToken)
+            .ConfigureAwait(false);
+        if (!completedAfterKill)
         {
             // Force-cancel monitor loop if external process resisted termination.
             ctx.CancelMonitor();
+            _ = await WaitForSessionCompletionAsync(ctx, TimeSpan.FromSeconds(1), cancellationToken)
+                .ConfigureAwait(false);
         }
 
-        return true;
+        return GameStopResult.ForceKilled();
+    }
+
+    private async Task<bool> WaitForSessionCompletionAsync(
+        RunningSessionContext ctx,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        if (ctx.CompletionTcs.Task.IsCompleted)
+        {
+            return true;
+        }
+
+        if (timeout <= TimeSpan.Zero)
+        {
+            return ctx.CompletionTcs.Task.IsCompleted;
+        }
+
+        try
+        {
+            if (ReferenceEquals(_timeProvider, TimeProvider.System))
+            {
+                using var waitCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                waitCts.CancelAfter(timeout);
+                await ctx.CompletionTcs.Task.WaitAsync(waitCts.Token).ConfigureAwait(false);
+                return true;
+            }
+
+            using var delayCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            Task delayTask = DelayWithTimeProviderAsync(timeout, delayCts.Token);
+            Task completed = await Task.WhenAny(ctx.CompletionTcs.Task, delayTask).ConfigureAwait(false);
+            delayCts.Cancel();
+            if (ReferenceEquals(completed, ctx.CompletionTcs.Task))
+            {
+                return true;
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            return ctx.CompletionTcs.Task.IsCompleted;
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return ctx.CompletionTcs.Task.IsCompleted;
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -1098,7 +1240,31 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
         await tcs.Task.ConfigureAwait(false);
     }
 
-    private static void TryGracefulOrTerminateProcess(int pid)
+    private static bool TryRequestGracefulClose(int pid)
+    {
+        if (pid <= 4 || pid == Environment.ProcessId)
+        {
+            return false;
+        }
+
+        try
+        {
+            using var proc = Process.GetProcessById(pid);
+            if (proc.HasExited)
+            {
+                return true;
+            }
+
+            return proc.CloseMainWindow();
+        }
+        catch
+        {
+            // Process already exited, has no message window, or is inaccessible.
+            return false;
+        }
+    }
+
+    private static void TryForceTerminateProcessTree(int pid)
     {
         if (pid <= 4 || pid == Environment.ProcessId)
         {
@@ -1108,23 +1274,6 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
         try
         {
             using var proc = Process.GetProcessById(pid);
-            if (proc.HasExited)
-            {
-                return;
-            }
-
-            try
-            {
-                if (proc.CloseMainWindow() && proc.WaitForExit(1200))
-                {
-                    return;
-                }
-            }
-            catch
-            {
-                // Non-GUI process or access denied; fall through to Kill.
-            }
-
             if (!proc.HasExited)
             {
                 proc.Kill(entireProcessTree: true);
@@ -1273,6 +1422,8 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
         public bool StopRequested => _stopRequested;
 
         public void MarkStopRequested() => _stopRequested = true;
+
+        public void ClearStopRequested() => _stopRequested = false;
 
         public void SwitchToDirectoryTracking(IReadOnlyList<int> pids)
         {

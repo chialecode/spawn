@@ -1,8 +1,12 @@
+using System.Buffers.Binary;
 using System.Globalization;
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Win32;
 using Spawn.Contracts;
 using Spawn.Core;
 
@@ -24,6 +28,17 @@ public sealed class GameScanOptions
     /// </summary>
     public TimeSpan OnlineLookupTimeout { get; set; } = TimeSpan.FromSeconds(3.5);
 }
+
+/// <summary>
+/// Detailed import target resolution outcome supporting directories, <c>.exe</c> executables,
+/// and Windows <c>.lnk</c> desktop shortcuts (including extracted command-line arguments).
+/// </summary>
+public sealed record ResolvedImportTarget(
+    string InstallDir,
+    string? ExplicitExeRelPath,
+    string? LaunchArguments = null,
+    string? WorkingDirectory = null,
+    bool ResolvedFromShortcut = false);
 
 /// <summary>
 /// Parsed Steam <c>appmanifest_&lt;appid&gt;.acf</c> identity and version build metadata.
@@ -233,10 +248,25 @@ public sealed partial class GameDirectoryScanner
     }
 
     /// <summary>
-    /// Resolves a user-supplied folder path or <c>.exe</c> path into a canonical game installation root
-    /// and an optional explicit relative executable path.
+    /// Resolves a user-supplied folder path, <c>.exe</c> path, or Windows <c>.lnk</c> shortcut path
+    /// into a canonical game installation root and an optional explicit relative executable path.
     /// </summary>
     public static (string InstallDir, string? ExplicitExeRelPath)? ResolveImportTarget(string directoryOrExePath)
+    {
+        ResolvedImportTarget? detailed = ResolveImportTargetDetailed(directoryOrExePath);
+        return detailed is null ? null : (detailed.InstallDir, detailed.ExplicitExeRelPath);
+    }
+
+    /// <summary>
+    /// Resolves a user-supplied folder path, <c>.exe</c> path, or Windows <c>.lnk</c> shortcut path
+    /// into full target metadata including extracted shortcut launch arguments and working directory.
+    /// </summary>
+    public static ResolvedImportTarget? ResolveImportTargetDetailed(string directoryOrExePath) =>
+        ResolveImportTargetDetailedCore(directoryOrExePath, remainingShortcutHops: 2);
+
+    private static ResolvedImportTarget? ResolveImportTargetDetailedCore(
+        string directoryOrExePath,
+        int remainingShortcutHops)
     {
         if (string.IsNullOrWhiteSpace(directoryOrExePath))
         {
@@ -256,6 +286,39 @@ public sealed partial class GameDirectoryScanner
 
         if (File.Exists(fullPath))
         {
+            if (fullPath.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase))
+            {
+                if (remainingShortcutHops <= 0)
+                {
+                    return null;
+                }
+
+                ParsedWindowsShortcut? shortcut = TryParseWindowsShortcut(fullPath);
+                if (shortcut is null || string.IsNullOrWhiteSpace(shortcut.TargetPath))
+                {
+                    return null;
+                }
+
+                ResolvedImportTarget? nested = ResolveImportTargetDetailedCore(
+                    shortcut.TargetPath,
+                    remainingShortcutHops - 1);
+                if (nested is null)
+                {
+                    return null;
+                }
+
+                return nested with
+                {
+                    LaunchArguments = !string.IsNullOrWhiteSpace(shortcut.Arguments)
+                        ? shortcut.Arguments
+                        : nested.LaunchArguments,
+                    WorkingDirectory = !string.IsNullOrWhiteSpace(shortcut.WorkingDirectory)
+                        ? shortcut.WorkingDirectory
+                        : nested.WorkingDirectory,
+                    ResolvedFromShortcut = true,
+                };
+            }
+
             if (!fullPath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
             {
                 return null;
@@ -264,16 +327,324 @@ public sealed partial class GameDirectoryScanner
             string exeDir = Path.GetDirectoryName(fullPath)!;
             string inferredRoot = InferGameRootFromExecutable(fullPath, exeDir);
             string relExe = Path.GetRelativePath(inferredRoot, fullPath);
-            return (Path.TrimEndingDirectorySeparator(inferredRoot), relExe);
+            return new ResolvedImportTarget(
+                InstallDir: Path.TrimEndingDirectorySeparator(inferredRoot),
+                ExplicitExeRelPath: relExe,
+                WorkingDirectory: exeDir);
         }
 
         if (Directory.Exists(fullPath))
         {
             string unwrapped = UnwrapSingleNestedFolderIfNeeded(fullPath);
-            return (Path.TrimEndingDirectorySeparator(unwrapped), null);
+            return new ResolvedImportTarget(
+                InstallDir: Path.TrimEndingDirectorySeparator(unwrapped),
+                ExplicitExeRelPath: null);
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Parses Steam <c>libraryfolders.vdf</c> text (both modern nested <c>"path"</c> blocks and legacy numeric path entries)
+    /// and returns normalized unique library root directories in discovery order.
+    /// </summary>
+    public static IReadOnlyList<string> ParseSteamLibraryFoldersVdf(string? vdfText)
+    {
+        if (string.IsNullOrWhiteSpace(vdfText))
+        {
+            return [];
+        }
+
+        var results = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        int braceDepth = 0;
+        using var reader = new StringReader(vdfText);
+        string? rawLine;
+        while ((rawLine = reader.ReadLine()) is not null)
+        {
+            string line = StripVdfLineComment(rawLine).Trim();
+            if (line.Length == 0)
+            {
+                continue;
+            }
+
+            if (line == "{")
+            {
+                braceDepth++;
+                continue;
+            }
+
+            if (line == "}")
+            {
+                braceDepth = Math.Max(0, braceDepth - 1);
+                continue;
+            }
+
+            if (TryReadVdfKeyValuePair(line, out string key, out string value))
+            {
+                bool isModernPathEntry = braceDepth >= 2
+                                         && string.Equals(key, "path", StringComparison.OrdinalIgnoreCase);
+                bool isLegacyNumericPathEntry = braceDepth == 1
+                                                && IsAllAsciiDigits(key)
+                                                && LooksLikeWindowsDirectoryPath(value);
+
+                if (isModernPathEntry || isLegacyNumericPathEntry)
+                {
+                    string unescaped = value.Replace(@"\\", @"\", StringComparison.Ordinal).Trim();
+                    if (!string.IsNullOrWhiteSpace(unescaped))
+                    {
+                        try
+                        {
+                            string normalized = Path.TrimEndingDirectorySeparator(Path.GetFullPath(unescaped));
+                            if (seen.Add(normalized))
+                            {
+                                results.Add(normalized);
+                            }
+                        }
+                        catch
+                        {
+                            // Ignore malformed VDF path entry.
+                        }
+                    }
+                }
+            }
+            else if (line.EndsWith('{'))
+            {
+                braceDepth++;
+            }
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// Pure read-only discovery of existing local Steam (<c>steamapps\common</c> via <c>libraryfolders.vdf</c>)
+    /// and common GOG game library root directories so Settings can offer one-click library selection.
+    /// Never modifies registry keys or creates directories on disk.
+    /// </summary>
+    public static IReadOnlyList<DiscoveredLibraryDirectory> DiscoverLocalPlatformLibraryDirectories(
+        IEnumerable<string>? steamInstallDirHints = null,
+        IEnumerable<string>? gogRootDirHints = null,
+        bool probeSystemDefaults = true)
+    {
+        var discovered = new List<DiscoveredLibraryDirectory>();
+        var seenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // 1. Collect Steam installation & library root candidates (read-only).
+        var steamRoots = new List<string>();
+        var seenSteamRoots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void AddSteamRootCandidate(string? rawPath)
+        {
+            if (string.IsNullOrWhiteSpace(rawPath))
+            {
+                return;
+            }
+
+            try
+            {
+                string norm = Path.TrimEndingDirectorySeparator(Path.GetFullPath(rawPath.Trim().Trim('"')));
+                if (seenSteamRoots.Add(norm))
+                {
+                    steamRoots.Add(norm);
+                }
+            }
+            catch
+            {
+                // Ignore malformed path.
+            }
+        }
+
+        if (steamInstallDirHints is not null)
+        {
+            foreach (string hint in steamInstallDirHints)
+            {
+                AddSteamRootCandidate(hint);
+            }
+        }
+
+        if (probeSystemDefaults)
+        {
+            AddSteamRootCandidate(TryReadRegistryStringReadOnly(Registry.CurrentUser, @"Software\Valve\Steam", "SteamPath"));
+            AddSteamRootCandidate(TryReadRegistryStringReadOnly(Registry.LocalMachine, @"SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath"));
+            AddSteamRootCandidate(TryReadRegistryStringReadOnly(Registry.LocalMachine, @"SOFTWARE\Valve\Steam", "InstallPath"));
+
+            string pf86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+            string pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            if (!string.IsNullOrWhiteSpace(pf86))
+            {
+                AddSteamRootCandidate(Path.Combine(pf86, "Steam"));
+            }
+
+            if (!string.IsNullOrWhiteSpace(pf))
+            {
+                AddSteamRootCandidate(Path.Combine(pf, "Steam"));
+            }
+
+            foreach (string driveRoot in EnumerateReadyFixedDriveRoots())
+            {
+                AddSteamRootCandidate(Path.Combine(driveRoot, "Steam"));
+                AddSteamRootCandidate(Path.Combine(driveRoot, "SteamLibrary"));
+                AddSteamRootCandidate(Path.Combine(driveRoot, "Games", "Steam"));
+            }
+        }
+
+        var expandedSteamLibraries = new List<string>();
+        var seenSteamLibraries = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void AddSteamLibraryRoot(string? libRoot)
+        {
+            if (string.IsNullOrWhiteSpace(libRoot))
+            {
+                return;
+            }
+
+            try
+            {
+                string norm = Path.TrimEndingDirectorySeparator(Path.GetFullPath(libRoot));
+                if (seenSteamLibraries.Add(norm))
+                {
+                    expandedSteamLibraries.Add(norm);
+                }
+            }
+            catch
+            {
+                // Ignore malformed path.
+            }
+        }
+
+        foreach (string steamRoot in steamRoots)
+        {
+            AddSteamLibraryRoot(steamRoot);
+
+            string[] vdfCandidates =
+            [
+                Path.Combine(steamRoot, "steamapps", "libraryfolders.vdf"),
+                Path.Combine(steamRoot, "config", "libraryfolders.vdf"),
+            ];
+
+            foreach (string vdfPath in vdfCandidates)
+            {
+                if (!File.Exists(vdfPath))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    string vdfText = File.ReadAllText(vdfPath, Encoding.UTF8);
+                    foreach (string parsedLib in ParseSteamLibraryFoldersVdf(vdfText))
+                    {
+                        AddSteamLibraryRoot(parsedLib);
+                    }
+                }
+                catch
+                {
+                    // Ignore unreadable VDF file.
+                }
+            }
+        }
+
+        foreach (string libRoot in expandedSteamLibraries)
+        {
+            string commonDir = Path.Combine(libRoot, "steamapps", "common");
+            if (!Directory.Exists(commonDir))
+            {
+                continue;
+            }
+
+            string normalizedCommon = Path.TrimEndingDirectorySeparator(Path.GetFullPath(commonDir));
+            if (seenPaths.Add(normalizedCommon))
+            {
+                int gameHintCount = CountImmediateCandidateSubdirectories(normalizedCommon);
+                discovered.Add(new DiscoveredLibraryDirectory(
+                    Path: normalizedCommon,
+                    PlatformSource: PlatformSource.SteamLocal,
+                    DisplayLabel: $"Steam 游戏库 ({normalizedCommon})",
+                    DetectedGameHintCount: gameHintCount));
+            }
+        }
+
+        // 2. Collect common GOG installation library roots (read-only).
+        var gogCandidates = new List<string>();
+        var seenGogCandidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void AddGogCandidate(string? rawPath)
+        {
+            if (string.IsNullOrWhiteSpace(rawPath))
+            {
+                return;
+            }
+
+            try
+            {
+                string norm = Path.TrimEndingDirectorySeparator(Path.GetFullPath(rawPath.Trim().Trim('"')));
+                if (seenGogCandidates.Add(norm))
+                {
+                    gogCandidates.Add(norm);
+                }
+            }
+            catch
+            {
+                // Ignore malformed path.
+            }
+        }
+
+        if (gogRootDirHints is not null)
+        {
+            foreach (string hint in gogRootDirHints)
+            {
+                AddGogCandidate(hint);
+            }
+        }
+
+        if (probeSystemDefaults)
+        {
+            foreach (string regParent in DiscoverGogParentFoldersFromRegistryReadOnly())
+            {
+                AddGogCandidate(regParent);
+            }
+
+            string pf86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+            string pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            if (!string.IsNullOrWhiteSpace(pf86))
+            {
+                AddGogCandidate(Path.Combine(pf86, "GOG Galaxy", "Games"));
+            }
+
+            if (!string.IsNullOrWhiteSpace(pf))
+            {
+                AddGogCandidate(Path.Combine(pf, "GOG Galaxy", "Games"));
+            }
+
+            foreach (string driveRoot in EnumerateReadyFixedDriveRoots())
+            {
+                AddGogCandidate(Path.Combine(driveRoot, "GOG Games"));
+                AddGogCandidate(Path.Combine(driveRoot, "GOG Galaxy", "Games"));
+                AddGogCandidate(Path.Combine(driveRoot, "Games", "GOG Games"));
+            }
+        }
+
+        foreach (string gogDir in gogCandidates)
+        {
+            if (!Directory.Exists(gogDir))
+            {
+                continue;
+            }
+
+            if (seenPaths.Add(gogDir))
+            {
+                int gameHintCount = CountImmediateCandidateSubdirectories(gogDir);
+                discovered.Add(new DiscoveredLibraryDirectory(
+                    Path: gogDir,
+                    PlatformSource: PlatformSource.GogOffline,
+                    DisplayLabel: $"GOG 游戏库 ({gogDir})",
+                    DetectedGameHintCount: gameHintCount));
+            }
+        }
+
+        return discovered;
     }
 
     private const int MaxContainerExpansionDepth = 2;
@@ -284,14 +655,58 @@ public sealed partial class GameDirectoryScanner
     /// a single-game engine root at the parent) are automatically expanded into their standalone child game roots.
     /// If <paramref name="rootDirectory"/> itself is a single game folder, returns <c>[rootDirectory]</c>.
     /// </summary>
-    public IReadOnlyList<string> DiscoverCandidateGameDirectories(string rootDirectory)
+    public IReadOnlyList<string> DiscoverCandidateGameDirectories(string rootDirectory) =>
+        DiscoverCandidateGameDirectories(rootDirectory, out _);
+
+    /// <summary>
+    /// Discovers candidate game installation folders inside <paramref name="rootDirectory"/> and also reports
+    /// any root or immediate subdirectories that could not be accessed due to permissions, missing drives, or I/O errors.
+    /// </summary>
+    public IReadOnlyList<string> DiscoverCandidateGameDirectories(
+        string rootDirectory,
+        out IReadOnlyList<string> inaccessibleDirectories)
     {
-        if (string.IsNullOrWhiteSpace(rootDirectory) || !Directory.Exists(rootDirectory))
+        var inaccessible = new List<string>();
+        inaccessibleDirectories = inaccessible;
+
+        if (string.IsNullOrWhiteSpace(rootDirectory))
         {
             return [];
         }
 
-        string normalizedRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(rootDirectory));
+        string normalizedRoot;
+        try
+        {
+            normalizedRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(rootDirectory));
+        }
+        catch
+        {
+            inaccessible.Add(rootDirectory);
+            return [];
+        }
+
+        if (!Directory.Exists(normalizedRoot))
+        {
+            inaccessible.Add(normalizedRoot);
+            return [];
+        }
+
+        // Verify root directory is actually readable before attempting discovery.
+        try
+        {
+            using var probe = Directory.EnumerateFileSystemEntries(normalizedRoot).GetEnumerator();
+            _ = probe.MoveNext();
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or DirectoryNotFoundException)
+        {
+            inaccessible.Add(normalizedRoot);
+            if (_logger.IsEnabled(LogLevel.Warning))
+            {
+                _logger.LogWarning(ex, "Library root directory is inaccessible: {RootDirectory}.", normalizedRoot);
+            }
+
+            return [];
+        }
 
         // Only treat rootDirectory as a direct game or top-level anthology pack when it has direct game/menu markers
         // at depth 0 (e.g., goggame-*.info, steam_appid.txt, Engine\, or a top-level menu Launcher.exe).
@@ -326,6 +741,12 @@ public sealed partial class GameDirectoryScanner
                     continue;
                 }
 
+                if (!IsDirectoryReadable(subDir))
+                {
+                    inaccessible.Add(Path.TrimEndingDirectorySeparator(Path.GetFullPath(subDir)));
+                    continue;
+                }
+
                 string candidate = UnwrapSingleNestedFolderIfNeeded(subDir);
                 var expandedChildren = TryExpandMultiGameContainer(candidate);
                 if (expandedChildren.Count >= 2)
@@ -342,6 +763,7 @@ public sealed partial class GameDirectoryScanner
         }
         catch (Exception ex)
         {
+            inaccessible.Add(normalizedRoot);
             if (_logger.IsEnabled(LogLevel.Warning))
             {
                 _logger.LogWarning(ex, "Error enumerating library root directory {RootDirectory}.", normalizedRoot);
@@ -2298,5 +2720,658 @@ public sealed partial class GameDirectoryScanner
             JsonValueKind.Number => prop.GetRawText(),
             _ => null,
         };
+    }
+
+    // -------------------------------------------------------------------------
+    // Windows Shortcut (.lnk) Parser ([MS-SHLLINK] Binary + IShellLinkW Fallback)
+    // -------------------------------------------------------------------------
+
+    private sealed record ParsedWindowsShortcut(
+        string? TargetPath,
+        string? Arguments,
+        string? WorkingDirectory);
+
+    private static readonly Guid ClsidShellLink = new("00021401-0000-0000-C000-000000000046");
+
+    private static ParsedWindowsShortcut? TryParseWindowsShortcut(string lnkFullPath)
+    {
+        ParsedWindowsShortcut? parsed = TryParseWindowsShortcutBinary(lnkFullPath);
+        if (parsed is not null && !string.IsNullOrWhiteSpace(parsed.TargetPath))
+        {
+            return parsed;
+        }
+
+        ParsedWindowsShortcut? comParsed = TryParseWindowsShortcutViaCom(lnkFullPath);
+        if (comParsed is null)
+        {
+            return parsed;
+        }
+
+        return new ParsedWindowsShortcut(
+            TargetPath: !string.IsNullOrWhiteSpace(comParsed.TargetPath) ? comParsed.TargetPath : parsed?.TargetPath,
+            Arguments: !string.IsNullOrWhiteSpace(comParsed.Arguments) ? comParsed.Arguments : parsed?.Arguments,
+            WorkingDirectory: !string.IsNullOrWhiteSpace(comParsed.WorkingDirectory) ? comParsed.WorkingDirectory : parsed?.WorkingDirectory);
+    }
+
+    private static ParsedWindowsShortcut? TryParseWindowsShortcutBinary(string lnkFullPath)
+    {
+        const uint ExpectedHeaderSize = 0x0000004C;
+        const uint FlagHasLinkTargetIdList = 0x00000001;
+        const uint FlagHasLinkInfo = 0x00000002;
+        const uint FlagHasName = 0x00000004;
+        const uint FlagHasRelativePath = 0x00000008;
+        const uint FlagHasWorkingDir = 0x00000010;
+        const uint FlagHasArguments = 0x00000020;
+        const uint FlagHasIconLocation = 0x00000040;
+        const uint FlagIsUnicode = 0x00000080;
+        const uint LinkInfoFlagVolumeIdAndLocalBasePath = 0x00000001;
+        const uint EnvVariableDataBlockSignature = 0xA0000001;
+
+        byte[] data;
+        try
+        {
+            var info = new FileInfo(lnkFullPath);
+            if (!info.Exists || info.Length < ExpectedHeaderSize || info.Length > 4 * 1024 * 1024)
+            {
+                return null;
+            }
+
+            data = File.ReadAllBytes(lnkFullPath);
+        }
+        catch
+        {
+            return null;
+        }
+
+        ReadOnlySpan<byte> span = data;
+        uint headerSize = BinaryPrimitives.ReadUInt32LittleEndian(span[..4]);
+        if (headerSize != ExpectedHeaderSize)
+        {
+            return null;
+        }
+
+        Guid linkClsid = new(span.Slice(4, 16));
+        if (linkClsid != ClsidShellLink)
+        {
+            return null;
+        }
+
+        uint linkFlags = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(20, 4));
+        int pos = (int)ExpectedHeaderSize;
+
+        // 1. Optional LinkTargetIDList
+        if ((linkFlags & FlagHasLinkTargetIdList) != 0)
+        {
+            if (pos + 2 > span.Length)
+            {
+                return null;
+            }
+
+            ushort idListSize = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(pos, 2));
+            pos += 2 + idListSize;
+            if (pos > span.Length)
+            {
+                return null;
+            }
+        }
+
+        string? localTargetPath = null;
+
+        // 2. Optional LinkInfo
+        if ((linkFlags & FlagHasLinkInfo) != 0)
+        {
+            if (pos + 4 > span.Length)
+            {
+                return null;
+            }
+
+            int linkInfoStart = pos;
+            int linkInfoSize = BinaryPrimitives.ReadInt32LittleEndian(span.Slice(linkInfoStart, 4));
+            if (linkInfoSize < 28 || linkInfoStart + linkInfoSize > span.Length)
+            {
+                return null;
+            }
+
+            int linkInfoHeaderSize = BinaryPrimitives.ReadInt32LittleEndian(span.Slice(linkInfoStart + 4, 4));
+            uint linkInfoFlags = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(linkInfoStart + 8, 4));
+            ReadOnlySpan<byte> linkInfoSpan = span.Slice(linkInfoStart, linkInfoSize);
+
+            if ((linkInfoFlags & LinkInfoFlagVolumeIdAndLocalBasePath) != 0)
+            {
+                string? basePath = null;
+                string? commonSuffix = null;
+
+                if (linkInfoHeaderSize >= 0x24 && linkInfoSpan.Length >= 0x24)
+                {
+                    int localBaseUnicodeOffset = BinaryPrimitives.ReadInt32LittleEndian(linkInfoSpan.Slice(0x1C, 4));
+                    int commonSuffixUnicodeOffset = BinaryPrimitives.ReadInt32LittleEndian(linkInfoSpan.Slice(0x20, 4));
+                    basePath = ReadNullTerminatedUtf16(linkInfoSpan, localBaseUnicodeOffset);
+                    commonSuffix = ReadNullTerminatedUtf16(linkInfoSpan, commonSuffixUnicodeOffset);
+                }
+
+                if (string.IsNullOrWhiteSpace(basePath))
+                {
+                    int localBaseAnsiOffset = BinaryPrimitives.ReadInt32LittleEndian(linkInfoSpan.Slice(0x10, 4));
+                    int commonSuffixAnsiOffset = BinaryPrimitives.ReadInt32LittleEndian(linkInfoSpan.Slice(0x18, 4));
+                    basePath = ReadNullTerminatedAnsi(linkInfoSpan, localBaseAnsiOffset);
+                    commonSuffix = ReadNullTerminatedAnsi(linkInfoSpan, commonSuffixAnsiOffset);
+                }
+
+                if (!string.IsNullOrWhiteSpace(basePath))
+                {
+                    localTargetPath = string.IsNullOrWhiteSpace(commonSuffix)
+                        ? basePath
+                        : CombineShortcutPath(basePath, commonSuffix);
+                }
+            }
+
+            pos = linkInfoStart + linkInfoSize;
+        }
+
+        // 3. Optional StringData in strict [MS-SHLLINK] order
+        bool isUnicode = (linkFlags & FlagIsUnicode) != 0;
+        if ((linkFlags & FlagHasName) != 0)
+        {
+            _ = ReadCountedLinkString(span, ref pos, isUnicode);
+        }
+
+        string? relativePath = (linkFlags & FlagHasRelativePath) != 0
+            ? ReadCountedLinkString(span, ref pos, isUnicode)
+            : null;
+        string? workingDir = (linkFlags & FlagHasWorkingDir) != 0
+            ? ReadCountedLinkString(span, ref pos, isUnicode)
+            : null;
+        string? arguments = (linkFlags & FlagHasArguments) != 0
+            ? ReadCountedLinkString(span, ref pos, isUnicode)
+            : null;
+        if ((linkFlags & FlagHasIconLocation) != 0)
+        {
+            _ = ReadCountedLinkString(span, ref pos, isUnicode);
+        }
+
+        // 4. Optional ExtraData blocks (e.g. EnvironmentVariableDataBlock 0xA0000001)
+        string? envTargetPath = null;
+        while (pos + 4 <= span.Length)
+        {
+            uint blockSize = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(pos, 4));
+            if (blockSize < 4 || pos + blockSize > span.Length)
+            {
+                break;
+            }
+
+            if (blockSize >= 8)
+            {
+                uint signature = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(pos + 4, 4));
+                if (signature == EnvVariableDataBlockSignature && blockSize >= 268)
+                {
+                    ReadOnlySpan<byte> blockSpan = span.Slice(pos, (int)blockSize);
+                    string? rawEnv = blockSize >= 788
+                        ? ReadNullTerminatedUtf16(blockSpan, 268)
+                        : null;
+                    if (string.IsNullOrWhiteSpace(rawEnv))
+                    {
+                        rawEnv = ReadNullTerminatedAnsi(blockSpan, 8);
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(rawEnv))
+                    {
+                        envTargetPath = Environment.ExpandEnvironmentVariables(rawEnv.Trim());
+                    }
+                }
+            }
+
+            pos += (int)blockSize;
+        }
+
+        string? resolvedRelativePath = null;
+        if (!string.IsNullOrWhiteSpace(relativePath))
+        {
+            try
+            {
+                string? lnkDir = Path.GetDirectoryName(lnkFullPath);
+                if (!string.IsNullOrWhiteSpace(lnkDir))
+                {
+                    resolvedRelativePath = Path.GetFullPath(Path.Combine(lnkDir, relativePath.Trim()));
+                }
+            }
+            catch
+            {
+                // Ignore malformed relative path.
+            }
+        }
+
+        string? bestTarget = null;
+        foreach (string? candidate in new[] { localTargetPath, resolvedRelativePath, envTargetPath })
+        {
+            if (string.IsNullOrWhiteSpace(candidate))
+            {
+                continue;
+            }
+
+            string cleaned = Environment.ExpandEnvironmentVariables(candidate.Trim().Trim('"'));
+            if (File.Exists(cleaned) || Directory.Exists(cleaned))
+            {
+                bestTarget = cleaned;
+                break;
+            }
+
+            bestTarget ??= cleaned;
+        }
+
+        string? trimmedArgs = string.IsNullOrWhiteSpace(arguments) ? null : arguments.Trim();
+        string? trimmedWorkDir = string.IsNullOrWhiteSpace(workingDir)
+            ? null
+            : Environment.ExpandEnvironmentVariables(workingDir.Trim().Trim('"'));
+
+        if (bestTarget is null && trimmedArgs is null && trimmedWorkDir is null)
+        {
+            return null;
+        }
+
+        return new ParsedWindowsShortcut(bestTarget, trimmedArgs, trimmedWorkDir);
+    }
+
+    private static ParsedWindowsShortcut? TryParseWindowsShortcutViaCom(string lnkFullPath)
+    {
+        object? comObj = null;
+        try
+        {
+            Type? shellLinkType = Type.GetTypeFromCLSID(ClsidShellLink, throwOnError: false);
+            if (shellLinkType is null)
+            {
+                return null;
+            }
+
+            comObj = Activator.CreateInstance(shellLinkType);
+            if (comObj is not IShellLinkW shellLink || comObj is not IPersistFile persistFile)
+            {
+                return null;
+            }
+
+            persistFile.Load(lnkFullPath, 0 /* STGM_READ */);
+
+            var pathBuf = new StringBuilder(1024);
+            shellLink.GetPath(pathBuf, pathBuf.Capacity, nint.Zero, 0);
+
+            var argsBuf = new StringBuilder(2048);
+            shellLink.GetArguments(argsBuf, argsBuf.Capacity);
+
+            var workBuf = new StringBuilder(1024);
+            shellLink.GetWorkingDirectory(workBuf, workBuf.Capacity);
+
+            string? target = pathBuf.Length > 0 ? Environment.ExpandEnvironmentVariables(pathBuf.ToString().Trim()) : null;
+            string? args = argsBuf.Length > 0 ? argsBuf.ToString().Trim() : null;
+            string? workDir = workBuf.Length > 0 ? Environment.ExpandEnvironmentVariables(workBuf.ToString().Trim()) : null;
+
+            return string.IsNullOrWhiteSpace(target) && string.IsNullOrWhiteSpace(args)
+                ? null
+                : new ParsedWindowsShortcut(target, args, workDir);
+        }
+        catch
+        {
+            return null;
+        }
+        finally
+        {
+            if (comObj is not null && Marshal.IsComObject(comObj))
+            {
+                try
+                {
+                    Marshal.FinalReleaseComObject(comObj);
+                }
+                catch
+                {
+                    // Ignore COM cleanup error.
+                }
+            }
+        }
+    }
+
+    private static string? ReadCountedLinkString(ReadOnlySpan<byte> span, ref int pos, bool isUnicode)
+    {
+        if (pos + 2 > span.Length)
+        {
+            return null;
+        }
+
+        ushort charCount = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(pos, 2));
+        pos += 2;
+        int byteCount = isUnicode ? charCount * 2 : charCount;
+        if (byteCount <= 0 || pos + byteCount > span.Length)
+        {
+            pos = Math.Min(span.Length, pos + Math.Max(0, byteCount));
+            return null;
+        }
+
+        ReadOnlySpan<byte> slice = span.Slice(pos, byteCount);
+        pos += byteCount;
+        return isUnicode
+            ? Encoding.Unicode.GetString(slice)
+            : Encoding.Default.GetString(slice);
+    }
+
+    private static string? ReadNullTerminatedUtf16(ReadOnlySpan<byte> span, int offset)
+    {
+        if (offset <= 0 || offset >= span.Length - 1)
+        {
+            return null;
+        }
+
+        int end = offset;
+        while (end + 1 < span.Length)
+        {
+            if (span[end] == 0 && span[end + 1] == 0)
+            {
+                break;
+            }
+
+            end += 2;
+        }
+
+        return end > offset ? Encoding.Unicode.GetString(span.Slice(offset, end - offset)) : null;
+    }
+
+    private static string? ReadNullTerminatedAnsi(ReadOnlySpan<byte> span, int offset)
+    {
+        if (offset <= 0 || offset >= span.Length)
+        {
+            return null;
+        }
+
+        int end = offset;
+        while (end < span.Length && span[end] != 0)
+        {
+            end++;
+        }
+
+        return end > offset ? Encoding.Default.GetString(span.Slice(offset, end - offset)) : null;
+    }
+
+    private static string CombineShortcutPath(string basePath, string suffix)
+    {
+        string trimmedBase = basePath.TrimEnd('\\', '/');
+        string trimmedSuffix = suffix.TrimStart('\\', '/');
+        return string.IsNullOrEmpty(trimmedSuffix)
+            ? basePath
+            : trimmedBase + Path.DirectorySeparatorChar + trimmedSuffix;
+    }
+
+    private static bool IsDirectoryReadable(string directoryPath)
+    {
+        try
+        {
+            using var enumerator = Directory.EnumerateFileSystemEntries(directoryPath).GetEnumerator();
+            _ = enumerator.MoveNext();
+            return true;
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or DirectoryNotFoundException)
+        {
+            return false;
+        }
+    }
+
+    private static string StripVdfLineComment(string line)
+    {
+        bool inQuotes = false;
+        for (int i = 0; i < line.Length; i++)
+        {
+            char ch = line[i];
+            if (ch == '"' && (i == 0 || line[i - 1] != '\\'))
+            {
+                inQuotes = !inQuotes;
+            }
+            else if (!inQuotes && ch == '/' && i + 1 < line.Length && line[i + 1] == '/')
+            {
+                return line[..i];
+            }
+        }
+
+        return line;
+    }
+
+    private static bool TryReadVdfKeyValuePair(string line, out string key, out string value)
+    {
+        key = string.Empty;
+        value = string.Empty;
+
+        int firstStart = line.IndexOf('"');
+        if (firstStart < 0)
+        {
+            return false;
+        }
+
+        int firstEnd = FindClosingVdfQuote(line, firstStart + 1);
+        if (firstEnd < 0)
+        {
+            return false;
+        }
+
+        int secondStart = line.IndexOf('"', firstEnd + 1);
+        if (secondStart < 0)
+        {
+            return false;
+        }
+
+        int secondEnd = FindClosingVdfQuote(line, secondStart + 1);
+        if (secondEnd < 0)
+        {
+            return false;
+        }
+
+        key = line[(firstStart + 1)..firstEnd];
+        value = line[(secondStart + 1)..secondEnd];
+        return true;
+    }
+
+    private static int FindClosingVdfQuote(string line, int startIndex)
+    {
+        for (int i = startIndex; i < line.Length; i++)
+        {
+            if (line[i] != '"')
+            {
+                continue;
+            }
+
+            int backslashCount = 0;
+            for (int j = i - 1; j >= startIndex && line[j] == '\\'; j--)
+            {
+                backslashCount++;
+            }
+
+            if ((backslashCount & 1) == 0)
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    private static bool IsAllAsciiDigits(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return false;
+        }
+
+        foreach (char ch in text)
+        {
+            if (ch is < '0' or > '9')
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool LooksLikeWindowsDirectoryPath(string text) =>
+        text.Length >= 3
+        && ((char.IsAsciiLetter(text[0]) && text[1] == ':' && (text[2] == '\\' || text[2] == '/'))
+            || text.StartsWith(@"\\", StringComparison.Ordinal));
+
+    private static IEnumerable<string> EnumerateReadyFixedDriveRoots()
+    {
+        DriveInfo[] drives;
+        try
+        {
+            drives = DriveInfo.GetDrives();
+        }
+        catch
+        {
+            yield break;
+        }
+
+        foreach (DriveInfo drive in drives)
+        {
+            string? root = null;
+            try
+            {
+                if (drive.DriveType == DriveType.Fixed && drive.IsReady)
+                {
+                    root = drive.RootDirectory.FullName;
+                }
+            }
+            catch
+            {
+                // Ignore transient drive status errors.
+            }
+
+            if (!string.IsNullOrWhiteSpace(root))
+            {
+                yield return root;
+            }
+        }
+    }
+
+    private static string? TryReadRegistryStringReadOnly(RegistryKey hive, string subKeyPath, string valueName)
+    {
+        try
+        {
+            using RegistryKey? key = hive.OpenSubKey(subKeyPath, writable: false);
+            return key?.GetValue(valueName) as string;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static HashSet<string> DiscoverGogParentFoldersFromRegistryReadOnly()
+    {
+        var parents = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        string[] regRoots =
+        [
+            @"SOFTWARE\WOW6432Node\GOG.com\Games",
+            @"SOFTWARE\GOG.com\Games",
+        ];
+
+        foreach (string regRoot in regRoots)
+        {
+            try
+            {
+                using RegistryKey? gamesKey = Registry.LocalMachine.OpenSubKey(regRoot, writable: false);
+                if (gamesKey is null)
+                {
+                    continue;
+                }
+
+                foreach (string gameIdKeyName in gamesKey.GetSubKeyNames())
+                {
+                    try
+                    {
+                        using RegistryKey? subKey = gamesKey.OpenSubKey(gameIdKeyName, writable: false);
+                        string? gamePath = subKey?.GetValue("path") as string ?? subKey?.GetValue("PATH") as string;
+                        if (string.IsNullOrWhiteSpace(gamePath))
+                        {
+                            continue;
+                        }
+
+                        string? parent = Directory.GetParent(Path.TrimEndingDirectorySeparator(gamePath.Trim()))?.FullName;
+                        if (!string.IsNullOrWhiteSpace(parent) && Directory.Exists(parent))
+                        {
+                            parents.Add(Path.TrimEndingDirectorySeparator(parent));
+                        }
+                    }
+                    catch
+                    {
+                        // Ignore unreadable subkey.
+                    }
+                }
+            }
+            catch
+            {
+                // Ignore inaccessible registry branch.
+            }
+        }
+
+        return parents;
+    }
+
+    private static int CountImmediateCandidateSubdirectories(string rootDir)
+    {
+        try
+        {
+            int count = 0;
+            var opts = new EnumerationOptions
+            {
+                IgnoreInaccessible = true,
+                RecurseSubdirectories = false,
+                AttributesToSkip = FileAttributes.Hidden | FileAttributes.System,
+            };
+
+            foreach (string sub in Directory.EnumerateDirectories(rootDir, "*", opts))
+            {
+                if (!SkippedSubdirectoryNames.Contains(Path.GetFileName(sub)))
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    [ComImport]
+    [Guid("000214F9-0000-0000-C000-000000000046")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IShellLinkW
+    {
+        void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszFile, int cchMaxPath, nint pfd, uint fFlags);
+        void GetIDList(out nint ppidl);
+        void SetIDList(nint pidl);
+        void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszName, int cchMaxName);
+        void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string pszName);
+        void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszDir, int cchMaxPath);
+        void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string pszDir);
+        void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszArgs, int cchMaxPath);
+        void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string pszArgs);
+        void GetHotkey(out short pwHotkey);
+        void SetHotkey(short wHotkey);
+        void GetShowCmd(out int piShowCmd);
+        void SetShowCmd(int iShowCmd);
+        void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszIconPath, int cchIconPath, out int piIcon);
+        void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string pszIconPath, int iIcon);
+        void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string pszPathRel, uint dwReserved);
+        void Resolve(nint hwnd, uint fFlags);
+        void SetPath([MarshalAs(UnmanagedType.LPWStr)] string pszFile);
+    }
+
+    [ComImport]
+    [Guid("0000010b-0000-0000-C000-000000000046")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IPersistFile
+    {
+        void GetClassID(out Guid pClassID);
+        [PreserveSig]
+        int IsDirty();
+        void Load([MarshalAs(UnmanagedType.LPWStr)] string pszFileName, uint dwMode);
+        void Save([MarshalAs(UnmanagedType.LPWStr)] string pszFileName, [MarshalAs(UnmanagedType.Bool)] bool fRemember);
+        void SaveCompleted([MarshalAs(UnmanagedType.LPWStr)] string pszFileName);
+        void GetCurFile([MarshalAs(UnmanagedType.LPWStr)] out string ppszFileName);
     }
 }

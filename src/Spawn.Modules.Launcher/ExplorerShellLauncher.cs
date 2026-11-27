@@ -109,13 +109,14 @@ public sealed class DefaultGameProcessStarter : IGameProcessStarter
             return false;
         }
 
-        string trimmed = target.Trim();
-        if (trimmed.Contains('\0', StringComparison.Ordinal)
-            || trimmed.Contains('\r', StringComparison.Ordinal)
-            || trimmed.Contains('\n', StringComparison.Ordinal))
+        if (target.Contains('\0', StringComparison.Ordinal)
+            || target.Contains('\r', StringComparison.Ordinal)
+            || target.Contains('\n', StringComparison.Ordinal))
         {
             return false;
         }
+
+        string trimmed = target.Trim();
 
         // Reject Windows drive paths ("C:\...", "C:/...") and UNC shares ("\\server\share").
         if ((trimmed.Length >= 2 && char.IsAsciiLetter(trimmed[0]) && trimmed[1] == ':')

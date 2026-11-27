@@ -46,10 +46,11 @@ public sealed partial class SynthesizedUnlockSoundPlayer : IDisposable
 
     private readonly Lock _cacheLock = new();
     private readonly bool _forceSilentEnvironment;
-    private readonly Func<SteamClientSoundProbeResult> _steamProbe;
+    private readonly Func<string?, SteamClientSoundProbeResult> _steamProbe;
     private readonly Func<DateTimeOffset> _utcNowProvider;
     private readonly TimeSpan _missingSteamReprobeInterval;
     private DateTimeOffset _lastSteamProbeUtc = DateTimeOffset.MinValue;
+    private string? _cachedSteamOverride;
     private string? _cachedSteamPath;
     private long _cachedSteamWriteTicks;
     private DecodedStereoWav? _cachedSteamClip;
@@ -61,7 +62,7 @@ public sealed partial class SynthesizedUnlockSoundPlayer : IDisposable
     public SynthesizedUnlockSoundPlayer(bool forceSilent = false)
         : this(
             forceSilent,
-            static () => SteamClientSoundLocator.Probe(),
+            static overrideDir => SteamClientSoundLocator.Probe(overrideDir),
             static () => DateTimeOffset.UtcNow,
             TimeSpan.FromSeconds(60))
     {
@@ -70,6 +71,19 @@ public sealed partial class SynthesizedUnlockSoundPlayer : IDisposable
     public SynthesizedUnlockSoundPlayer(
         bool forceSilent,
         Func<SteamClientSoundProbeResult> steamProbe,
+        Func<DateTimeOffset>? utcNowProvider = null,
+        TimeSpan? missingSteamReprobeInterval = null)
+        : this(
+            forceSilent,
+            CreateOverrideAwareProbe(steamProbe),
+            utcNowProvider,
+            missingSteamReprobeInterval)
+    {
+    }
+
+    public SynthesizedUnlockSoundPlayer(
+        bool forceSilent,
+        Func<string?, SteamClientSoundProbeResult> steamProbe,
         Func<DateTimeOffset>? utcNowProvider = null,
         TimeSpan? missingSteamReprobeInterval = null)
     {
@@ -82,6 +96,13 @@ public sealed partial class SynthesizedUnlockSoundPlayer : IDisposable
         _missingSteamReprobeInterval = missingSteamReprobeInterval ?? TimeSpan.FromSeconds(60);
     }
 
+    private static Func<string?, SteamClientSoundProbeResult> CreateOverrideAwareProbe(
+        Func<SteamClientSoundProbeResult> steamProbe)
+    {
+        ArgumentNullException.ThrowIfNull(steamProbe);
+        return _ => steamProbe();
+    }
+
     /// <summary>
     /// Forces the next <see cref="OverlaySoundPreset.SteamAuthentic"/> playback to re-probe the local Steam installation.
     /// </summary>
@@ -90,6 +111,7 @@ public sealed partial class SynthesizedUnlockSoundPlayer : IDisposable
         lock (_cacheLock)
         {
             _lastSteamProbeUtc = DateTimeOffset.MinValue;
+            _cachedSteamOverride = null;
             _cachedSteamPath = null;
             _cachedSteamWriteTicks = 0;
             _cachedSteamClip = null;
@@ -1320,19 +1342,29 @@ public sealed partial class SynthesizedUnlockSoundPlayer : IDisposable
 
         return request.SoundPreset switch
         {
-            OverlaySoundPreset.SteamAuthentic => GetOrLoadSteamAuthenticClip(forceReprobe: request.ReplaceActivePreview),
+            OverlaySoundPreset.SteamAuthentic => GetOrLoadSteamAuthenticClip(
+                steamInstallDirOverride: request.SteamInstallDirectoryOverride,
+                forceReprobe: request.ReplaceActivePreview),
             OverlaySoundPreset.CustomWav => GetOrLoadCustomWavClip(request.CustomSoundPath),
             _ => null,
         };
     }
 
-    private DecodedStereoWav? GetOrLoadSteamAuthenticClip(bool forceReprobe = false)
+    private DecodedStereoWav? GetOrLoadSteamAuthenticClip(
+        string? steamInstallDirOverride = null,
+        bool forceReprobe = false)
     {
+        string? normalizedOverride = string.IsNullOrWhiteSpace(steamInstallDirOverride)
+            ? null
+            : steamInstallDirOverride.Trim();
+
         lock (_cacheLock)
         {
             DateTimeOffset now = _utcNowProvider();
+            bool overrideChanged = !string.Equals(_cachedSteamOverride, normalizedOverride, StringComparison.OrdinalIgnoreCase);
+            bool effectiveForceReprobe = forceReprobe || overrideChanged;
 
-            if (!forceReprobe && _cachedSteamClip is not null)
+            if (!effectiveForceReprobe && _cachedSteamClip is not null)
             {
                 if (!string.IsNullOrWhiteSpace(_cachedSteamPath))
                 {
@@ -1356,8 +1388,8 @@ public sealed partial class SynthesizedUnlockSoundPlayer : IDisposable
             }
 
             // When Steam was previously absent, allow re-probing after the cooldown elapses or when explicitly requested
-            // (e.g., settings preview / InvalidateSteamSoundCache) instead of caching absence permanently.
-            if (!forceReprobe
+            // (e.g., settings preview / InvalidateSteamSoundCache / override changed) instead of caching absence permanently.
+            if (!effectiveForceReprobe
                 && _cachedSteamClip is null
                 && _lastSteamProbeUtc != DateTimeOffset.MinValue
                 && (now - _lastSteamProbeUtc) < _missingSteamReprobeInterval)
@@ -1366,13 +1398,14 @@ public sealed partial class SynthesizedUnlockSoundPlayer : IDisposable
             }
 
             _lastSteamProbeUtc = now;
+            _cachedSteamOverride = normalizedOverride;
             _cachedSteamClip = null;
             _cachedSteamPath = null;
             _cachedSteamWriteTicks = 0;
 
             try
             {
-                SteamClientSoundProbeResult probe = _steamProbe();
+                SteamClientSoundProbeResult probe = _steamProbe(normalizedOverride);
                 if (!string.IsNullOrWhiteSpace(probe.EffectiveSoundPath) && File.Exists(probe.EffectiveSoundPath))
                 {
                     string soundPath = probe.EffectiveSoundPath;

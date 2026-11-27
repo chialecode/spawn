@@ -142,6 +142,7 @@ public sealed record OverlayToastRequest
     public bool ReplaceActivePreview { get; init; }
     public int? DisplayDurationMs { get; init; }
     public bool EnhanceRareAndPlatinumSound { get; init; } = true;
+    public string? SteamInstallDirectoryOverride { get; init; }
 }
 
 /// <summary>

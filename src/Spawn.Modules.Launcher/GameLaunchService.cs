@@ -86,6 +86,8 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
     private readonly Func<string, IReadOnlyList<string>>? _sandboxOrphanProbe;
     private readonly ISteamShortcutService _steamShortcutService;
     private readonly ISteamClientLocator? _steamClientLocator;
+    private readonly Func<string, IReadOnlyList<int>>? _directoryProcessProbe;
+    private readonly Func<int, bool>? _processAliveProbe;
 
     private readonly ConcurrentDictionary<string, ActiveGameSession> _activeSessions = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, RunningSessionContext> _runningContexts = new(StringComparer.OrdinalIgnoreCase);
@@ -110,7 +112,9 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
         SpawnPaths? paths = null,
         Func<string, IReadOnlyList<string>>? sandboxOrphanProbe = null,
         ISteamShortcutService? steamShortcutService = null,
-        ISteamClientLocator? steamClientLocator = null)
+        ISteamClientLocator? steamClientLocator = null,
+        Func<string, IReadOnlyList<int>>? directoryProcessProbe = null,
+        Func<int, bool>? processAliveProbe = null)
     {
         ArgumentNullException.ThrowIfNull(database);
         ArgumentNullException.ThrowIfNull(antiCheatGuard);
@@ -133,6 +137,8 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
         _steamClientLocator = steamClientLocator ?? (steamShortcutService is null ? SteamClientLocator.Default : null);
         _steamShortcutService = steamShortcutService
             ?? new SteamShortcutService(_steamClientLocator ?? SteamClientLocator.Default, timeProvider: _timeProvider);
+        _directoryProcessProbe = directoryProcessProbe;
+        _processAliveProbe = processAliveProbe;
     }
 
     public ActiveGameSession? GetActiveSession(string gameId) =>
@@ -1021,7 +1027,7 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
         return false;
     }
 
-    private static List<int> CollectLiveSessionPids(RunningSessionContext ctx)
+    private List<int> CollectLiveSessionPids(RunningSessionContext ctx)
     {
         var live = new HashSet<int>();
 
@@ -1029,7 +1035,7 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
         {
             foreach (int pid in ctx.JobTracker.GetTrackedProcessIds())
             {
-                if (pid > 4 && SafeProcessInspector.IsProcessAlive(pid))
+                if (pid > 4 && IsProcessAliveCore(pid))
                 {
                     string? path = SafeProcessInspector.TryGetProcessExecutablePath(pid);
                     if (path is null || !SafeProcessInspector.IsAuxiliaryOrCrashProcessName(path))
@@ -1040,7 +1046,7 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
             }
         }
 
-        if (ctx.RootProcessId > 4 && SafeProcessInspector.IsProcessAlive(ctx.RootProcessId))
+        if (ctx.RootProcessId > 4 && IsProcessAliveCore(ctx.RootProcessId))
         {
             live.Add(ctx.RootProcessId);
         }
@@ -1049,7 +1055,7 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
         {
             foreach (int pid in ctx.GetDirectoryTrackedPids())
             {
-                if (pid > 4 && SafeProcessInspector.IsProcessAlive(pid))
+                if (pid > 4 && IsProcessAliveCore(pid))
                 {
                     live.Add(pid);
                 }
@@ -1067,8 +1073,32 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
         return [.. live];
     }
 
-    private static List<int> FindDirectoryGamePids(string installDir)
+    private bool IsProcessAliveCore(int pid) =>
+        _processAliveProbe is not null ? _processAliveProbe(pid) : SafeProcessInspector.IsProcessAlive(pid);
+
+    private List<int> FindDirectoryGamePids(string installDir)
     {
+        if (_directoryProcessProbe is not null)
+        {
+            IReadOnlyList<int> probed = _directoryProcessProbe(installDir);
+            if (probed.Count == 0)
+            {
+                return [];
+            }
+
+            var customPids = new List<int>(probed.Count);
+            for (int i = 0; i < probed.Count; i++)
+            {
+                int pid = probed[i];
+                if (pid > 4 && pid != Environment.ProcessId)
+                {
+                    customPids.Add(pid);
+                }
+            }
+
+            return customPids;
+        }
+
         var entries = SafeProcessInspector.FindProcessesUnderDirectory(installDir, excludeAuxiliary: true);
         if (entries.Count == 0)
         {

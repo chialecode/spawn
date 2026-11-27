@@ -432,6 +432,7 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
             iconPath = demoIcon;
         }
 
+        string? steamInstallDirOverride = await TryGetGlobalSteamInstallDirOverrideAsync(cancellationToken).ConfigureAwait(false);
         var toast = new OverlayToastRequest
         {
             GameId = gameId,
@@ -453,6 +454,7 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
             DurationMs = 4500,
             ReplaceActivePreview = true,
             EnhanceRareAndPlatinumSound = settings.EnhanceRareAndPlatinumSound,
+            SteamInstallDirectoryOverride = steamInstallDirOverride,
         };
 
         bool delivered = await _overlayIpcClient.SendToastAsync(toast, cancellationToken).ConfigureAwait(false);
@@ -1130,6 +1132,9 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
         var overlaySettings = silentSeed
             ? null
             : await _database.GetOverlaySettingsAsync(ct).ConfigureAwait(false);
+        string? steamInstallDirOverride = silentSeed
+            ? null
+            : await TryGetGlobalSteamInstallDirOverrideAsync(ct).ConfigureAwait(false);
 
         var toastBatch = new List<OverlayToastRequest>(newlyUnlocked.Count);
 
@@ -1187,6 +1192,7 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
                     SoundVolume = overlaySettings.SoundVolume,
                     MuteSound = overlaySettings.MuteSound,
                     EnhanceRareAndPlatinumSound = overlaySettings.EnhanceRareAndPlatinumSound,
+                    SteamInstallDirectoryOverride = steamInstallDirOverride,
                 });
             }
         }

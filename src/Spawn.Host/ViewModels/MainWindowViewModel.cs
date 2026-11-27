@@ -2371,117 +2371,118 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
                 ShowStatusBanner("已取消 Steam 重启与同步（未改动 Steam 或 shortcuts.vdf）", isError: false);
                 return;
             }
-
-            _steamSyncingGameIds.Add(targetGameId);
-            _launchingGameIds.Add(targetGameId);
-            NotifyPrimaryLaunchButtonProperties();
-            ShowStatusBanner("正在优雅重启 Steam 并同步快捷方式…", isError: false, autoDismiss: false);
-
-            try
-            {
-                SteamShortcutSyncResult sync = await _steamShortcutService.ApplyShortcutAndRestartIfNeededAsync(
-                    game.Record,
-                    savedSettings,
-                    allowGracefulSteamRestart: true,
-                    steamOverride,
-                    preferredAccountId,
-                    cancellationToken).ConfigureAwait(true);
-
-                if (sync.ShortcutAppId is { } syncedAppId && syncedAppId != 0)
-                {
-                    await _db.UpdateGameRegisteredShortcutAppIdAsync(targetGameId, syncedAppId, cancellationToken).ConfigureAwait(true);
-                    savedSettings = savedSettings with { RegisteredShortcutAppId = syncedAppId };
-                    game.UpdateSteamLaunchSettings(savedSettings);
-                }
-
-                Settings.RefreshSteamClientDiscovery(emitFeedback: false);
-
-                if (!sync.Succeeded)
-                {
-                    ShowStatusBanner(sync.ErrorMessage ?? "同步 Steam 快捷方式失败", isError: true);
-                    return;
-                }
-
-                launchUri = sync.LaunchUri ?? launchUri;
-                steamWasRunningBeforeLaunch = false;
-            }
-            catch (Exception ex)
-            {
-                ShowStatusBanner($"优雅重启 Steam 并同步快捷方式失败：{ex.Message}", isError: true);
-                return;
-            }
-            finally
-            {
-                _steamSyncingGameIds.Remove(targetGameId);
-                NotifyPrimaryLaunchButtonProperties();
-            }
-        }
-        else if (prep.Status == SteamLaunchPreparationStatus.NeedsShortcutWriteSteamClosed)
-        {
-            _steamSyncingGameIds.Add(targetGameId);
-            _launchingGameIds.Add(targetGameId);
-            NotifyPrimaryLaunchButtonProperties();
-            ShowStatusBanner("正在写入 Steam 快捷方式并准备启动…", isError: false, autoDismiss: false);
-
-            try
-            {
-                SteamShortcutSyncResult sync = await _steamShortcutService.ApplyShortcutAndRestartIfNeededAsync(
-                    game.Record,
-                    savedSettings,
-                    allowGracefulSteamRestart: false,
-                    steamOverride,
-                    preferredAccountId,
-                    cancellationToken).ConfigureAwait(true);
-
-                if (sync.ShortcutAppId is { } syncedAppId && syncedAppId != 0)
-                {
-                    await _db.UpdateGameRegisteredShortcutAppIdAsync(targetGameId, syncedAppId, cancellationToken).ConfigureAwait(true);
-                    savedSettings = savedSettings with { RegisteredShortcutAppId = syncedAppId };
-                    game.UpdateSteamLaunchSettings(savedSettings);
-                }
-
-                if (!sync.Succeeded)
-                {
-                    ShowStatusBanner(sync.ErrorMessage ?? "写入 Steam 快捷方式失败", isError: true);
-                    return;
-                }
-
-                launchUri = sync.LaunchUri ?? launchUri;
-                steamWasRunningBeforeLaunch = false;
-            }
-            catch (Exception ex)
-            {
-                ShowStatusBanner($"写入 Steam 快捷方式失败：{ex.Message}", isError: true);
-                return;
-            }
-            finally
-            {
-                _steamSyncingGameIds.Remove(targetGameId);
-                NotifyPrimaryLaunchButtonProperties();
-            }
-        }
-        else
-        {
-            // ReadyOfficialSteam or ReadyNonSteamShortcut
-            SteamClientDiscoveryResult discovery = _steamClientLocator.Discover(steamOverride, preferredAccountId);
-            steamWasRunningBeforeLaunch = discovery.IsSteamRunning;
-
-            if (prep.Status == SteamLaunchPreparationStatus.ReadyNonSteamShortcut
-                && prep.ShortcutAppId is { } existingAppId
-                && existingAppId != 0
-                && savedSettings.RegisteredShortcutAppId != existingAppId)
-            {
-                await _db.UpdateGameRegisteredShortcutAppIdAsync(targetGameId, existingAppId, cancellationToken).ConfigureAwait(true);
-                savedSettings = savedSettings with { RegisteredShortcutAppId = existingAppId };
-                game.UpdateSteamLaunchSettings(savedSettings);
-            }
-
-            _launchingGameIds.Add(targetGameId);
-            NotifyPrimaryLaunchButtonProperties();
         }
 
+        _launchingGameIds.Add(targetGameId);
         try
         {
+            if (prep.Status == SteamLaunchPreparationStatus.NeedsSteamRestartToSync)
+            {
+                _steamSyncingGameIds.Add(targetGameId);
+                NotifyPrimaryLaunchButtonProperties();
+                ShowStatusBanner("正在优雅重启 Steam 并同步快捷方式…", isError: false, autoDismiss: false);
+
+                try
+                {
+                    SteamShortcutSyncResult sync = await _steamShortcutService.ApplyShortcutAndRestartIfNeededAsync(
+                        game.Record,
+                        savedSettings,
+                        allowGracefulSteamRestart: true,
+                        steamOverride,
+                        preferredAccountId,
+                        cancellationToken).ConfigureAwait(true);
+
+                    if (sync.ShortcutAppId is { } syncedAppId && syncedAppId != 0)
+                    {
+                        await _db.UpdateGameRegisteredShortcutAppIdAsync(targetGameId, syncedAppId, cancellationToken).ConfigureAwait(true);
+                        savedSettings = savedSettings with { RegisteredShortcutAppId = syncedAppId };
+                        game.UpdateSteamLaunchSettings(savedSettings);
+                    }
+
+                    Settings.RefreshSteamClientDiscovery(emitFeedback: false);
+
+                    if (!sync.Succeeded)
+                    {
+                        ShowStatusBanner(sync.ErrorMessage ?? "同步 Steam 快捷方式失败", isError: true);
+                        return;
+                    }
+
+                    launchUri = sync.LaunchUri ?? launchUri;
+                    steamWasRunningBeforeLaunch = false;
+                }
+                catch (Exception ex)
+                {
+                    ShowStatusBanner($"优雅重启 Steam 并同步快捷方式失败：{ex.Message}", isError: true);
+                    return;
+                }
+                finally
+                {
+                    _steamSyncingGameIds.Remove(targetGameId);
+                    NotifyPrimaryLaunchButtonProperties();
+                }
+            }
+            else if (prep.Status == SteamLaunchPreparationStatus.NeedsShortcutWriteSteamClosed)
+            {
+                _steamSyncingGameIds.Add(targetGameId);
+                NotifyPrimaryLaunchButtonProperties();
+                ShowStatusBanner("正在写入 Steam 快捷方式并准备启动…", isError: false, autoDismiss: false);
+
+                try
+                {
+                    SteamShortcutSyncResult sync = await _steamShortcutService.ApplyShortcutAndRestartIfNeededAsync(
+                        game.Record,
+                        savedSettings,
+                        allowGracefulSteamRestart: false,
+                        steamOverride,
+                        preferredAccountId,
+                        cancellationToken).ConfigureAwait(true);
+
+                    if (sync.ShortcutAppId is { } syncedAppId && syncedAppId != 0)
+                    {
+                        await _db.UpdateGameRegisteredShortcutAppIdAsync(targetGameId, syncedAppId, cancellationToken).ConfigureAwait(true);
+                        savedSettings = savedSettings with { RegisteredShortcutAppId = syncedAppId };
+                        game.UpdateSteamLaunchSettings(savedSettings);
+                    }
+
+                    if (!sync.Succeeded)
+                    {
+                        ShowStatusBanner(sync.ErrorMessage ?? "写入 Steam 快捷方式失败", isError: true);
+                        return;
+                    }
+
+                    launchUri = sync.LaunchUri ?? launchUri;
+                    steamWasRunningBeforeLaunch = false;
+                }
+                catch (Exception ex)
+                {
+                    ShowStatusBanner($"写入 Steam 快捷方式失败：{ex.Message}", isError: true);
+                    return;
+                }
+                finally
+                {
+                    _steamSyncingGameIds.Remove(targetGameId);
+                    NotifyPrimaryLaunchButtonProperties();
+                }
+            }
+            else
+            {
+                // ReadyOfficialSteam or ReadyNonSteamShortcut
+                SteamClientDiscoveryResult discovery = _steamClientLocator.Discover(steamOverride, preferredAccountId);
+                steamWasRunningBeforeLaunch = discovery.IsSteamRunning;
+
+                if (prep.Status == SteamLaunchPreparationStatus.ReadyNonSteamShortcut
+                    && prep.ShortcutAppId is { } existingAppId
+                    && existingAppId != 0
+                    && savedSettings.RegisteredShortcutAppId != existingAppId)
+                {
+                    await _db.UpdateGameRegisteredShortcutAppIdAsync(targetGameId, existingAppId, cancellationToken).ConfigureAwait(true);
+                    savedSettings = savedSettings with { RegisteredShortcutAppId = existingAppId };
+                    game.UpdateSteamLaunchSettings(savedSettings);
+                }
+
+                NotifyPrimaryLaunchButtonProperties();
+            }
+
             var execOptions = new GameLaunchExecutionOptions
             {
                 LaunchModeOverride = GameLaunchMode.Steam,

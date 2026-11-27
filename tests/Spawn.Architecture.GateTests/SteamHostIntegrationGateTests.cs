@@ -140,6 +140,77 @@ public sealed class SteamHostIntegrationGateTests
     }
 
     [Fact]
+    public async Task MainWindowViewModel_DoubleClickDuringAsyncSteamPreparation_BlocksReentrantSecondLaunch()
+    {
+        string tempRoot = Path.Combine(Path.GetTempPath(), $"spawn-steam-reentrant-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        try
+        {
+            var paths = new SpawnPaths(explicitDataDir: Path.Combine(tempRoot, "data"), explicitIdentity: "spawn-dev-test");
+            paths.EnsureDirectoriesExist();
+
+            string gameDir = Path.Combine(tempRoot, "games", "ReentrantGame");
+            Directory.CreateDirectory(gameDir);
+            File.WriteAllBytes(Path.Combine(gameDir, "game.exe"), [0x4D, 0x5A]);
+
+            var stubLocator = new StubSteamClientLocator();
+            var gatedShortcutService = new GatedPreparationSteamShortcutService();
+
+            var services = new ServiceCollection();
+            App.RegisterHostCoreAndModuleServices(services, paths);
+            services.Replace(ServiceDescriptor.Singleton<ISteamClientLocator>(stubLocator));
+            services.Replace(ServiceDescriptor.Singleton<ISteamShortcutService>(gatedShortcutService));
+
+            await using ServiceProvider sp = services.BuildServiceProvider();
+            var db = sp.GetRequiredService<SpawnDatabase>();
+            await db.InitializeAsync();
+
+            var gameRecord = new GameRecord
+            {
+                GameId = SpawnId.NewUlid(),
+                Title = "Reentrant Guard Game",
+                InstallDir = gameDir,
+                ExecutableRelPath = "game.exe",
+                PlatformSource = PlatformSource.Standalone,
+                AntiCheatTier = AntiCheatTier.Tier0,
+            };
+            await db.UpsertGameAsync(gameRecord);
+
+            var mainVm = sp.GetRequiredService<MainWindowViewModel>();
+            await mainVm.InitializeAsync();
+            GameListItemViewModel gameVm = Assert.Single(mainVm.AllGames, g => g.GameId == gameRecord.GameId);
+            mainVm.SelectLibraryGameCommand.Execute(gameVm);
+
+            // Fire first launch — pauses inside async PrepareLaunchAsync BEFORE launch starts.
+            Task firstLaunch = mainVm.LaunchGameWithModeAsync(gameVm, GameLaunchMode.Steam);
+            await gatedShortcutService.EnteredPrepare.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            Assert.Equal(GameLaunchButtonPhase.Launching, mainVm.PrimaryLaunchButtonPhase);
+            Assert.False(mainVm.IsPrimaryLaunchButtonEnabled);
+
+            // Second rapid click while first is still awaiting DB/PrepareLaunchAsync MUST be ignored immediately!
+            Task secondLaunch = mainVm.LaunchGameWithModeAsync(gameVm, GameLaunchMode.Steam);
+            await secondLaunch.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(1, gatedShortcutService.PrepareCallCount);
+
+            // Release first launch (blocked result) -> state resets cleanly to Idle.
+            gatedShortcutService.ReleasePrepare.TrySetResult(new SteamLaunchPreparationResult
+            {
+                Status = SteamLaunchPreparationStatus.BlockedSteamNotFound,
+                ErrorMessage = "Simulated blocked result.",
+            });
+            await firstLaunch.WaitAsync(TimeSpan.FromSeconds(3));
+
+            Assert.Equal(1, gatedShortcutService.PrepareCallCount);
+            Assert.Equal(GameLaunchButtonPhase.Idle, mainVm.PrimaryLaunchButtonPhase);
+            Assert.True(mainVm.IsPrimaryLaunchButtonEnabled);
+        }
+        finally
+        {
+            TryDeleteTempDirectory(tempRoot);
+        }
+    }
+
+    [Fact]
     public void SynthesizedUnlockSoundPlayer_SteamAuthentic_ForwardsSteamInstallDirectoryOverrideAndReprobesOnChange()
     {
         string tempRoot = Path.Combine(Path.GetTempPath(), $"spawn-steam-sound-{Guid.NewGuid():N}");
@@ -284,5 +355,34 @@ public sealed class SteamHostIntegrationGateTests
                 ErrorMessage = "模拟 Steam 重启同步超时。",
             });
         }
+    }
+
+    private sealed class GatedPreparationSteamShortcutService : ISteamShortcutService
+    {
+        private int _prepareCalls;
+        public int PrepareCallCount => Volatile.Read(ref _prepareCalls);
+        public TaskCompletionSource<bool> EnteredPrepare { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<SteamLaunchPreparationResult> ReleasePrepare { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task<SteamLaunchPreparationResult> PrepareLaunchAsync(
+            GameRecord game,
+            GameSteamLaunchSettings settings,
+            string? steamInstallDirOverride = null,
+            uint? preferredAccountId = null,
+            CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref _prepareCalls);
+            EnteredPrepare.TrySetResult(true);
+            return ReleasePrepare.Task;
+        }
+
+        public Task<SteamShortcutSyncResult> ApplyShortcutAndRestartIfNeededAsync(
+            GameRecord game,
+            GameSteamLaunchSettings settings,
+            bool allowGracefulSteamRestart,
+            string? steamInstallDirOverride = null,
+            uint? preferredAccountId = null,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new SteamShortcutSyncResult { Succeeded = false, ErrorMessage = "unused" });
     }
 }

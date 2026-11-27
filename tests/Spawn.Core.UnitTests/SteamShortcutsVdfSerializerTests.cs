@@ -316,6 +316,15 @@ public sealed class SteamShortcutsVdfSerializerTests
 
         byte[] unterminatedStringPayload = [0x01, (byte)'k', 0x00, (byte)'a', (byte)'b'];
         Assert.Throws<InvalidDataException>(() => SteamShortcutsVdfSerializer.Read(unterminatedStringPayload));
+
+        // 6. Truncated nested map (depth > 0) missing 0x08/0x0B terminator throws InvalidDataException cleanly
+        byte[] truncatedShortcutsMap = [0x00, .. Encoding.UTF8.GetBytes("shortcuts"), 0x00];
+        Assert.Throws<InvalidDataException>(() => SteamShortcutsVdfSerializer.Read(truncatedShortcutsMap));
+
+        byte[] fullValidBytes = SteamShortcutsVdfSerializer.Write(reloaded);
+        // Strip the trailing nested + root terminators (at least 2 bytes) so nested map hits EOF unexpectedly
+        byte[] truncatedEntryMap = fullValidBytes[..^2];
+        Assert.Throws<InvalidDataException>(() => SteamShortcutsVdfSerializer.Read(truncatedEntryMap));
     }
 
     private static uint ComputeReferenceIeeeCrc32(ReadOnlySpan<byte> data)

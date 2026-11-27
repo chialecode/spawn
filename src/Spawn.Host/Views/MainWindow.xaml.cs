@@ -1727,7 +1727,7 @@ public partial class MainWindow : Window
                                 break;
                             case SteamLaunchPreparationStatus.NeedsSteamRestartToSync:
                                 steamLiveStatusText.Foreground = warningAmberBrush;
-                                steamLiveStatusText.Text = initialSteamSettings.RegisteredShortcutAppId is > 0
+                                steamLiveStatusText.Text = initialSteamSettings.RegisteredShortcutAppId is { } registeredAppId && registeredAppId != 0
                                     ? $"检测到快捷方式配置有更新{accountSuffix}；若 Steam 运行中，下次启动前会先询问是否优雅重启以同步"
                                     : $"首次启动将自动登记{accountSuffix}，若 Steam 运行中会先询问是否优雅重启";
                                 break;

@@ -99,8 +99,9 @@ public sealed class DefaultGameProcessStarter : IGameProcessStarter
     }
 
     /// <summary>
-    /// Determines whether <paramref name="target"/> is an absolute protocol URI (such as <c>steam://rungameid/504230</c>)
-    /// rather than a Windows filesystem path or UNC share. Never touches the filesystem.
+    /// Determines whether <paramref name="target"/> is an allowed launcher protocol URI (<c>steam://...</c>)
+    /// rather than a Windows filesystem path, UNC share, or arbitrary non-allowlisted URI scheme.
+    /// Never touches the filesystem.
     /// </summary>
     public static bool IsProtocolUriTarget(string? target)
     {
@@ -127,8 +128,7 @@ public sealed class DefaultGameProcessStarter : IGameProcessStarter
 
         return Uri.TryCreate(trimmed, UriKind.Absolute, out Uri? uri)
                && !uri.IsFile
-               && !string.IsNullOrWhiteSpace(uri.Scheme)
-               && uri.Scheme.Length >= 2;
+               && string.Equals(uri.Scheme, "steam", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

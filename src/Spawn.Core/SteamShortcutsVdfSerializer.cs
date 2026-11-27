@@ -602,6 +602,12 @@ public static class SteamShortcutsVdfSerializer
             }
         }
 
+        if (depth > 0)
+        {
+            throw new InvalidDataException(
+                $"Unexpected end of Binary VDF stream while reading nested map at depth {depth} (missing 0x08 terminator).");
+        }
+
         return map;
     }
 

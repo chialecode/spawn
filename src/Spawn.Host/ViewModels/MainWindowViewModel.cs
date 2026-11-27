@@ -2226,20 +2226,35 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             return;
         }
 
-        GameSteamLaunchSettings savedSettings = await _db
-            .GetGameSteamLaunchSettingsAsync(targetGameId, cancellationToken)
-            .ConfigureAwait(true);
-        game.UpdateSteamLaunchSettings(savedSettings);
-
-        GameLaunchMode effectiveMode = explicitModeOverride ?? savedSettings.LaunchMode;
-        if (effectiveMode == GameLaunchMode.Direct)
+        if (!_launchingGameIds.Add(targetGameId))
         {
-            await ExecuteDirectLaunchAsync(game, explicitModeOverride == GameLaunchMode.Direct, cancellationToken)
-                .ConfigureAwait(true);
             return;
         }
 
-        await ExecuteSteamLaunchAsync(game, savedSettings, cancellationToken).ConfigureAwait(true);
+        NotifyPrimaryLaunchButtonProperties();
+        try
+        {
+            GameSteamLaunchSettings savedSettings = await _db
+                .GetGameSteamLaunchSettingsAsync(targetGameId, cancellationToken)
+                .ConfigureAwait(true);
+            game.UpdateSteamLaunchSettings(savedSettings);
+
+            GameLaunchMode effectiveMode = explicitModeOverride ?? savedSettings.LaunchMode;
+            if (effectiveMode == GameLaunchMode.Direct)
+            {
+                await ExecuteDirectLaunchAsync(game, explicitModeOverride == GameLaunchMode.Direct, cancellationToken)
+                    .ConfigureAwait(true);
+                return;
+            }
+
+            await ExecuteSteamLaunchAsync(game, savedSettings, cancellationToken).ConfigureAwait(true);
+        }
+        finally
+        {
+            _launchingGameIds.Remove(targetGameId);
+            _steamSyncingGameIds.Remove(targetGameId);
+            NotifyPrimaryLaunchButtonProperties();
+        }
     }
 
     private async Task ExecuteDirectLaunchAsync(
@@ -2248,8 +2263,6 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         CancellationToken cancellationToken)
     {
         string targetGameId = game.GameId;
-        _launchingGameIds.Add(targetGameId);
-        NotifyPrimaryLaunchButtonProperties();
         try
         {
             GameLaunchResult result = isExplicitOverride
@@ -2279,11 +2292,6 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         catch (Exception ex)
         {
             ShowStatusBanner($"启动《{game.Title}》失败：{ex.Message}", isError: true);
-        }
-        finally
-        {
-            _launchingGameIds.Remove(targetGameId);
-            NotifyPrimaryLaunchButtonProperties();
         }
     }
 
@@ -2373,7 +2381,6 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             }
         }
 
-        _launchingGameIds.Add(targetGameId);
         try
         {
             if (prep.Status == SteamLaunchPreparationStatus.NeedsSteamRestartToSync)
@@ -2524,7 +2531,6 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         }
         finally
         {
-            _launchingGameIds.Remove(targetGameId);
             _steamSyncingGameIds.Remove(targetGameId);
             NotifyPrimaryLaunchButtonProperties();
         }

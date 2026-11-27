@@ -373,7 +373,7 @@ public sealed class SteamClientLocator : ISteamClientLocator
         int? regActiveUserRaw = _probe.ReadRegistryDword(RegistryHive.CurrentUser, RegistryView.Default, HkcuActiveProcessSubKey, "ActiveUser");
 
         bool isRunning = _probe.IsSteamProcessRunning(regActivePid, resolvedExe, out int? livePid);
-        uint? activeProcessUserId = isRunning && regActiveUserRaw is > 0
+        uint? activeProcessUserId = isRunning && regActiveUserRaw is not null and not 0
             ? unchecked((uint)regActiveUserRaw.Value)
             : null;
 

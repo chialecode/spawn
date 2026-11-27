@@ -689,6 +689,48 @@ public sealed class SteamClientLocatorTests
     }
 
     [Fact]
+    public void Discover_HighBitUnsignedActiveUserDword_ResolvesUnsignedAccountId()
+    {
+        const uint highBitAccountId = 0x80000123u; // 2147483939 > int.MaxValue (stored as negative REG_DWORD int32)
+        int rawSignedDword = unchecked((int)highBitAccountId);
+        Assert.True(rawSignedDword < 0);
+
+        string steamRoot = @"C:\SteamHighBitUser";
+        ulong highBitSteamId64 = SteamLoginUsersVdfParser.ConvertAccountIdToSteamId64(highBitAccountId);
+        string loginUsers = $$"""
+            "users"
+            {
+                "{{highBitSteamId64}}"
+                {
+                    "AccountName"       "future_highbit_user"
+                    "PersonaName"       "HighBitPlayer"
+                    "MostRecent"        "0"
+                    "Timestamp"         "1735000000"
+                }
+            }
+            """;
+
+        var probe = new FakeSteamEnvironmentProbe()
+            .AddSteamInstall(steamRoot)
+            .AddDirectory(Path.Combine(steamRoot, "userdata"))
+            .AddDirectory(Path.Combine(steamRoot, "userdata", highBitAccountId.ToString(System.Globalization.CultureInfo.InvariantCulture)))
+            .AddFile(Path.Combine(steamRoot, "config", "loginusers.vdf"), loginUsers)
+            .SetRegistryString(RegistryHive.CurrentUser, RegistryView.Default, HkcuSteamSubKey, "SteamPath", steamRoot)
+            .SetRegistryDword(RegistryHive.CurrentUser, RegistryView.Default, HkcuActiveProcessSubKey, "pid", 4242)
+            .SetRegistryDword(RegistryHive.CurrentUser, RegistryView.Default, HkcuActiveProcessSubKey, "ActiveUser", rawSignedDword);
+        probe.SteamRunning = true;
+        probe.LiveSteamPid = 4242;
+
+        SteamClientDiscoveryResult result = new SteamClientLocator(probe).Discover();
+        Assert.True(result.IsDetected);
+        Assert.True(result.IsSteamRunning);
+        Assert.Equal(highBitAccountId, result.ActiveAccountId);
+        SteamAccountInfo active = Assert.Single(result.Accounts);
+        Assert.Equal(highBitAccountId, active.AccountId);
+        Assert.True(active.IsActiveProcessUser);
+    }
+
+    [Fact]
     public async Task SteamClientSoundLocator_DelegatesToSteamClientLocator_ForOverrideExeAndMissingSteam()
     {
         await using var sandbox = new TestSandbox();

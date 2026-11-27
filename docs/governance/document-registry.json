@@ -260,9 +260,9 @@
       "kind": "design",
       "status": "active",
       "owner": "维护者",
-      "scope": "SPAWN 桌面主界面导航、Profile 一键切换、蓝图单步调试、Alt+Z 锁鼠与夜间无人值守交互工作流",
-      "reviewed": "2026-11-21",
-      "basis": "M3-W08：同步移除顶栏胶囊并将扫描收口至「设置 → 常规与游戏库」（#16）及修改器子页签与设置第 6 分类工作流"
+      "scope": "SPAWN 桌面主界面导航、Steam 客户端设置与逐游戏 Steam 启动确认流、Profile 一键切换、蓝图单步调试、Alt+Z 锁鼠与夜间无人值守交互工作流",
+      "reviewed": "2026-11-28",
+      "basis": "#75：补充「设置 → 常规与游戏库」Steam 客户端设置、游戏属性「启动方式」、⋯ 快捷启动项与非 Steam 优雅重启确认交互流"
     },
     {
       "path": "docs/design/ipc-and-security-contracts.md",
@@ -378,8 +378,8 @@
       "status": "active",
       "owner": "维护者",
       "scope": "SPAWN 全仓自有 Markdown 与受管 JSON 文档唯一权威注册表",
-      "reviewed": "2026-11-27",
-      "basis": "#71、#39：同步受影响治理与流程文档及 data-and-security.md / spawn-launcher.md 审查日期与基线说明"
+      "reviewed": "2026-11-28",
+      "basis": "#75：同步 spawn-launcher.md 与 interaction-and-workflows.md 的 Steam 探测与通过 Steam 启动规格审查日期"
     },
     {
       "path": "docs/governance/documentation-policy.md",
@@ -431,9 +431,9 @@
       "kind": "spec",
       "status": "active",
       "owner": "维护者",
-      "scope": "Spawn 启动环境自愈管线、双引擎进程追踪、三态有效时长与三级漏斗离线刮削模块规格书",
-      "reviewed": "2026-11-25",
-      "basis": "#39：同步发行商自定义文档/AppData 存档探测、通用虚幻代号过滤与安全围栏系列缩写词元匹配规格"
+      "scope": "Spawn 启动环境自愈管线、Steam 客户端探测与 Steam Input 双轨启动、双引擎进程追踪、三态有效时长与三级漏斗离线刮削模块规格书",
+      "reviewed": "2026-11-28",
+      "basis": "#75：增补 §4.5 统一 Steam 探测、正版与非 Steam shortcuts.vdf 双轨启动、优雅重启确认、扩展观察窗口与 Tier 2/3 反作弊边界规格"
     },
     {
       "path": "docs/modules/workflow-and-blueprint.md",

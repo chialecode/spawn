@@ -230,6 +230,23 @@ flowchart LR
    - **欧美全品类与统一海报**：`IGDB API v4` + **`SteamGridDB API v2`**（拉取 `600x900` 标准 2:3 竖版封面、`1920x620` 详情页 Hero 背景与透明 PNG Logo，统一转码缓存至本地 `cache/media/`）。
    - **置信度判定**：计算清洗后标题与候选主标题/别名的 **Jaro-Winkler 相似度 + 发行年份/开发商加权分**；`Score >= 0.85` 自动绑定落库，`0.50 <= Score < 0.85` 存入待确认候选列表供用户在详情页一键点选切换。
 
+### 4.5 Steam 客户端统一探测与“通过 Steam 启动”（Steam Input）策略
+
+为向缺乏原生手柄支持的单机与库内游戏提供低入侵的 **Steam Input** 手柄映射、陀螺仪与社区布局能力，同时严守 Clean Host 零敏感 API 与反作弊安全边界，`Spawn.Core` 与 `Spawn.Modules.Launcher` 提供统一 Steam 定位与双轨启动编排：
+
+1. **统一 Steam 客户端与账号探测（`ISteamClientLocator`）**：
+   - 探测优先级：`app_settings` 用户手动指定目录（自动兼容目录或直接指向 `steam.exe` 路径，供便携版/自定义安装使用） → `HKCU\Software\Valve\Steam`（`SteamPath` / `SteamExe`） → `HKLM`（32 位 / `WOW6432Node` / 64 位 `InstallPath`） → `ProgramFiles(x86)\Steam` / `ProgramFiles\Steam`。游戏库扫描、内置原版跳杯音效（`SteamClientSoundLocator`）、Steam 本地成就缓存与游戏数据管理共用同一套定位契约。
+   - 目标账号（32 位 `AccountId` / `SteamID3`）按“用户手动偏好账号 → 运行中 Steam 的 `HKCU\...\ActiveProcess\ActiveUser`（配合 `0x1000` 只读进程校验） → `config\loginusers.vdf`（`MostRecent = "1"` 优先，其次最新 `Timestamp`） → `userdata\<id>` 目录（自动排除 `0`）”顺序解析。
+2. **双轨启动模式与 `shortcuts.vdf` 无损同步（`ISteamShortcutService`）**：
+   - **正版 Steam 库游戏（`PlatformSource.SteamLocal` 且 `SteamAppId > 0`）**：直接通过 `steam://rungameid/<SteamAppId>` 经桌面 `explorer.exe` COM `ShellExecute` 委派拉起，**零修改 `shortcuts.vdf`、零重启 Steam**；支持在设置中控制重复成就弹窗抑制（默认开启，避免 Steam 原生与 SPAWN Overlay 双重跳杯）。
+   - **非 Steam 单机游戏（仅限 `Tier 0 / Tier 1`，逐游戏 Opt-in）**：纯托管 Binary KeyValues1 序列化器（`SteamShortcutsVdfSerializer`）无损读写 `userdata\<accountId>\config\shortcuts.vdf`（完整保留既有条目、字段顺序与 `0x00`–`0x08` 未知字段），写入前备份 `.spawn.bak` 并以 `FileOptions.WriteThrough` `.spawn.tmp` 原子替换；优先按已登记 `RegisteredShortcutAppId` 匹配以兼容用户在 Steam 内重命名，其次按归一化 `Exe` 路径匹配；可选将快捷方式 `AppName` 设为对应官方 `SteamAppId` 以在 Steam Input 中展示官方与社区手柄布局；最终计算 `((ulong)(uint)appid << 32) | 0x02000000UL` 并通过 `steam://rungameid/<64bitId>` 启动。
+   - **兼容性前置提醒（非阻断）**：启动准备阶段只读扫描 `gbe_fork`（`steam_settings`）、`OnlineFix.ini`、通用离线模拟器（`.cdx`/`.rne`/`steam_emu.ini` 等）以及基于 `PEReader` 的内嵌 `RT_MANIFEST` / 外置 `.manifest` 提权声明（`PeElevationInspector`），向用户提示可能的手柄双输入、环境变量 AppID 冲突或 Windows UIPI 隔离限制（SPAWN 绝不自动提权 Steam）。
+3. **优雅重启 Steam 确认策略**：
+   - Steam 仅在启动时加载 `shortcuts.vdf` 并在退出时以内存缓存覆盖落盘：若目标条目已在 `shortcuts.vdf` 中且字段未变更，则**无需重启 Steam** 直接启动；若需首次写入或更新参数且 Steam 当前正在运行，**严禁静默强杀（绝不 `taskkill /f`）**，必须经用户显式确认后才执行 `steam.exe -shutdown` 优雅退出 → 轮询等待完全退出（超时即中止且不触碰原文件） → 原子写入 `shortcuts.vdf` → 拉起 `steam.exe` → 等待 `ActiveUser != 0` 登录就绪后再触发 `steam://rungameid/...`。
+4. **Steam 扩展观察窗口与 `Tier 2/3` 反作弊硬边界**：
+   - 经由 Steam 启动的游戏由 `steam.exe` 派生，SPAWN **不向 `steam.exe` 挂载 `JobObject`**，而是通过桌面外壳脱钩拉起后转入纯 `0x1000` 安装目录只读进程追踪，并启用**扩展的 Steam 冷启动观察窗口**（覆盖 Steam 登录、客户端更新与着色器预缓存耗时），防止 `ShellBreakingWatch` 过早超时导致游玩计时、自动存档监听或修改器联锁误判退出。
+   - **反作弊隔离铁律**：① 正版 `SteamLocal` `Tier 2/3` 游戏通过 Steam 启动时**强制走受保护启动通道并忽略 `VerifiedOfflineBypass`**（因为 Steam 会直接拉起官方反作弊引导器），完整执行高敏 Worker 排空、`explorer.exe` 血缘脱钩与退出后 15 秒反作弊残影冷却；② 非 Steam 来源的 `Tier 2/3` 游戏**硬性禁止**通过非 Steam 快捷方式启动，避免 Steam 覆盖层注入与内核反作弊冲突。
+
 ---
 
 ## 5. 跨模块协同契约
@@ -272,3 +289,5 @@ flowchart LR
    - 构造 30 组真实脏目录命名样本（含 `RJ` 号、`goggame-*.info`、发行组后缀与版本号），断言离线识别率 `100%` 且单目录 Stage 1+2 耗时 `< 10ms`。
 5. **反作弊冷却门禁联锁测试（验证 `REQ-SEC-03` ~ `REQ-SEC-05`）**：
    - 模拟 `Tier 3` 会话退出后伴生进程驻留 `4s`，验证在 `4s + 15s` 窗口内请求启动 `TrainerWorker` 100% 抛出 `AntiCheatCooldownActiveException`，窗口结束后自动放行。
+6. **Steam 探测、Binary VDF 序列化与快捷方式同步单元测试（100% 离线沙箱）**：
+   - 注入虚拟 `ISteamEnvironmentProbe`、`ISteamProcessController` 与 `ManualTimeProvider`，覆盖目录/EXE 手动覆写与注册表多级回退、`loginusers.vdf` 解析与 Steam64/Steam32 互转、Binary KeyValues1 全字段类型（`0x00`–`0x08`）无损字节回环与 `appid`/`rungameid` 位级校验、`.spawn.bak` 原子写入、`Tier 2/3` 非 Steam 硬拦截、优雅重启确认/超时保护及合成 PE `RT_MANIFEST` 提权检测，全程零触碰本机真实 Steam 或注册表。

@@ -689,6 +689,786 @@ public sealed class GameDataCleanAndUndoTests
         Assert.Equal("slot-3", await File.ReadAllTextAsync(Path.Combine(saveDataDir, "slot3.sav")));
     }
 
+    [Fact]
+    public async Task GameData_SafetyFenceTokenEquivalenceAndAdversarialMatrix_EnforcesInitialismSequelSubtitleEditionAndSharedContainerInvariants()
+    {
+        await using var sandbox = new TestSandbox();
+        string testRegSubRoot = $"SpawnTests_{Guid.NewGuid():N}";
+        var options = CreateSandboxGameDataOptions(sandbox, $@"Software\{testRegSubRoot}");
+
+        string docs = options.UserDocumentsOverride!;
+        string localAppData = options.LocalAppDataOverride!;
+        string roaming = options.AppDataRoamingOverride!;
+        string localLow = options.LocalLowOverride!;
+
+        string gta3DeInstall = sandbox.CreateSubDirectory("games", "GTA III - The Definitive Edition");
+        var gta3DeIdentity = GameDataTargetIdentity.FromGame(new GameRecord
+        {
+            GameId = SpawnId.NewUlid(),
+            Title = "Grand Theft Auto III – The Definitive Edition",
+            InstallDir = gta3DeInstall,
+            ExecutableRelPath = Path.Combine("Gameface", "Binaries", "Win64", "LibertyCity.exe"),
+            SteamAppId = 1546970,
+        });
+
+        string gtaVcDeInstall = sandbox.CreateSubDirectory("games", "GTA Vice City - The Definitive Edition");
+        var gtaVcDeIdentity = GameDataTargetIdentity.FromGame(new GameRecord
+        {
+            GameId = SpawnId.NewUlid(),
+            Title = "Grand Theft Auto: Vice City – The Definitive Edition",
+            InstallDir = gtaVcDeInstall,
+            ExecutableRelPath = Path.Combine("Gameface", "Binaries", "Win64", "ViceCity.exe"),
+            SteamAppId = 1546990,
+        });
+
+        string gtaSaDeInstall = sandbox.CreateSubDirectory("games", "GTA San Andreas - The Definitive Edition");
+        var gtaSaDeIdentity = GameDataTargetIdentity.FromGame(new GameRecord
+        {
+            GameId = SpawnId.NewUlid(),
+            Title = "Grand Theft Auto: San Andreas – The Definitive Edition",
+            InstallDir = gtaSaDeInstall,
+            ExecutableRelPath = Path.Combine("Gameface", "Binaries", "Win64", "SanAndreas.exe"),
+            SteamAppId = 1547000,
+        });
+
+        bool SafeFor(GameDataTargetIdentity id, string install, string candidate) =>
+            GameDataSafetyFence.ValidateFilesystemTarget(candidate, install, id, sandbox.Paths, options).IsSafe;
+
+        // 1. Positive invariants: Rockstar abbreviated Documents & LocalAppData paths for all 3 GTA Definitive Edition titles.
+        Assert.True(SafeFor(gta3DeIdentity, gta3DeInstall, Path.Combine(docs, "Rockstar Games", "GTA III Definitive Edition")));
+        Assert.True(SafeFor(gta3DeIdentity, gta3DeInstall, Path.Combine(docs, "Rockstar Games", "GTA III Definitive Edition", "Profiles", "0F74F4C4")));
+        Assert.True(SafeFor(gta3DeIdentity, gta3DeInstall, Path.Combine(docs, "Rockstar Games", "GTA III Definitive Edition", "Config", "WindowsNoEditor")));
+        Assert.True(SafeFor(gta3DeIdentity, gta3DeInstall, Path.Combine(docs, "Rockstar Games", "GTA III Definitive Edition", "Adjustable.cfg")));
+        Assert.True(SafeFor(gta3DeIdentity, gta3DeInstall, Path.Combine(localAppData, "Rockstar Games", "GTA III Definitive Edition", "Saved")));
+        Assert.True(SafeFor(gta3DeIdentity, gta3DeInstall, Path.Combine(localAppData, "Rockstar Games", "GTA III Definitive Edition", "Saved", "Config", "WindowsNoEditor")));
+        Assert.True(SafeFor(gta3DeIdentity, gta3DeInstall, Path.Combine(docs, "Rockstar Games", "Grand Theft Auto 3 Definitive Edition", "Profiles", "0F74F4C4")));
+
+        Assert.True(SafeFor(gtaVcDeIdentity, gtaVcDeInstall, Path.Combine(docs, "Rockstar Games", "GTA Vice City Definitive Edition")));
+        Assert.True(SafeFor(gtaVcDeIdentity, gtaVcDeInstall, Path.Combine(docs, "Rockstar Games", "GTA Vice City Definitive Edition", "Profiles", "0F74F4C4")));
+        Assert.True(SafeFor(gtaVcDeIdentity, gtaVcDeInstall, Path.Combine(localAppData, "Rockstar Games", "GTA Vice City Definitive Edition", "Saved")));
+
+        Assert.True(SafeFor(gtaSaDeIdentity, gtaSaDeInstall, Path.Combine(docs, "Rockstar Games", "GTA San Andreas Definitive Edition")));
+        Assert.True(SafeFor(gtaSaDeIdentity, gtaSaDeInstall, Path.Combine(docs, "Rockstar Games", "GTA San Andreas Definitive Edition", "Profiles", "0F74F4C4")));
+        Assert.True(SafeFor(gtaSaDeIdentity, gtaSaDeInstall, Path.Combine(localAppData, "Rockstar Games", "GTA San Andreas Definitive Edition", "Saved")));
+
+        // Localized CJK display title still matches via multi-token English install folder promotion,
+        // AND still enforces remaster/installment vetoes on ExactNames (e.g. LibertyCity.exe, SanAndreas.exe, Crysis.exe, Mafia2.exe)!
+        var cjkGta3DeIdentity = GameDataTargetIdentity.FromGame(new GameRecord
+        {
+            GameId = SpawnId.NewUlid(),
+            Title = "侠盗猎车手III：决定版",
+            InstallDir = gta3DeInstall,
+            ExecutableRelPath = Path.Combine("Gameface", "Binaries", "Win64", "LibertyCity.exe"),
+        });
+        Assert.True(SafeFor(cjkGta3DeIdentity, gta3DeInstall, Path.Combine(docs, "Rockstar Games", "GTA III Definitive Edition", "Profiles", "0F74F4C4")));
+        Assert.False(SafeFor(cjkGta3DeIdentity, gta3DeInstall, Path.Combine(docs, "Rockstar Games", "Liberty City")));
+        Assert.False(SafeFor(cjkGta3DeIdentity, gta3DeInstall, Path.Combine(docs, "Rockstar Games", "GTA III")));
+
+        string cjkGtaSaPureInstall = sandbox.CreateSubDirectory("games", "圣安地列斯决定版");
+        var cjkGtaSaIdentity = GameDataTargetIdentity.FromGame(new GameRecord
+        {
+            GameId = SpawnId.NewUlid(),
+            Title = "侠盗猎车手：圣安地列斯 – 决定版",
+            InstallDir = cjkGtaSaPureInstall,
+            ExecutableRelPath = Path.Combine("Gameface", "Binaries", "Win64", "SanAndreas.exe"),
+        });
+        Assert.False(SafeFor(cjkGtaSaIdentity, cjkGtaSaPureInstall, Path.Combine(docs, "Rockstar Games", "San Andreas")));
+        Assert.False(SafeFor(cjkGtaSaIdentity, cjkGtaSaPureInstall, Path.Combine(docs, "GTA San Andreas User Files")));
+
+        string cjkCrysisPureInstall = sandbox.CreateSubDirectory("games", "孤岛危机重制版");
+        var cjkCrysisRemIdentity = GameDataTargetIdentity.FromGame(
+            new GameRecord
+            {
+                GameId = SpawnId.NewUlid(),
+                Title = "孤岛危机：重制版",
+                InstallDir = cjkCrysisPureInstall,
+                ExecutableRelPath = Path.Combine("Bin64", "Crysis.exe"),
+            },
+            extraProductNames: ["Crysis"]); // Even if unmarked PE ProductName says "Crysis"!
+        Assert.False(SafeFor(cjkCrysisRemIdentity, cjkCrysisPureInstall, Path.Combine(docs, "My Games", "Crysis")));
+
+        string cjkMafia2PureInstall = sandbox.CreateSubDirectory("games", "四海兄弟2决定版");
+        var cjkMafia2DeIdentity = GameDataTargetIdentity.FromGame(new GameRecord
+        {
+            GameId = SpawnId.NewUlid(),
+            Title = "四海兄弟 II：决定版",
+            InstallDir = cjkMafia2PureInstall,
+            ExecutableRelPath = Path.Combine("pc", "Mafia2.exe"),
+        });
+        Assert.False(SafeFor(cjkMafia2DeIdentity, cjkMafia2PureInstall, Path.Combine(docs, "My Games", "Mafia 2")));
+        Assert.False(SafeFor(cjkMafia2DeIdentity, cjkMafia2PureInstall, Path.Combine(docs, "My Games", "Mafia2")));
+
+        // GTA V and Red Dead Redemption 2 positive initialism equivalence.
+        string gta5Install = sandbox.CreateSubDirectory("games", "Grand Theft Auto V");
+        var gta5Identity = GameDataTargetIdentity.FromGame(new GameRecord
+        {
+            GameId = SpawnId.NewUlid(),
+            Title = "Grand Theft Auto V",
+            InstallDir = gta5Install,
+            ExecutableRelPath = "GTA5.exe",
+        });
+        Assert.True(SafeFor(gta5Identity, gta5Install, Path.Combine(docs, "Rockstar Games", "GTA V", "Profiles", "DFE3B7FD")));
+
+        string rdr2Install = sandbox.CreateSubDirectory("games", "Red Dead Redemption 2");
+        var rdr2Identity = GameDataTargetIdentity.FromGame(new GameRecord
+        {
+            GameId = SpawnId.NewUlid(),
+            Title = "Red Dead Redemption 2",
+            InstallDir = rdr2Install,
+            ExecutableRelPath = "RDR2.exe",
+        });
+        Assert.True(SafeFor(rdr2Identity, rdr2Install, Path.Combine(docs, "Rockstar Games", "Red Dead Redemption 2", "Profiles", "ABCD1234")));
+        Assert.True(SafeFor(rdr2Identity, rdr2Install, Path.Combine(docs, "Rockstar Games", "RDR 2", "Profiles", "ABCD1234")));
+
+        // 2. Adversarial non-match invariants: publisher container roots & generic leaf folders -> ALL MUST BE FALSE!
+        string[] publisherContainers =
+        [
+            "Rockstar Games",
+            "Capcom",
+            "Ubisoft",
+            "Square Enix",
+            "EA Games",
+            "Electronic Arts",
+            "FromSoftware",
+            "Bandai Namco",
+            "My Games",
+        ];
+        foreach (string pub in publisherContainers)
+        {
+            Assert.False(SafeFor(gta3DeIdentity, gta3DeInstall, Path.Combine(docs, pub)), $"Publisher root must be blocked: {pub}");
+            Assert.False(SafeFor(gta3DeIdentity, gta3DeInstall, Path.Combine(localAppData, pub)), $"LocalAppData publisher root must be blocked: {pub}");
+        }
+
+        Assert.False(SafeFor(gta3DeIdentity, gta3DeInstall, Path.Combine(roaming, "Goldberg SocialClub Emu Saves")));
+        Assert.False(SafeFor(gta3DeIdentity, gta3DeInstall, Path.Combine(localAppData, "Gameface", "Saved", "SaveGames")));
+        Assert.False(SafeFor(gta3DeIdentity, gta3DeInstall, Path.Combine(localAppData, "UE4Game", "Saved", "SaveGames")));
+        Assert.False(SafeFor(gta3DeIdentity, gta3DeInstall, Path.Combine(docs, "Saved")));
+        Assert.False(SafeFor(gta3DeIdentity, gta3DeInstall, Path.Combine(docs, "Profiles")));
+        Assert.False(SafeFor(gta3DeIdentity, gta3DeInstall, Path.Combine(docs, "Config")));
+        Assert.False(SafeFor(gta3DeIdentity, gta3DeInstall, Path.Combine(docs, "Config", "WindowsNoEditor")));
+        Assert.False(SafeFor(gta3DeIdentity, gta3DeInstall, Path.Combine(docs, "Rockstar Games", "Profiles")));
+        Assert.False(SafeFor(gta3DeIdentity, gta3DeInstall, Path.Combine(localAppData, "Rockstar Games", "Saved")));
+
+        // 3. Adversarial non-match invariants: sibling sequels & subtitles -> ALL MUST BE FALSE!
+        Assert.False(SafeFor(gta3DeIdentity, gta3DeInstall, Path.Combine(docs, "Rockstar Games", "GTA Vice City Definitive Edition")));
+        Assert.False(SafeFor(gta3DeIdentity, gta3DeInstall, Path.Combine(docs, "Rockstar Games", "GTA San Andreas Definitive Edition")));
+        Assert.False(SafeFor(gta3DeIdentity, gta3DeInstall, Path.Combine(docs, "Rockstar Games", "GTA V")));
+        Assert.False(SafeFor(gta3DeIdentity, gta3DeInstall, Path.Combine(docs, "Rockstar Games", "GTA IV")));
+        Assert.False(SafeFor(gta3DeIdentity, gta3DeInstall, Path.Combine(docs, "Rockstar Games", "GTA 2")));
+        Assert.False(SafeFor(gtaVcDeIdentity, gtaVcDeInstall, Path.Combine(docs, "Rockstar Games", "GTA III Definitive Edition")));
+        Assert.False(SafeFor(gtaVcDeIdentity, gtaVcDeInstall, Path.Combine(docs, "Rockstar Games", "GTA San Andreas Definitive Edition")));
+
+        // 4. Adversarial non-match invariants: 2001/2004 originals vs Definitive / Enhanced editions (both directions!).
+        string gta3ClassicInstall = sandbox.CreateSubDirectory("games", "Grand Theft Auto III");
+        var gta3ClassicIdentity = GameDataTargetIdentity.FromGame(new GameRecord
+        {
+            GameId = SpawnId.NewUlid(),
+            Title = "Grand Theft Auto III",
+            InstallDir = gta3ClassicInstall,
+            ExecutableRelPath = "gta3.exe",
+            SteamAppId = 12100,
+        });
+        var gta3ClassicAbbrevIdentity = new GameDataTargetIdentity
+        {
+            Title = "GTA III",
+            ProductNames = ["GTA III", "Grand Theft Auto III"],
+            ExactNames = ["gta3"],
+        };
+
+        Assert.False(SafeFor(gta3ClassicIdentity, gta3ClassicInstall, Path.Combine(docs, "Rockstar Games", "GTA III Definitive Edition")));
+        Assert.False(SafeFor(gta3ClassicAbbrevIdentity, gta3ClassicInstall, Path.Combine(docs, "Rockstar Games", "GTA III Definitive Edition")));
+        Assert.False(SafeFor(gta3DeIdentity, gta3DeInstall, Path.Combine(docs, "Rockstar Games", "Grand Theft Auto III")));
+        Assert.False(SafeFor(gta3DeIdentity, gta3DeInstall, Path.Combine(docs, "GTA3 User Files")));
+        Assert.False(SafeFor(gtaSaDeIdentity, gtaSaDeInstall, Path.Combine(docs, "GTA San Andreas User Files")));
+        Assert.False(SafeFor(gtaSaDeIdentity, gtaSaDeInstall, Path.Combine(docs, "Rockstar Games", "San Andreas")));
+        Assert.False(SafeFor(gtaVcDeIdentity, gtaVcDeInstall, Path.Combine(docs, "Rockstar Games", "Vice City")));
+        Assert.False(SafeFor(gtaVcDeIdentity, gtaVcDeInstall, Path.Combine(docs, "My Games", "Vice City")));
+        Assert.False(SafeFor(gta3DeIdentity, gta3DeInstall, Path.Combine(docs, "Rockstar Games", "Liberty City")));
+        Assert.False(SafeFor(gta5Identity, gta5Install, Path.Combine(docs, "Rockstar Games", "GTA V Enhanced")));
+
+        // Remaster executable stems (Crysis.exe, Mafia2.exe) MUST NOT bypass RemasterMarkers veto via ExactNames!
+        string crysisRemasteredInstall = sandbox.CreateSubDirectory("games", "Crysis Remastered");
+        var crysisRemasteredIdentity = GameDataTargetIdentity.FromGame(new GameRecord
+        {
+            GameId = SpawnId.NewUlid(),
+            Title = "Crysis Remastered",
+            InstallDir = crysisRemasteredInstall,
+            ExecutableRelPath = Path.Combine("Bin64", "Crysis.exe"),
+        });
+        Assert.False(SafeFor(crysisRemasteredIdentity, crysisRemasteredInstall, Path.Combine(docs, "My Games", "Crysis")));
+        Assert.True(SafeFor(crysisRemasteredIdentity, crysisRemasteredInstall, Path.Combine(docs, "My Games", "Crysis Remastered")));
+
+        string mafia2DeInstall = sandbox.CreateSubDirectory("games", "Mafia II Definitive Edition");
+        var mafia2DeIdentity = GameDataTargetIdentity.FromGame(new GameRecord
+        {
+            GameId = SpawnId.NewUlid(),
+            Title = "Mafia II: Definitive Edition",
+            InstallDir = mafia2DeInstall,
+            ExecutableRelPath = Path.Combine("pc", "Mafia2.exe"),
+        });
+        Assert.False(SafeFor(mafia2DeIdentity, mafia2DeInstall, Path.Combine(docs, "My Games", "Mafia 2")));
+        Assert.False(SafeFor(mafia2DeIdentity, mafia2DeInstall, Path.Combine(docs, "My Games", "Mafia2")));
+        Assert.True(SafeFor(mafia2DeIdentity, mafia2DeInstall, Path.Combine(docs, "My Games", "Mafia II Definitive Edition")));
+
+        // Engine runtime / wrapper executable stems (renpy.exe, godot.exe, love.exe, PlayGTA3.exe) & shared engine containers -> ALL FALSE!
+        string renpyGameInstall = sandbox.CreateSubDirectory("games", "Doki Synthetic Club");
+        var renpyIdentity = GameDataTargetIdentity.FromGame(new GameRecord
+        {
+            GameId = SpawnId.NewUlid(),
+            Title = "Doki Synthetic Club",
+            InstallDir = renpyGameInstall,
+            ExecutableRelPath = "renpy.exe",
+        });
+        Assert.False(SafeFor(renpyIdentity, renpyGameInstall, Path.Combine(roaming, "RenPy")));
+        Assert.True(SafeFor(renpyIdentity, renpyGameInstall, Path.Combine(roaming, "RenPy", "Doki Synthetic Club")));
+
+        string godotGameInstall = sandbox.CreateSubDirectory("games", "Brotato Synthetic");
+        var godotIdentity = GameDataTargetIdentity.FromGame(new GameRecord
+        {
+            GameId = SpawnId.NewUlid(),
+            Title = "Brotato Synthetic",
+            InstallDir = godotGameInstall,
+            ExecutableRelPath = "godot.exe",
+        });
+        Assert.False(SafeFor(godotIdentity, godotGameInstall, Path.Combine(roaming, "Godot")));
+        Assert.False(SafeFor(godotIdentity, godotGameInstall, Path.Combine(roaming, "Godot", "app_userdata")));
+        Assert.True(SafeFor(godotIdentity, godotGameInstall, Path.Combine(roaming, "Godot", "app_userdata", "Brotato Synthetic")));
+
+        string loveGameInstall = sandbox.CreateSubDirectory("games", "Balatro Synthetic");
+        var loveIdentity = GameDataTargetIdentity.FromGame(new GameRecord
+        {
+            GameId = SpawnId.NewUlid(),
+            Title = "Balatro Synthetic",
+            InstallDir = loveGameInstall,
+            ExecutableRelPath = "love.exe",
+        });
+        Assert.False(SafeFor(loveIdentity, loveGameInstall, Path.Combine(roaming, "LOVE")));
+
+        // Unrelated two-word parent folder name on an English-titled game must never pollute ExactNames or ProductNames.
+        string unrelatedParentInstall = sandbox.CreateSubDirectory("games", "Epic Games");
+        var celesteInUnrelatedDirIdentity = GameDataTargetIdentity.FromGame(new GameRecord
+        {
+            GameId = SpawnId.NewUlid(),
+            Title = "Celeste",
+            InstallDir = unrelatedParentInstall,
+            ExecutableRelPath = "Celeste.exe",
+        });
+        Assert.False(SafeFor(celesteInUnrelatedDirIdentity, unrelatedParentInstall, Path.Combine(localAppData, "Epic Games")));
+        Assert.False(SafeFor(celesteInUnrelatedDirIdentity, unrelatedParentInstall, Path.Combine(localAppData, "EpicGamesLauncher")));
+
+        string customTwoWordInstall = sandbox.CreateSubDirectory("games", "Custom Bundle Folder");
+        var celesteInCustomTwoWordIdentity = GameDataTargetIdentity.FromGame(new GameRecord
+        {
+            GameId = SpawnId.NewUlid(),
+            Title = "Celeste",
+            InstallDir = customTwoWordInstall,
+            ExecutableRelPath = "Celeste.exe",
+        });
+        Assert.False(SafeFor(celesteInCustomTwoWordIdentity, customTwoWordInstall, Path.Combine(docs, "My Games", "Custom Bundle Folder")));
+
+        // Symmetric RDR -> Red Dead Redemption abbreviation expansion.
+        Assert.Equal("Red Dead Redemption 2", GameTitleCleaner.ExpandSeriesAbbreviations("RDR 2"));
+        Assert.Equal("Red Dead Redemption 2", GameTitleCleaner.ExpandSeriesAbbreviations("RDR2"));
+        Assert.Equal("Red Dead Redemption II", GameTitleCleaner.ExpandSeriesAbbreviations("RDR II"));
+
+        // Subtitle extension protection (e.g. Vice City Stories != Vice City, FF VII Rebirth != FF VII, Stanley Parable 2013 != Ultra Deluxe).
+        string ff7RebirthInstall = sandbox.CreateSubDirectory("games", "Final Fantasy VII Rebirth");
+        var ff7RebirthIdentity = GameDataTargetIdentity.FromGame(new GameRecord
+        {
+            GameId = SpawnId.NewUlid(),
+            Title = "Final Fantasy VII Rebirth",
+            InstallDir = ff7RebirthInstall,
+            ExecutableRelPath = "ff7rebirth.exe",
+        });
+        Assert.False(SafeFor(ff7RebirthIdentity, ff7RebirthInstall, Path.Combine(docs, "My Games", "Final Fantasy VII")));
+
+        string stanley2013Install = sandbox.CreateSubDirectory("games", "The Stanley Parable");
+        var stanley2013Identity = GameDataTargetIdentity.FromGame(new GameRecord
+        {
+            GameId = SpawnId.NewUlid(),
+            Title = "The Stanley Parable",
+            InstallDir = stanley2013Install,
+            ExecutableRelPath = "stanley.exe",
+        });
+        Assert.False(SafeFor(stanley2013Identity, stanley2013Install, Path.Combine(localLow, "Crows Crows Crows", "The Stanley Parable_ Ultra Deluxe")));
+
+        // 5. Adversarial non-match invariants: shared multi-game Social Club Emu container GTA_DEF -> MUST BE FALSE!
+        Assert.False(SafeFor(gta3DeIdentity, gta3DeInstall, Path.Combine(roaming, "Goldberg SocialClub Emu Saves", "GTA_DEF")));
+        Assert.False(SafeFor(gta3DeIdentity, gta3DeInstall, Path.Combine(roaming, "Goldberg SocialClub Emu Saves", "GTA_DEF", "0F74F4C4")));
+
+        // 6. Adversarial non-match invariants: short 1-token acronyms, article-stripped single words, and ambiguous 2-letter acronyms.
+        string gta1997Install = sandbox.CreateSubDirectory("games", "Grand Theft Auto");
+        var gta1997Identity = GameDataTargetIdentity.FromGame(new GameRecord
+        {
+            GameId = SpawnId.NewUlid(),
+            Title = "Grand Theft Auto",
+            InstallDir = gta1997Install,
+            ExecutableRelPath = "gta.exe",
+        });
+        Assert.False(SafeFor(gta1997Identity, gta1997Install, Path.Combine(docs, "GTA")));
+
+        string shortTitleInstall = sandbox.CreateSubDirectory("games", "YS");
+        var shortTitleIdentity = GameDataTargetIdentity.FromGame(new GameRecord
+        {
+            GameId = SpawnId.NewUlid(),
+            Title = "YS",
+            InstallDir = shortTitleInstall,
+            ExecutableRelPath = "ys.exe",
+        });
+        Assert.False(SafeFor(shortTitleIdentity, shortTitleInstall, Path.Combine(roaming, "YS")));
+
+        string theCrewInstall = sandbox.CreateSubDirectory("games", "The Crew");
+        var theCrewIdentity = GameDataTargetIdentity.FromGame(new GameRecord
+        {
+            GameId = SpawnId.NewUlid(),
+            Title = "The Crew",
+            InstallDir = theCrewInstall,
+            ExecutableRelPath = "TheCrew.exe",
+        });
+        Assert.False(SafeFor(theCrewIdentity, theCrewInstall, Path.Combine(roaming, "Crew")));
+
+        string darkSouls2Install = sandbox.CreateSubDirectory("games", "Dark Souls II");
+        var darkSouls2Identity = GameDataTargetIdentity.FromGame(new GameRecord
+        {
+            GameId = SpawnId.NewUlid(),
+            Title = "Dark Souls II",
+            InstallDir = darkSouls2Install,
+            ExecutableRelPath = "DarkSoulsII.exe",
+        });
+        Assert.False(SafeFor(darkSouls2Identity, darkSouls2Install, Path.Combine(roaming, "DS2")));
+
+        // 7. PCGamingWiki {{p|uid}} wildcard expansion passes Rockstar game-specific folder and blocks shared GTA_DEF.
+        string gta3ProfileUid = Directory.CreateDirectory(
+            Path.Combine(docs, "Rockstar Games", "GTA III Definitive Edition", "Profiles", "0F74F4C4")).FullName;
+        Directory.CreateDirectory(Path.Combine(roaming, "Goldberg SocialClub Emu Saves", "GTA_DEF", "0F74F4C4"));
+
+        var pcgwRules = PcGamingWikiRuleParser.ParseWikitext("""
+            {{Game data
+            |{{Game data/saves|Windows|{{p|documents}}\Rockstar Games\GTA III Definitive Edition\Profiles\{{p|uid}}\}}
+            |{{Game data/saves|Windows|{{p|appdata}}\Goldberg SocialClub Emu Saves\GTA_DEF\{{p|uid}}\}}
+            }}
+            """);
+        var expanded = pcgwRules
+            .SelectMany(r => PcGamingWikiRuleParser.ExpandTemplateRule(r, gta3DeInstall, options, gta3DeIdentity))
+            .Select(x => x.ResolvedPathOrKey)
+            .ToList();
+
+        Assert.Single(expanded);
+        Assert.Equal(gta3ProfileUid, expanded[0], ignoreCase: true);
+    }
+
+    [Fact]
+    public async Task GameData_RockstarUnrealCustomPublisherDiscoveryCleanAndUndo_SeparatesSavesFromConfigsProtectsSharedGtaDefAndSiblingGames()
+    {
+        await using var sandbox = new TestSandbox();
+        await sandbox.Database.InitializeAsync();
+        var options = CreateSandboxGameDataOptions(sandbox, $@"Software\SpawnTests_{Guid.NewGuid():N}");
+
+        // Build synthetic Unreal Engine Gameface directory for GTA III Definitive Edition
+        string installDir = sandbox.CreateSubDirectory("games", "GTA III - The Definitive Edition");
+        Directory.CreateDirectory(Path.Combine(installDir, "Engine", "Binaries", "Win64"));
+        Directory.CreateDirectory(Path.Combine(installDir, "Gameface", "Content", "Paks"));
+        string win64Dir = Directory.CreateDirectory(Path.Combine(installDir, "Gameface", "Binaries", "Win64")).FullName;
+        await File.WriteAllBytesAsync(Path.Combine(installDir, "title.rgl"), [0x52, 0x47, 0x4C, 0x4D]);
+        await File.WriteAllBytesAsync(Path.Combine(win64Dir, "LibertyCity.exe"), new byte[8192]);
+        await File.WriteAllBytesAsync(Path.Combine(win64Dir, "socialclub.dll"), [0x4D, 0x5A]);
+        await File.WriteAllBytesAsync(Path.Combine(win64Dir, "Deftones.dll"), [0x4D, 0x5A]);
+
+        // Seed Rockstar custom Documents & LocalAppData trees for GTA III DE
+        string docGameDir = Directory.CreateDirectory(
+            Path.Combine(options.UserDocumentsOverride!, "Rockstar Games", "GTA III Definitive Edition")).FullName;
+        string profileUidDir = Directory.CreateDirectory(Path.Combine(docGameDir, "Profiles", "0F74F4C4")).FullName;
+        string saveFile = Path.Combine(profileUidDir, "GTASAsf1.sav");
+        byte[] savePayload = "GTA3_DE_SLOT1_MISSION_LUIGI"u8.ToArray();
+        await File.WriteAllBytesAsync(saveFile, savePayload);
+
+        string docConfigWinNoEditor = Directory.CreateDirectory(Path.Combine(docGameDir, "Config", "WindowsNoEditor")).FullName;
+        string docUserSettingsIni = Path.Combine(docConfigWinNoEditor, "GameUserSettings.ini");
+        await File.WriteAllTextAsync(docUserSettingsIni, "[ScalabilityGroups]\nsg.ResolutionQuality=100\n", Encoding.UTF8);
+
+        string adjustableCfg = Path.Combine(docGameDir, "Adjustable.cfg");
+        await File.WriteAllTextAsync(adjustableCfg, "Contrast=0.5\nBrightness=0.5\n", Encoding.UTF8);
+
+        string docLogsDir = Directory.CreateDirectory(Path.Combine(docGameDir, "Logs", "NGX")).FullName;
+        string ngxLogFile = Path.Combine(docLogsDir, "ngx_init.log");
+        await File.WriteAllTextAsync(ngxLogFile, "NGX initialized", Encoding.UTF8);
+
+        string localSavedDir = Directory.CreateDirectory(
+            Path.Combine(options.LocalAppDataOverride!, "Rockstar Games", "GTA III Definitive Edition", "Saved")).FullName;
+        string localSavedConfigDir = Directory.CreateDirectory(Path.Combine(localSavedDir, "Config", "WindowsNoEditor")).FullName;
+        string localEngineIni = Path.Combine(localSavedConfigDir, "Engine.ini");
+        await File.WriteAllTextAsync(localEngineIni, "[Core.System]\nPaths=../../../Gameface/Content\n", Encoding.UTF8);
+        string localLogsDir = Directory.CreateDirectory(Path.Combine(localSavedDir, "Logs")).FullName;
+        string localLogFile = Path.Combine(localLogsDir, "Gameface.log");
+        await File.WriteAllTextAsync(localLogFile, "LogInit: Display: Running engine", Encoding.UTF8);
+
+        // Seed sibling game's save (GTA Vice City Definitive Edition) & shared multi-game Social Club Emu container (GTA_DEF)
+        string siblingVcSaveFile = Path.Combine(
+            Directory.CreateDirectory(Path.Combine(options.UserDocumentsOverride!, "Rockstar Games", "GTA Vice City Definitive Edition", "Profiles", "0F74F4C4")).FullName,
+            "VC_sf1.sav");
+        await File.WriteAllTextAsync(siblingVcSaveFile, "VICE_CITY_MUST_NEVER_BE_TOUCHED", Encoding.UTF8);
+
+        string sharedGtaDefDir = Directory.CreateDirectory(
+            Path.Combine(options.AppDataRoamingOverride!, "Goldberg SocialClub Emu Saves", "GTA_DEF")).FullName;
+        string sharedGtaDefFile = Path.Combine(
+            Directory.CreateDirectory(Path.Combine(sharedGtaDefDir, "0F74F4C4")).FullName,
+            "achievements.dat");
+        await File.WriteAllTextAsync(sharedGtaDefFile, "SHARED_TRILOGY_SOCIALCLUB_STATE", Encoding.UTF8);
+
+        var game = new GameRecord
+        {
+            GameId = SpawnId.NewUlid(),
+            Title = "Grand Theft Auto III – The Definitive Edition",
+            SortTitle = "Grand Theft Auto III – The Definitive Edition",
+            InstallDir = installDir,
+            ExecutableRelPath = Path.Combine("Gameface", "Binaries", "Win64", "LibertyCity.exe"),
+            PlatformSource = PlatformSource.Standalone,
+            SteamAppId = 1546970,
+        };
+        await sandbox.Database.UpsertGameAsync(game);
+
+        var service = new GameDataManagementService(
+            sandbox.Database,
+            sandbox.Paths,
+            new ControllableLaunchServiceStub(),
+            options: options);
+
+        // 1. InspectGameDataAsync discovers Rockstar custom Save vs Config/Logs, skips phantom Gameface, and marks GTA_DEF IsSafeToClean = false.
+        var entries = await service.InspectGameDataAsync(game.GameId);
+        Assert.DoesNotContain(entries, e => e.PathOrRegistryKey.Contains(Path.Combine("LocalAppData", "Gameface"), StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(entries, e => e.PathOrRegistryKey.Contains("Vice City", StringComparison.OrdinalIgnoreCase));
+
+        var saveEntry = Assert.Single(entries, e => string.Equals(e.PathOrRegistryKey, profileUidDir, StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(GameDataCategory.SaveData, saveEntry.Category);
+        Assert.True(saveEntry.IsSafeToClean);
+        Assert.True(saveEntry.DefaultSelected);
+        Assert.True(saveEntry.Exists);
+
+        var docConfigEntry = Assert.Single(entries, e => string.Equals(e.PathOrRegistryKey, docConfigWinNoEditor, StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(GameDataCategory.ConfigAndLogs, docConfigEntry.Category);
+        Assert.True(docConfigEntry.IsSafeToClean);
+        Assert.False(docConfigEntry.DefaultSelected);
+
+        var cfgFileEntry = Assert.Single(entries, e => string.Equals(e.PathOrRegistryKey, adjustableCfg, StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(GameDataCategory.ConfigAndLogs, cfgFileEntry.Category);
+        Assert.True(cfgFileEntry.IsSafeToClean);
+        Assert.False(cfgFileEntry.DefaultSelected);
+
+        var localConfigEntry = Assert.Single(entries, e => string.Equals(e.PathOrRegistryKey, Path.Combine(localSavedDir, "Config"), StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(GameDataCategory.ConfigAndLogs, localConfigEntry.Category);
+        Assert.True(localConfigEntry.IsSafeToClean);
+        Assert.False(localConfigEntry.DefaultSelected);
+
+        var sharedGtaDefEntry = Assert.Single(entries, e => string.Equals(e.PathOrRegistryKey, sharedGtaDefDir, StringComparison.OrdinalIgnoreCase));
+        Assert.False(sharedGtaDefEntry.IsSafeToClean);
+        Assert.False(sharedGtaDefEntry.DefaultSelected);
+        Assert.NotNull(sharedGtaDefEntry.SafetyNote);
+
+        // 2. EnumerateSaveLocationsAsync returns ONLY safe SaveData (excludes ConfigAndLogs, Logs, and shared GTA_DEF).
+        var saveLocations = await service.EnumerateSaveLocationsAsync(game.GameId);
+        Assert.Single(saveLocations);
+        Assert.Equal(profileUidDir, saveLocations[0].PathOrRegistryKey, ignoreCase: true);
+
+        // 3. CleanGameDataAsync (even if caller passes ALL entry IDs including protected GTA_DEF) cleans GTA III data,
+        //    preserves Rockstar Games container, sibling Vice City saves, and shared GTA_DEF, and supports 100% Undo restore!
+        var cleanRes = await service.CleanGameDataAsync(new GameDataCleanRequest
+        {
+            GameId = game.GameId,
+            EntryIds = entries.Select(e => e.EntryId).ToList(),
+            ResetSpawnAchievementsAndPlaytime = false,
+            CreateUndoBackup = true,
+        });
+
+        Assert.True(cleanRes.Succeeded, cleanRes.Message);
+        Assert.NotEmpty(cleanRes.Warnings);
+        Assert.False(File.Exists(saveFile));
+        Assert.False(File.Exists(docUserSettingsIni));
+        Assert.False(File.Exists(adjustableCfg));
+        Assert.False(File.Exists(ngxLogFile));
+        Assert.False(File.Exists(localEngineIni));
+        Assert.False(Directory.Exists(docGameDir));
+        Assert.True(Directory.Exists(Path.Combine(options.UserDocumentsOverride!, "Rockstar Games")));
+
+        // Sibling game and shared Social Club container MUST be 100% untouched!
+        Assert.True(File.Exists(siblingVcSaveFile));
+        Assert.Equal("VICE_CITY_MUST_NEVER_BE_TOUCHED", await File.ReadAllTextAsync(siblingVcSaveFile));
+        Assert.True(File.Exists(sharedGtaDefFile));
+        Assert.Equal("SHARED_TRILOGY_SOCIALCLUB_STATE", await File.ReadAllTextAsync(sharedGtaDefFile));
+
+        // ValidateSaveRestoreTargetAsync still permits restoring into the deleted Rockstar save path while blocking GTA_DEF & Vice City.
+        Assert.True((await service.ValidateSaveRestoreTargetAsync(game.GameId, saveFile)).IsSafe);
+        Assert.False((await service.ValidateSaveRestoreTargetAsync(game.GameId, siblingVcSaveFile)).IsSafe);
+        Assert.False((await service.ValidateSaveRestoreTargetAsync(game.GameId, sharedGtaDefFile)).IsSafe);
+
+        // 4. One-click RestoreLastCleanupAsync restores 100% of saves, configs, and logs!
+        var restoreRes = await service.RestoreLastCleanupAsync(game.GameId);
+        Assert.True(restoreRes.Succeeded, restoreRes.Message);
+        Assert.True(File.Exists(saveFile));
+        Assert.Equal(savePayload, await File.ReadAllBytesAsync(saveFile));
+        Assert.True(File.Exists(docUserSettingsIni));
+        Assert.True(File.Exists(adjustableCfg));
+        Assert.True(File.Exists(ngxLogFile));
+        Assert.True(File.Exists(localEngineIni));
+        Assert.True(File.Exists(localLogFile));
+
+        // 5. Verify InspectGameDataAsync on Crysis Remastered (Bin64\Crysis.exe) never discovers classic Documents\My Games\Crysis,
+        //    and pre-first-launch abbreviated "RDR 2" resolves Documents\Rockstar Games\Red Dead Redemption 2\Profiles!
+        string classicCrysisDir = Directory.CreateDirectory(Path.Combine(options.UserDocumentsOverride!, "My Games", "Crysis")).FullName;
+        await File.WriteAllTextAsync(Path.Combine(classicCrysisDir, "classic.sav"), "2007_CRYSIS_SAVE", Encoding.UTF8);
+
+        string crysisRemDir = sandbox.CreateSubDirectory("games", "Crysis Remastered");
+        Directory.CreateDirectory(Path.Combine(crysisRemDir, "Bin64"));
+        await File.WriteAllBytesAsync(Path.Combine(crysisRemDir, "Bin64", "Crysis.exe"), new byte[4096]);
+        var crysisRemGame = new GameRecord
+        {
+            GameId = SpawnId.NewUlid(),
+            Title = "Crysis Remastered",
+            InstallDir = crysisRemDir,
+            ExecutableRelPath = Path.Combine("Bin64", "Crysis.exe"),
+            PlatformSource = PlatformSource.Standalone,
+        };
+        await sandbox.Database.UpsertGameAsync(crysisRemGame);
+
+        var crysisEntries = await service.InspectGameDataAsync(crysisRemGame.GameId);
+        Assert.DoesNotContain(crysisEntries, e => string.Equals(e.PathOrRegistryKey, classicCrysisDir, StringComparison.OrdinalIgnoreCase));
+
+        string rdr2AbbrevDir = sandbox.CreateSubDirectory("games", "RDR 2");
+        await File.WriteAllBytesAsync(Path.Combine(rdr2AbbrevDir, "RDR2.exe"), new byte[4096]);
+        await File.WriteAllBytesAsync(Path.Combine(rdr2AbbrevDir, "title.rgl"), [0x52, 0x47, 0x4C, 0x4D]);
+        var rdr2AbbrevGame = new GameRecord
+        {
+            GameId = SpawnId.NewUlid(),
+            Title = "RDR 2",
+            InstallDir = rdr2AbbrevDir,
+            ExecutableRelPath = "RDR2.exe",
+            PlatformSource = PlatformSource.Standalone,
+        };
+        await sandbox.Database.UpsertGameAsync(rdr2AbbrevGame);
+
+        var rdr2Entries = await service.InspectGameDataAsync(rdr2AbbrevGame.GameId);
+        Assert.Contains(
+            rdr2Entries,
+            e => string.Equals(
+                e.PathOrRegistryKey,
+                Path.Combine(options.UserDocumentsOverride!, "Rockstar Games", "Red Dead Redemption 2", "Profiles"),
+                StringComparison.OrdinalIgnoreCase) && e.IsSafeToClean);
+
+        // 6. Pure CJK Title + pure CJK InstallDir:
+        //    (a) Crysis Remastered ("孤岛危机：重制版", Bin64\Crysis.exe) never discovers classic My Games\Crysis;
+        //    (b) GTA Vice City DE ("侠盗猎车手：罪恶都市 – 决定版", ViceCity.exe) + TrainerTitleMap.EnglishTitle discovers
+        //        Documents\Rockstar Games\GTA Vice City Definitive Edition\Profiles\0F74F4C4 while ignoring classic Vice City!
+        string cjkCrysisDir = sandbox.CreateSubDirectory("games", "孤岛危机重制版");
+        Directory.CreateDirectory(Path.Combine(cjkCrysisDir, "Bin64"));
+        await File.WriteAllBytesAsync(Path.Combine(cjkCrysisDir, "Bin64", "Crysis.exe"), new byte[4096]);
+        var cjkCrysisGame = new GameRecord
+        {
+            GameId = SpawnId.NewUlid(),
+            Title = "孤岛危机：重制版",
+            InstallDir = cjkCrysisDir,
+            ExecutableRelPath = Path.Combine("Bin64", "Crysis.exe"),
+            PlatformSource = PlatformSource.Standalone,
+        };
+        await sandbox.Database.UpsertGameAsync(cjkCrysisGame);
+        await sandbox.Database.UpsertTrainerTitleMapAsync(new TrainerTitleMapRecord
+        {
+            GameId = cjkCrysisGame.GameId,
+            EnglishTitle = "Crysis",
+            TitleSource = TrainerTitleSource.Cleaner,
+        });
+        var cjkCrysisEntries = await service.InspectGameDataAsync(cjkCrysisGame.GameId);
+        Assert.DoesNotContain(cjkCrysisEntries, e => string.Equals(e.PathOrRegistryKey, classicCrysisDir, StringComparison.OrdinalIgnoreCase));
+
+        string classicViceCityDir = Directory.CreateDirectory(Path.Combine(options.UserDocumentsOverride!, "Rockstar Games", "Vice City")).FullName;
+        await File.WriteAllTextAsync(Path.Combine(classicViceCityDir, "classic_vc.sav"), "2002_VC_SAVE", Encoding.UTF8);
+
+        string cjkVcInstallDir = sandbox.CreateSubDirectory("games", "罪恶都市决定版");
+        await File.WriteAllBytesAsync(Path.Combine(cjkVcInstallDir, "title.rgl"), [0x52, 0x47, 0x4C, 0x4D]);
+        string cjkVcWin64 = Directory.CreateDirectory(Path.Combine(cjkVcInstallDir, "Gameface", "Binaries", "Win64")).FullName;
+        await File.WriteAllBytesAsync(Path.Combine(cjkVcWin64, "ViceCity.exe"), new byte[4096]);
+
+        var cjkVcGame = new GameRecord
+        {
+            GameId = SpawnId.NewUlid(),
+            Title = "侠盗猎车手：罪恶都市 – 决定版",
+            InstallDir = cjkVcInstallDir,
+            ExecutableRelPath = Path.Combine("Gameface", "Binaries", "Win64", "ViceCity.exe"),
+            PlatformSource = PlatformSource.Standalone,
+            SteamAppId = 1546990,
+        };
+        await sandbox.Database.UpsertGameAsync(cjkVcGame);
+        await sandbox.Database.UpsertTrainerTitleMapAsync(new TrainerTitleMapRecord
+        {
+            GameId = cjkVcGame.GameId,
+            EnglishTitle = "Grand Theft Auto: Vice City – The Definitive Edition",
+        });
+
+        var cjkVcEntries = await service.InspectGameDataAsync(cjkVcGame.GameId);
+        Assert.Contains(
+            cjkVcEntries,
+            e => string.Equals(
+                e.PathOrRegistryKey,
+                Path.Combine(options.UserDocumentsOverride!, "Rockstar Games", "GTA Vice City Definitive Edition", "Profiles", "0F74F4C4"),
+                StringComparison.OrdinalIgnoreCase) && e.IsSafeToClean && e.Category == GameDataCategory.SaveData);
+        Assert.DoesNotContain(cjkVcEntries, e => string.Equals(e.PathOrRegistryKey, classicViceCityDir, StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task GameData_NtfsDirectoryJunctionProtection_BlocksRootNestedAndToctouJunctionsAndNeverDeletesVaultSlotTarget()
+    {
+        await using var sandbox = new TestSandbox();
+        await sandbox.Database.InitializeAsync();
+        var options = CreateSandboxGameDataOptions(sandbox, $@"Software\SpawnTests_{Guid.NewGuid():N}");
+
+        string vaultSlotDir = sandbox.CreateSubDirectory("vault_slot", "Slot_MainProfile");
+        string preciousSaveFile = Path.Combine(vaultSlotDir, "precious_slot.sav");
+        await File.WriteAllTextAsync(preciousSaveFile, "PRECIOUS_VAULT_SLOT_MUST_SURVIVE", Encoding.UTF8);
+
+        try
+        {
+            string installDir = sandbox.CreateSubDirectory("games", "GTA III - The Definitive Edition");
+            await File.WriteAllBytesAsync(Path.Combine(installDir, "title.rgl"), [0x52, 0x47, 0x4C, 0x4D]);
+            string win64Dir = Directory.CreateDirectory(Path.Combine(installDir, "Gameface", "Binaries", "Win64")).FullName;
+            await File.WriteAllBytesAsync(Path.Combine(win64Dir, "LibertyCity.exe"), new byte[4096]);
+
+            var game = new GameRecord
+            {
+                GameId = SpawnId.NewUlid(),
+                Title = "Grand Theft Auto III – The Definitive Edition",
+                InstallDir = installDir,
+                ExecutableRelPath = Path.Combine("Gameface", "Binaries", "Win64", "LibertyCity.exe"),
+                PlatformSource = PlatformSource.Standalone,
+                SteamAppId = 1546970,
+            };
+            await sandbox.Database.UpsertGameAsync(game);
+
+            string docGameDir = Directory.CreateDirectory(
+                Path.Combine(options.UserDocumentsOverride!, "Rockstar Games", "GTA III Definitive Edition")).FullName;
+            string profilesJunction = Path.Combine(docGameDir, "Profiles");
+
+            // Case 1: Profiles itself is an NTFS Directory Junction pointing to vaultSlotDir -> never marked cleanable!
+            Assert.True(CreateDirectoryJunction(profilesJunction, vaultSlotDir));
+
+            // Also seed a PCGamingWiki rule pointing directly to Profiles so CandidateListBuilder.TryAdd sees the junction path too.
+            await sandbox.Database.UpsertGameDataRuleCacheAsync(new GameDataRuleCacheRecord
+            {
+                CacheKey = "pcgw:steam:1546970",
+                GameId = game.GameId,
+                SteamAppId = 1546970,
+                Provider = "PCGamingWiki",
+                RulesJson = JsonSerializer.Serialize(new[]
+                {
+                    new PcGamingWikiRawRule(GameDataCategory.SaveData, @"{{p|documents}}\Rockstar Games\GTA III Definitive Edition\Profiles"),
+                }),
+                FetchedUtc = DateTimeOffset.UtcNow,
+            });
+
+            var service = new GameDataManagementService(
+                sandbox.Database,
+                sandbox.Paths,
+                new ControllableLaunchServiceStub(),
+                options: options);
+
+            var inspectedRootJunction = await service.InspectGameDataAsync(game.GameId);
+            var rootJunctionEntry = Assert.Single(
+                inspectedRootJunction,
+                e => string.Equals(e.PathOrRegistryKey, profilesJunction, StringComparison.OrdinalIgnoreCase));
+            Assert.False(rootJunctionEntry.IsSafeToClean);
+            Assert.False(rootJunctionEntry.DefaultSelected);
+
+            var cleanRootJunction = await service.CleanGameDataAsync(new GameDataCleanRequest
+            {
+                GameId = game.GameId,
+                EntryIds = [rootJunctionEntry.EntryId],
+                ResetSpawnAchievementsAndPlaytime = false,
+                CreateUndoBackup = true,
+            });
+            Assert.False(cleanRootJunction.Succeeded);
+            Assert.True(File.Exists(preciousSaveFile));
+
+            // Unlink Profiles junction strictly via non-recursive Directory.Delete(recursive: false)!
+            Directory.Delete(profilesJunction, recursive: false);
+            Assert.True(File.Exists(preciousSaveFile));
+
+            // Case 2: Regular Profiles\0F74F4C4 directory containing a nested NTFS Directory Junction -> blocked!
+            string uidDir = Directory.CreateDirectory(Path.Combine(profilesJunction, "0F74F4C4")).FullName;
+            await File.WriteAllTextAsync(Path.Combine(uidDir, "local.sav"), "LOCAL_SAVE", Encoding.UTF8);
+            string nestedJunction = Path.Combine(uidDir, "MountedSlot");
+            Assert.True(CreateDirectoryJunction(nestedJunction, vaultSlotDir));
+
+            var inspectedNested = await service.InspectGameDataAsync(game.GameId);
+            Assert.All(
+                inspectedNested.Where(e => e.PathOrRegistryKey.StartsWith(profilesJunction, StringComparison.OrdinalIgnoreCase)),
+                e => Assert.False(e.IsSafeToClean));
+
+            // Unlink nested junction cleanly, inspect while clean (IsSafeToClean == true), then plant TOCTOU junction before CleanGameDataAsync!
+            Directory.Delete(nestedJunction, recursive: false);
+            var cleanInspection = await service.InspectGameDataAsync(game.GameId);
+            var cleanUidEntry = Assert.Single(
+                cleanInspection,
+                e => string.Equals(e.PathOrRegistryKey, uidDir, StringComparison.OrdinalIgnoreCase));
+            Assert.True(cleanUidEntry.IsSafeToClean);
+
+            Assert.True(CreateDirectoryJunction(nestedJunction, vaultSlotDir));
+            var toctouClean = await service.CleanGameDataAsync(new GameDataCleanRequest
+            {
+                GameId = game.GameId,
+                EntryIds = [cleanUidEntry.EntryId],
+                ResetSpawnAchievementsAndPlaytime = false,
+                CreateUndoBackup = true,
+            });
+            Assert.False(toctouClean.Succeeded);
+            Assert.True(File.Exists(preciousSaveFile));
+            Assert.Equal("PRECIOUS_VAULT_SLOT_MUST_SURVIVE", await File.ReadAllTextAsync(preciousSaveFile));
+        }
+        finally
+        {
+            // Detach any test junctions non-recursively BEFORE TestSandbox.Dispose cleans temp tree!
+            string docGameDir = Path.Combine(options.UserDocumentsOverride!, "Rockstar Games", "GTA III Definitive Edition");
+            string nested = Path.Combine(docGameDir, "Profiles", "0F74F4C4", "MountedSlot");
+            if (Directory.Exists(nested) && (File.GetAttributes(nested) & FileAttributes.ReparsePoint) != 0)
+            {
+                Directory.Delete(nested, recursive: false);
+            }
+
+            string prof = Path.Combine(docGameDir, "Profiles");
+            if (Directory.Exists(prof) && (File.GetAttributes(prof) & FileAttributes.ReparsePoint) != 0)
+            {
+                Directory.Delete(prof, recursive: false);
+            }
+        }
+    }
+
+    private static bool CreateDirectoryJunction(string linkPath, string targetPath)
+    {
+        string? parent = Path.GetDirectoryName(linkPath);
+        if (!string.IsNullOrWhiteSpace(parent))
+        {
+            Directory.CreateDirectory(parent);
+        }
+
+        var psi = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe",
+            Arguments = $"/c mklink /J \"{linkPath}\" \"{targetPath}\"",
+            CreateNoWindow = true,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
+        };
+
+        using var proc = System.Diagnostics.Process.Start(psi);
+        if (proc is null)
+        {
+            return false;
+        }
+
+        proc.WaitForExit(5000);
+        return proc.ExitCode == 0
+               && Directory.Exists(linkPath)
+               && (File.GetAttributes(linkPath) & FileAttributes.ReparsePoint) != 0;
+    }
+
     private static GameDataManagementOptions CreateSandboxGameDataOptions(TestSandbox sandbox, string hkcuPrefix) =>
         new()
         {

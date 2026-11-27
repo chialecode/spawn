@@ -306,8 +306,8 @@
       "status": "active",
       "owner": "维护者",
       "scope": "spawn vs spawn-dev 通道隔离、SQLite WAL 禁放网盘、非递归卸载 Junction 与 DPAPI 凭据规则",
-      "reviewed": "2026-11-20",
-      "basis": "M2 v1.1：同步四身份物理隔离、dev-workspace.json 桥接、TrashDir 可逆清理与防误删围栏规则"
+      "reviewed": "2026-11-25",
+      "basis": "#39：同步游戏数据清理围栏的系列缩写词元等价匹配、续作/重制标记严格隔离与跨游戏共享容器禁删规则"
     },
     {
       "path": "docs/dev-rules/development-workflow.md",
@@ -379,7 +379,7 @@
       "owner": "维护者",
       "scope": "SPAWN 全仓自有 Markdown 与受管 JSON 文档唯一权威注册表",
       "reviewed": "2026-11-27",
-      "basis": "#71：同步受影响治理与流程文档审查日期与基线说明"
+      "basis": "#71、#39：同步受影响治理与流程文档及 data-and-security.md / spawn-launcher.md 审查日期与基线说明"
     },
     {
       "path": "docs/governance/documentation-policy.md",
@@ -432,8 +432,8 @@
       "status": "active",
       "owner": "维护者",
       "scope": "Spawn 启动环境自愈管线、双引擎进程追踪、三态有效时长与三级漏斗离线刮削模块规格书",
-      "reviewed": "2026-11-20",
-      "basis": "M2 v1.1：同步 4 层子目录 .cdx/.rne 扫描与 PCGamingWiki/引擎 GameDataManagementService 规格"
+      "reviewed": "2026-11-25",
+      "basis": "#39：同步发行商自定义文档/AppData 存档探测、通用虚幻代号过滤与安全围栏系列缩写词元匹配规格"
     },
     {
       "path": "docs/modules/workflow-and-blueprint.md",

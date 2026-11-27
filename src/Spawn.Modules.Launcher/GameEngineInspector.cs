@@ -70,6 +70,20 @@ public static partial class GameEngineInspector
         "CompanyName",
     };
 
+    private static readonly HashSet<string> GenericUnrealProjectNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Gameface",
+        "UE4Game",
+        "UE5Game",
+        "UnrealGame",
+        "UnrealEngine",
+        "Engine",
+        "Game",
+        "Project",
+        "WindowsNoEditor",
+        "Template",
+    };
+
     private static readonly string[] EmulatorConfigNames =
     [
         "OnlineFix.ini",
@@ -222,6 +236,53 @@ public static partial class GameEngineInspector
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Returns <see langword="true"/> when <paramref name="projectName"/> is a generic shared Unreal internal project codename
+    /// (such as <c>Gameface</c>, <c>UE4Game</c>, <c>UE5Game</c>, or <c>UnrealGame</c>) rather than a single-game identifier.
+    /// </summary>
+    public static bool IsGenericUnrealProjectName(string? projectName) =>
+        string.IsNullOrWhiteSpace(projectName)
+        || projectName.Trim().Length < 2
+        || GenericUnrealProjectNames.Contains(projectName.Trim());
+
+    /// <summary>
+    /// Returns <see langword="true"/> when <paramref name="projectName"/> is a non-generic game-specific Unreal project name.
+    /// </summary>
+    public static bool IsUsefulUnrealProjectName(string? projectName) =>
+        !string.IsNullOrWhiteSpace(projectName) && !IsGenericUnrealProjectName(projectName);
+
+    /// <summary>
+    /// Statically checks whether <paramref name="installDir"/> contains Rockstar Games Launcher / Social Club markers
+    /// (<c>title.rgl</c>, <c>socialclub.dll</c>, <c>Deftones.dll</c>, <c>PlayGTA*.exe</c>).
+    /// </summary>
+    public static bool HasRockstarOrSocialClubFiles(string installDir)
+    {
+        if (string.IsNullOrWhiteSpace(installDir) || !Directory.Exists(installDir))
+        {
+            return false;
+        }
+
+        if (File.Exists(Path.Combine(installDir, "title.rgl")))
+        {
+            return true;
+        }
+
+        foreach (string filePath in EnumerateMetadataFilesBounded(installDir, maxDepth: 4))
+        {
+            string fileName = Path.GetFileName(filePath);
+            if (fileName.Equals("socialclub.dll", StringComparison.OrdinalIgnoreCase)
+                || fileName.Equals("socialclub64.dll", StringComparison.OrdinalIgnoreCase)
+                || fileName.Equals("Deftones.dll", StringComparison.OrdinalIgnoreCase)
+                || (fileName.StartsWith("PlayGTA", StringComparison.OrdinalIgnoreCase)
+                    && fileName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>

@@ -718,9 +718,18 @@ public static partial class PcGamingWikiRuleParser
         var queries = new List<string>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        if (!string.IsNullOrWhiteSpace(normalizedTitle) && seen.Add(normalizedTitle))
+        if (!string.IsNullOrWhiteSpace(normalizedTitle))
         {
-            queries.Add(normalizedTitle);
+            if (seen.Add(normalizedTitle))
+            {
+                queries.Add(normalizedTitle);
+            }
+
+            string expandedTitle = GameTitleCleaner.ExpandSeriesAbbreviations(normalizedTitle);
+            if (!string.IsNullOrWhiteSpace(expandedTitle) && seen.Add(expandedTitle))
+            {
+                queries.Add(expandedTitle);
+            }
         }
 
         if (steamAppId is > 0)

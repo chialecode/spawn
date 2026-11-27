@@ -153,6 +153,26 @@ public static class ProgressServiceCollectionExtensions
             client.DefaultRequestHeaders.UserAgent.ParseAdd("SpawnCloudSync/1.0 (+https://github.com/chialecode/spawn)");
         });
 
+        services.TryAddSingleton<IKnownFolderProvider>(sp => new WindowsKnownFolderResolver(
+            steamLocator: sp.GetService<ISteamClientLocator>(),
+            steamInstallDirOverrideProvider: () =>
+            {
+                SpawnDatabase? db = sp.GetService<SpawnDatabase>();
+                if (db is null)
+                {
+                    return null;
+                }
+
+                try
+                {
+                    return db.GetSteamInstallDirectoryOverrideAsync().ConfigureAwait(false).GetAwaiter().GetResult();
+                }
+                catch
+                {
+                    return null;
+                }
+            }));
+
         services.TryAddSingleton<LudusaviRuleResolver>(sp => new LudusaviRuleResolver(
             database: sp.GetRequiredService<SpawnDatabase>(),
             gameDataService: sp.GetRequiredService<IGameDataManagementService>(),

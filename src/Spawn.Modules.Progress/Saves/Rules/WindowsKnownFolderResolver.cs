@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
-using Microsoft.Win32;
+using Spawn.Contracts;
+using Spawn.Core;
 
 namespace Spawn.Modules.Progress.Saves.Rules;
 
@@ -92,6 +93,17 @@ public sealed partial class WindowsKnownFolderResolver : IKnownFolderProvider
 
     public static WindowsKnownFolderResolver Instance { get; } = new();
 
+    private readonly ISteamClientLocator? _steamLocator;
+    private readonly Func<string?>? _steamInstallDirOverrideProvider;
+
+    public WindowsKnownFolderResolver(
+        ISteamClientLocator? steamLocator = null,
+        Func<string?>? steamInstallDirOverrideProvider = null)
+    {
+        _steamLocator = steamLocator;
+        _steamInstallDirOverrideProvider = steamInstallDirOverrideProvider;
+    }
+
     [GeneratedRegex(@"^\s*account_steamid\s*=\s*(\d+)\s*$", RegexOptions.IgnoreCase | RegexOptions.Multiline | RegexOptions.CultureInvariant)]
     private static partial Regex GbeForkSteamIdRegex();
 
@@ -176,50 +188,57 @@ public sealed partial class WindowsKnownFolderResolver : IKnownFolderProvider
 
     public IReadOnlyList<string> GetSteamRootDirectories()
     {
-        var results = new List<string>(4);
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        void TryAdd(string? candidate)
+        string? explicitOverride = null;
+        if (_steamInstallDirOverrideProvider is not null)
         {
-            if (string.IsNullOrWhiteSpace(candidate))
-            {
-                return;
-            }
-
             try
             {
-                string normalized = NormalizePath(candidate);
-                if (Directory.Exists(normalized) && seen.Add(normalized))
-                {
-                    results.Add(normalized);
-                }
+                explicitOverride = _steamInstallDirOverrideProvider();
             }
             catch
             {
-                // Ignore malformed paths.
+                // Ignore best-effort override lookup errors and fall back to standard Steam discovery.
             }
         }
 
-        if (OperatingSystem.IsWindows())
+        ISteamClientLocator locator = _steamLocator ?? SteamClientLocator.Default;
+        if (locator is SteamClientLocator concreteLocator)
         {
-            TryAdd(TryReadRegistryString(Registry.CurrentUser, @"Software\Valve\Steam", "SteamPath"));
-            TryAdd(TryReadRegistryString(Registry.LocalMachine, @"SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath"));
-            TryAdd(TryReadRegistryString(Registry.LocalMachine, @"SOFTWARE\Valve\Steam", "InstallPath"));
+            IReadOnlyList<(string Directory, SteamPathDiscoverySource Source)> candidates =
+                concreteLocator.EnumerateCandidateInstallDirectories(explicitOverride);
+            if (candidates.Count == 0)
+            {
+                return [];
+            }
+
+            var results = new List<string>(candidates.Count);
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                try
+                {
+                    string normalized = NormalizePath(candidates[i].Directory);
+                    if (seen.Add(normalized))
+                    {
+                        results.Add(normalized);
+                    }
+                }
+                catch
+                {
+                    // Ignore malformed path.
+                }
+            }
+
+            return results;
         }
 
-        string pf86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
-        if (!string.IsNullOrWhiteSpace(pf86))
+        SteamClientDiscoveryResult discovery = locator.Discover(explicitOverride);
+        if (!string.IsNullOrWhiteSpace(discovery.InstallDirectory) && Directory.Exists(discovery.InstallDirectory))
         {
-            TryAdd(Path.Combine(pf86, "Steam"));
+            return [NormalizePath(discovery.InstallDirectory)];
         }
 
-        string pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-        if (!string.IsNullOrWhiteSpace(pf))
-        {
-            TryAdd(Path.Combine(pf, "Steam"));
-        }
-
-        return results;
+        return [];
     }
 
     public IReadOnlyList<string> GetStoreUserIds() =>
@@ -398,19 +417,6 @@ public sealed partial class WindowsKnownFolderResolver : IKnownFolderProvider
         }
 
         return latest;
-    }
-
-    private static string? TryReadRegistryString(RegistryKey hive, string subKeyPath, string valueName)
-    {
-        try
-        {
-            using RegistryKey? key = hive.OpenSubKey(subKeyPath, writable: false);
-            return key?.GetValue(valueName) as string;
-        }
-        catch
-        {
-            return null;
-        }
     }
 
     private static bool IsReparsePoint(string path)

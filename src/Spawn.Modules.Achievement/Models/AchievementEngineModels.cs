@@ -109,6 +109,7 @@ public sealed class AchievementSourceContext
     public IReadOnlyList<AchievementDefinitionDto> SchemaDefinitions { get; init; } = [];
     public IReadOnlyDictionary<uint, string> Crc32ToApiName { get; init; } = new Dictionary<uint, string>();
     public AchievementEnvironmentOverrides? EnvironmentOverrides { get; init; }
+    public string? SteamInstallDirectoryOverride { get; init; }
 
     public string GetAppDataRoaming() =>
         !string.IsNullOrWhiteSpace(EnvironmentOverrides?.AppDataRoaming)

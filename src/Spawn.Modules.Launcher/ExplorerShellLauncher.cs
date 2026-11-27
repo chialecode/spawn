@@ -98,13 +98,67 @@ public sealed class DefaultGameProcessStarter : IGameProcessStarter
         return tcs.Task.WaitAsync(cancellationToken);
     }
 
-    private static void ExecuteViaDesktopExplorerShellCom(GameProcessStartRequest request)
+    /// <summary>
+    /// Determines whether <paramref name="target"/> is an absolute protocol URI (such as <c>steam://rungameid/504230</c>)
+    /// rather than a Windows filesystem path or UNC share. Never touches the filesystem.
+    /// </summary>
+    public static bool IsProtocolUriTarget(string? target)
     {
+        if (string.IsNullOrWhiteSpace(target))
+        {
+            return false;
+        }
+
+        string trimmed = target.Trim();
+        if (trimmed.Contains('\0', StringComparison.Ordinal)
+            || trimmed.Contains('\r', StringComparison.Ordinal)
+            || trimmed.Contains('\n', StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        // Reject Windows drive paths ("C:\...", "C:/...") and UNC shares ("\\server\share").
+        if ((trimmed.Length >= 2 && char.IsAsciiLetter(trimmed[0]) && trimmed[1] == ':')
+            || trimmed.StartsWith(@"\\", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return Uri.TryCreate(trimmed, UriKind.Absolute, out Uri? uri)
+               && !uri.IsFile
+               && !string.IsNullOrWhiteSpace(uri.Scheme)
+               && uri.Scheme.Length >= 2;
+    }
+
+    /// <summary>
+    /// Resolves the exact <c>ShellExecute</c> parameters for either a protocol URI (e.g., <c>steam://rungameid/...</c>,
+    /// with empty arguments/working directory and <c>SW_SHOWNORMAL</c>) or an executable path.
+    /// </summary>
+    public static (string Target, string Arguments, string WorkingDirectory, string Verb, int ShowCommand, bool IsUri)
+        BuildShellExecuteParameters(GameProcessStartRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.ExecutableFullPath);
+
+        string target = request.ExecutableFullPath.Trim();
+        if (IsProtocolUriTarget(target))
+        {
+            return (target, string.Empty, string.Empty, "open", SwShowNormal, true);
+        }
+
         string workDir = !string.IsNullOrWhiteSpace(request.WorkingDirectory) && Directory.Exists(request.WorkingDirectory)
             ? request.WorkingDirectory
-            : (Path.GetDirectoryName(request.ExecutableFullPath) ?? Environment.CurrentDirectory);
+            : (Path.GetDirectoryName(target) ?? Environment.CurrentDirectory);
 
         int showCmd = request.CreateNoWindow ? SwHide : SwShowNormal;
+        return (target, request.Arguments ?? string.Empty, workDir, "open", showCmd, false);
+    }
+
+    private static void ExecuteViaDesktopExplorerShellCom(GameProcessStartRequest request)
+    {
+        (string target, string arguments, string workDir, string verb, int showCmd, bool isUri) =
+            BuildShellExecuteParameters(request);
+
         object? shellWindows = null;
         object? desktopWindow = null;
         object? document = null;
@@ -113,75 +167,112 @@ public sealed class DefaultGameProcessStarter : IGameProcessStarter
         try
         {
             // Connect to out-of-proc explorer.exe ShellWindows automation server.
-            Type? shellWindowsType = Type.GetTypeFromCLSID(ClsidShellWindows, throwOnError: false);
-            if (shellWindowsType is not null)
+            try
             {
-                shellWindows = Activator.CreateInstance(shellWindowsType);
-                if (shellWindows is not null)
+                Type? shellWindowsType = Type.GetTypeFromCLSID(ClsidShellWindows, throwOnError: false);
+                if (shellWindowsType is not null)
                 {
-                    object emptyLoc = Missing.Value;
-                    object emptyLocRoot = Missing.Value;
-                    object?[] findArgs = [emptyLoc, emptyLocRoot, SwcDesktop, 0, SwfoNeedDispatch];
-
-                    desktopWindow = shellWindowsType.InvokeMember(
-                        "FindWindowSW",
-                        BindingFlags.InvokeMethod,
-                        binder: null,
-                        target: shellWindows,
-                        args: findArgs);
-
-                    if (desktopWindow is not null)
+                    shellWindows = Activator.CreateInstance(shellWindowsType);
+                    if (shellWindows is not null)
                     {
-                        document = desktopWindow.GetType().InvokeMember(
-                            "Document",
-                            BindingFlags.GetProperty,
-                            binder: null,
-                            target: desktopWindow,
-                            args: null);
+                        object emptyLoc = Missing.Value;
+                        object emptyLocRoot = Missing.Value;
+                        object?[] findArgs = [emptyLoc, emptyLocRoot, SwcDesktop, 0, SwfoNeedDispatch];
 
-                        if (document is not null)
+                        desktopWindow = shellWindowsType.InvokeMember(
+                            "FindWindowSW",
+                            BindingFlags.InvokeMethod,
+                            binder: null,
+                            target: shellWindows,
+                            args: findArgs);
+
+                        if (desktopWindow is not null)
                         {
-                            shellDispatch = document.GetType().InvokeMember(
-                                "Application",
+                            document = desktopWindow.GetType().InvokeMember(
+                                "Document",
                                 BindingFlags.GetProperty,
                                 binder: null,
-                                target: document,
+                                target: desktopWindow,
                                 args: null);
+
+                            if (document is not null)
+                            {
+                                shellDispatch = document.GetType().InvokeMember(
+                                    "Application",
+                                    BindingFlags.GetProperty,
+                                    binder: null,
+                                    target: document,
+                                    args: null);
+                            }
                         }
                     }
                 }
+            }
+            catch when (isUri)
+            {
+                // Desktop shell COM may be unavailable in restricted/headless sessions; try Shell.Application or URI fallback below.
+                ReleaseComObjectSafe(shellDispatch);
+                shellDispatch = null;
             }
 
             // Fallback to Shell.Application if explorer.exe desktop shell is unavailable in a headless session.
             if (shellDispatch is null)
             {
-                Type? shellAppType = Type.GetTypeFromProgID("Shell.Application", throwOnError: false);
-                if (shellAppType is not null)
+                try
                 {
-                    shellDispatch = Activator.CreateInstance(shellAppType);
+                    Type? shellAppType = Type.GetTypeFromProgID("Shell.Application", throwOnError: false);
+                    if (shellAppType is not null)
+                    {
+                        shellDispatch = Activator.CreateInstance(shellAppType);
+                    }
+                }
+                catch when (isUri)
+                {
+                    shellDispatch = null;
                 }
             }
 
-            if (shellDispatch is null)
+            if (shellDispatch is not null)
             {
-                throw new InvalidOperationException("无法连接到 Windows Explorer Shell COM 组件以执行脱钩启动。");
+                object?[] shellExecArgs =
+                [
+                    target,
+                    arguments,
+                    workDir,
+                    verb,
+                    showCmd,
+                ];
+
+                try
+                {
+                    _ = shellDispatch.GetType().InvokeMember(
+                        "ShellExecute",
+                        BindingFlags.InvokeMethod,
+                        binder: null,
+                        target: shellDispatch,
+                        args: shellExecArgs);
+                    return;
+                }
+                catch when (isUri)
+                {
+                    // Fall through to safe URI protocol shell fallback when COM ShellExecute fails for a URI.
+                }
             }
 
-            object?[] shellExecArgs =
-            [
-                request.ExecutableFullPath,
-                request.Arguments ?? string.Empty,
-                workDir,
-                "open",
-                showCmd,
-            ];
+            if (isUri)
+            {
+                // Safe fallback for protocol URIs (e.g., steam://rungameid/...) when Explorer Shell COM is unavailable.
+                // Never calls File.Exists on URI strings and leaves WorkingDirectory empty.
+                var uriStartInfo = new ProcessStartInfo
+                {
+                    FileName = target,
+                    UseShellExecute = true,
+                };
+                using Process? _ = Process.Start(uriStartInfo);
+                return;
+            }
 
-            _ = shellDispatch.GetType().InvokeMember(
-                "ShellExecute",
-                BindingFlags.InvokeMethod,
-                binder: null,
-                target: shellDispatch,
-                args: shellExecArgs);
+            throw new InvalidOperationException("无法连接到 Windows Explorer Shell COM 组件以执行脱钩启动。");
         }
         finally
         {

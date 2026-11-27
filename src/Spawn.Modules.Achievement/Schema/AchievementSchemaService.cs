@@ -6,6 +6,7 @@ using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Spawn.Contracts;
+using Spawn.Core;
 
 namespace Spawn.Modules.Achievement;
 
@@ -32,6 +33,8 @@ public sealed partial class AchievementSchemaService : IDisposable
     private readonly AchievementIconProcessor _iconProcessor;
     private readonly AchievementModuleOptions _options;
     private readonly ILogger<AchievementSchemaService> _logger;
+    private readonly SpawnDatabase? _database;
+    private readonly ISteamClientLocator? _steamLocator;
     private readonly HttpClient _httpClient;
     private readonly bool _ownsHttpClient;
 
@@ -41,7 +44,9 @@ public sealed partial class AchievementSchemaService : IDisposable
         AchievementIconProcessor iconProcessor,
         AchievementModuleOptions? options = null,
         HttpClient? httpClient = null,
-        ILogger<AchievementSchemaService>? logger = null)
+        ILogger<AchievementSchemaService>? logger = null,
+        SpawnDatabase? database = null,
+        ISteamClientLocator? steamLocator = null)
     {
         ArgumentNullException.ThrowIfNull(steamApiKeyProvider);
         ArgumentNullException.ThrowIfNull(nativeSaveProvider);
@@ -52,6 +57,8 @@ public sealed partial class AchievementSchemaService : IDisposable
         _iconProcessor = iconProcessor;
         _options = options ?? new AchievementModuleOptions();
         _logger = logger ?? NullLogger<AchievementSchemaService>.Instance;
+        _database = database;
+        _steamLocator = steamLocator;
 
         if (httpClient is not null)
         {
@@ -868,7 +875,27 @@ public sealed partial class AchievementSchemaService : IDisposable
         string preferredLanguage,
         CancellationToken ct)
     {
-        string? steamRoot = SteamLocalCacheAchievementProvider.ResolveSteamInstallPath(_options.EnvironmentOverrides);
+        string? globalSteamOverride = null;
+        if (_database is not null && string.IsNullOrWhiteSpace(_options.EnvironmentOverrides?.SteamInstallPath))
+        {
+            try
+            {
+                globalSteamOverride = await _database.GetSteamInstallDirectoryOverrideAsync(ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch
+            {
+                // Ignore best-effort DB override lookup failures.
+            }
+        }
+
+        string? steamRoot = SteamLocalCacheAchievementProvider.ResolveSteamInstallPath(
+            _options.EnvironmentOverrides,
+            globalSteamOverride,
+            _steamLocator);
         if (string.IsNullOrWhiteSpace(steamRoot))
         {
             return [];

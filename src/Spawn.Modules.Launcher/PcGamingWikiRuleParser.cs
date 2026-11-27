@@ -3,8 +3,8 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using Microsoft.Win32;
 using Spawn.Contracts;
+using Spawn.Core;
 
 namespace Spawn.Modules.Launcher;
 
@@ -39,6 +39,12 @@ public sealed class GameDataManagementOptions
     public string? SavedGamesOverride { get; set; }
     public string? ProgramDataOverride { get; set; }
     public string? SteamInstallDirOverride { get; set; }
+
+    /// <summary>
+    /// Optional <see cref="ISteamClientLocator"/> used when <see cref="AllowSystemSteamDiscovery"/> is enabled
+    /// and no explicit <see cref="SteamInstallDirOverride"/> is configured.
+    /// </summary>
+    public ISteamClientLocator? SteamClientLocator { get; set; }
 
     /// <summary>
     /// Relative prefix under <c>HKEY_CURRENT_USER</c> for <c>Software</c> registry keys.
@@ -132,7 +138,7 @@ public sealed class GameDataManagementOptions
     {
         if (!string.IsNullOrWhiteSpace(SteamInstallDirOverride))
         {
-            return Path.GetFullPath(SteamInstallDirOverride);
+            return NormalizeExplicitSteamDirectory(SteamInstallDirOverride);
         }
 
         if (!AllowSystemSteamDiscovery)
@@ -140,102 +146,65 @@ public sealed class GameDataManagementOptions
             return null;
         }
 
-        string? hkcuPath = TryReadRegistryString(RegistryHive.CurrentUser, RegistryView.Default, @"Software\Valve\Steam", "SteamPath");
-        if (TryNormalizeExistingOrCandidateDir(hkcuPath, requireExists: false, out string? resolved))
+        ISteamClientLocator locator = SteamClientLocator ?? Spawn.Core.SteamClientLocator.Default;
+        if (locator is SteamClientLocator concreteLocator)
         {
-            return resolved;
+            IReadOnlyList<(string Directory, SteamPathDiscoverySource Source)> candidates =
+                concreteLocator.EnumerateCandidateInstallDirectories(explicitInstallDirOverride: null);
+            return candidates.Count > 0 ? candidates[0].Directory : null;
         }
 
-        string? hkcuExe = TryReadRegistryString(RegistryHive.CurrentUser, RegistryView.Default, @"Software\Valve\Steam", "SteamExe");
-        if (!string.IsNullOrWhiteSpace(hkcuExe))
-        {
-            try
-            {
-                string? exeDir = Path.GetDirectoryName(hkcuExe.Trim().Trim('"').Replace('/', Path.DirectorySeparatorChar));
-                if (TryNormalizeExistingOrCandidateDir(exeDir, requireExists: false, out resolved))
-                {
-                    return resolved;
-                }
-            }
-            catch
-            {
-                // Ignore malformed SteamExe value.
-            }
-        }
-
-        string?[] hklmCandidates =
-        [
-            TryReadRegistryString(RegistryHive.LocalMachine, RegistryView.Registry32, @"SOFTWARE\Valve\Steam", "InstallPath"),
-            TryReadRegistryString(RegistryHive.LocalMachine, RegistryView.Registry64, @"SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath"),
-            TryReadRegistryString(RegistryHive.LocalMachine, RegistryView.Registry64, @"SOFTWARE\Valve\Steam", "InstallPath"),
-        ];
-
-        foreach (string? candidate in hklmCandidates)
-        {
-            if (TryNormalizeExistingOrCandidateDir(candidate, requireExists: false, out resolved))
-            {
-                return resolved;
-            }
-        }
-
-        string progX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
-        if (!string.IsNullOrWhiteSpace(progX86)
-            && TryNormalizeExistingOrCandidateDir(Path.Combine(progX86, "Steam"), requireExists: true, out resolved))
-        {
-            return resolved;
-        }
-
-        string progX64 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-        if (!string.IsNullOrWhiteSpace(progX64)
-            && TryNormalizeExistingOrCandidateDir(Path.Combine(progX64, "Steam"), requireExists: true, out resolved))
-        {
-            return resolved;
-        }
-
-        return null;
+        SteamClientDiscoveryResult discovery = locator.Discover(explicitInstallDirOverride: null);
+        return !string.IsNullOrWhiteSpace(discovery.InstallDirectory)
+            ? NormalizeExplicitSteamDirectory(discovery.InstallDirectory)
+            : null;
     }
 
-    private static string? TryReadRegistryString(
-        RegistryHive hive,
-        RegistryView view,
-        string subKeyPath,
-        string valueName)
+    internal GameDataManagementOptions WithEffectiveSteamConfiguration(
+        string? databaseSteamInstallDirOverride,
+        ISteamClientLocator? steamClientLocator) =>
+        new()
+        {
+            AllowOnlinePcGamingWikiLookup = AllowOnlinePcGamingWikiLookup,
+            OnlineLookupTimeout = OnlineLookupTimeout,
+            AllowSystemSteamDiscovery = AllowSystemSteamDiscovery,
+            HttpMessageHandlerOverride = HttpMessageHandlerOverride,
+            AppDataRoamingOverride = AppDataRoamingOverride,
+            LocalAppDataOverride = LocalAppDataOverride,
+            LocalLowOverride = LocalLowOverride,
+            PublicDocumentsOverride = PublicDocumentsOverride,
+            UserDocumentsOverride = UserDocumentsOverride,
+            UserProfileOverride = UserProfileOverride,
+            SavedGamesOverride = SavedGamesOverride,
+            ProgramDataOverride = ProgramDataOverride,
+            SteamInstallDirOverride = !string.IsNullOrWhiteSpace(SteamInstallDirOverride)
+                ? SteamInstallDirOverride
+                : databaseSteamInstallDirOverride,
+            HkcuSoftwarePrefix = HkcuSoftwarePrefix,
+            SteamClientLocator = SteamClientLocator ?? steamClientLocator,
+        };
+
+    private static string? NormalizeExplicitSteamDirectory(string rawPath)
     {
         try
         {
-            using var baseKey = RegistryKey.OpenBaseKey(hive, view);
-            using var subKey = baseKey.OpenSubKey(subKeyPath, writable: false);
-            return subKey?.GetValue(valueName) as string;
+            string trimmed = rawPath.Trim().Trim('"').Replace('/', Path.DirectorySeparatorChar);
+            if (string.IsNullOrWhiteSpace(trimmed))
+            {
+                return null;
+            }
+
+            string full = Path.GetFullPath(trimmed);
+            if (string.Equals(Path.GetFileName(full), Spawn.Core.SteamClientLocator.SteamExecutableFileName, StringComparison.OrdinalIgnoreCase))
+            {
+                full = Path.GetDirectoryName(full) ?? full;
+            }
+
+            return Path.TrimEndingDirectorySeparator(full);
         }
         catch
         {
             return null;
-        }
-    }
-
-    private static bool TryNormalizeExistingOrCandidateDir(string? rawPath, bool requireExists, out string? normalized)
-    {
-        normalized = null;
-        if (string.IsNullOrWhiteSpace(rawPath))
-        {
-            return false;
-        }
-
-        try
-        {
-            string full = Path.TrimEndingDirectorySeparator(
-                Path.GetFullPath(rawPath.Trim().Trim('"').Replace('/', Path.DirectorySeparatorChar)));
-            if (requireExists && !Directory.Exists(full))
-            {
-                return false;
-            }
-
-            normalized = full;
-            return true;
-        }
-        catch
-        {
-            return false;
         }
     }
 }

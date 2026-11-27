@@ -1,14 +1,19 @@
 using System.Buffers.Binary;
 using System.Collections.Specialized;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Data;
+using System.Windows.Documents;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
+using Shape = System.Windows.Shapes.Shape;
 using System.Xml.Linq;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -17,9 +22,11 @@ using NAudio.Wave;
 using Spawn.Contracts;
 using Spawn.Core;
 using Spawn.Core.Update;
+using Spawn.Host;
 using Spawn.Host.Helpers;
 using Spawn.Host.Services;
 using Spawn.Host.ViewModels;
+using Spawn.Host.Views;
 using Spawn.Modules.Achievement;
 using Spawn.Modules.Launcher;
 using Spawn.Modules.Progress;
@@ -259,6 +266,573 @@ public sealed class OverlayAndShellHeadlessGateTests
 
         Assert.True(popupCount >= 4, $"Expected at least 4 <Popup>/<ContextMenu> elements in MainWindow.xaml (RowMore, GameHeaderMore, TrainerMore, ManagedTrainerRowMore), found {popupCount}.");
         Assert.True(violations.Count == 0, string.Join(Environment.NewLine, violations));
+    }
+
+    [Fact]
+    public void PackUriAssemblyNeutralityAudit_AllHostAndOverlaySources_NeverHardcodeAssemblyComponentPackUri()
+    {
+        // Packaging compiles Spawn.Host with -p:SpawnHostAssemblyName=spawn / spawn-dev.
+        // Any hardcoded "/Spawn.Host;component/...", "/Spawn.OverlayHost;component/...", or
+        // "pack://application:,,,/Spawn...." URI passes under dotnet test but throws FileNotFoundException
+        // inside ResourceDictionary.set_Source on startup of installed spawn-dev.exe / spawn.exe!
+        string repoRoot = LocateRepositoryRoot();
+        string[] sourceRoots =
+        [
+            Path.Combine(repoRoot, "src", "Spawn.Host"),
+            Path.Combine(repoRoot, "src", "Spawn.OverlayHost"),
+        ];
+
+        string[] forbiddenTokens =
+        [
+            "Spawn.Host;component",
+            "Spawn.OverlayHost;component",
+            "pack://application:,,,/Spawn.",
+        ];
+
+        int scannedXamlCount = 0;
+        int scannedCsCount = 0;
+        var violations = new List<string>();
+
+        foreach (string root in sourceRoots)
+        {
+            Assert.True(Directory.Exists(root), $"Expected source root to exist: {root}");
+
+            foreach (string file in Directory.EnumerateFiles(root, "*.*", SearchOption.AllDirectories))
+            {
+                string norm = file.Replace('\\', '/');
+                if (norm.Contains("/bin/", StringComparison.OrdinalIgnoreCase)
+                    || norm.Contains("/obj/", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                string ext = Path.GetExtension(file);
+                bool isXaml = string.Equals(ext, ".xaml", StringComparison.OrdinalIgnoreCase);
+                bool isCs = string.Equals(ext, ".cs", StringComparison.OrdinalIgnoreCase);
+                if (!isXaml && !isCs)
+                {
+                    continue;
+                }
+
+                if (isXaml)
+                {
+                    scannedXamlCount++;
+                }
+                else
+                {
+                    scannedCsCount++;
+                }
+
+                string relPath = Path.GetRelativePath(repoRoot, file).Replace('\\', '/');
+                string[] lines = File.ReadAllLines(file, Encoding.UTF8);
+                for (int i = 0; i < lines.Length; i++)
+                {
+                    string line = lines[i];
+                    foreach (string token in forbiddenTokens)
+                    {
+                        if (line.Contains(token, StringComparison.OrdinalIgnoreCase))
+                        {
+                            violations.Add(
+                                $"{relPath}:{i + 1} contains hardcoded assembly pack URI token '{token}'. Use an assembly-neutral relative URI in XAML (e.g. '../../Themes/Controls.xaml') or typeof(...).Assembly.GetName().Name in C#.");
+                        }
+                    }
+                }
+
+                if (isXaml)
+                {
+                    XDocument doc = XDocument.Load(file, LoadOptions.SetLineInfo);
+                    foreach (XElement rd in doc.Descendants().Where(e => e.Name.LocalName == "ResourceDictionary"))
+                    {
+                        string? source = rd.Attribute("Source")?.Value;
+                        if (string.IsNullOrWhiteSpace(source))
+                        {
+                            continue;
+                        }
+
+                        if (source.Contains(";component", StringComparison.OrdinalIgnoreCase)
+                            || source.StartsWith("/Spawn.", StringComparison.OrdinalIgnoreCase))
+                        {
+                            int lineNo = (rd as System.Xml.IXmlLineInfo)?.LineNumber ?? 0;
+                            violations.Add(
+                                $"{relPath}:{lineNo} <ResourceDictionary Source=\"{source}\"> must not hardcode an assembly name; use an assembly-neutral relative URI instead.");
+                        }
+                    }
+                }
+            }
+        }
+
+        Assert.True(scannedXamlCount >= 6, $"Expected at least 6 XAML files under Spawn.Host / Spawn.OverlayHost, scanned {scannedXamlCount}.");
+        Assert.True(scannedCsCount >= 20, $"Expected at least 20 C# files under Spawn.Host / Spawn.OverlayHost, scanned {scannedCsCount}.");
+        Assert.True(violations.Count == 0, string.Join(Environment.NewLine, violations));
+    }
+
+    [Fact]
+    public void DisabledButtonXamlHygieneAudit_HostXamlFiles_NeverSetLocalDangerOrChromaticBrushOnButton()
+    {
+        string repoRoot = LocateRepositoryRoot();
+        string hostRoot = Path.Combine(repoRoot, "src", "Spawn.Host");
+        Assert.True(Directory.Exists(hostRoot));
+
+        string[] forbiddenBrushTokens =
+        [
+            "Danger",
+            "Accent",
+            "Warning",
+            "RunningGreen",
+            "#DC2626",
+            "#F87171",
+            "#EF4444",
+        ];
+
+        int scannedButtons = 0;
+        var violations = new List<string>();
+
+        foreach (string xamlFile in Directory.EnumerateFiles(hostRoot, "*.xaml", SearchOption.AllDirectories))
+        {
+            string norm = xamlFile.Replace('\\', '/');
+            if (norm.Contains("/bin/", StringComparison.OrdinalIgnoreCase)
+                || norm.Contains("/obj/", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            string relPath = Path.GetRelativePath(repoRoot, xamlFile).Replace('\\', '/');
+            XDocument doc = XDocument.Load(xamlFile, LoadOptions.SetLineInfo);
+
+            foreach (XElement button in doc.Descendants().Where(e => e.Name.LocalName == "Button"))
+            {
+                scannedButtons++;
+                int line = (button as System.Xml.IXmlLineInfo)?.LineNumber ?? 0;
+
+                foreach (string attrName in new[] { "Foreground", "Background", "BorderBrush" })
+                {
+                    string? val = button.Attribute(attrName)?.Value;
+                    if (string.IsNullOrWhiteSpace(val))
+                    {
+                        continue;
+                    }
+
+                    if (forbiddenBrushTokens.Any(tok => val.Contains(tok, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        violations.Add(
+                            $"{relPath}:{line} <Button {attrName}=\"{val}\"> sets a local chromatic/danger brush that overrides IsEnabled=\"False\" Style triggers. Use a dedicated Style in Themes/Controls.xaml instead.");
+                    }
+                }
+
+                // Ensure nested <Path> glyphs inside styled Buttons do not hardcode DangerTextBrush (must bind to Button.Foreground).
+                if (button.Attribute("Style") is not null)
+                {
+                    foreach (XElement path in button.Descendants().Where(e => e.Name.LocalName == "Path"))
+                    {
+                        foreach (string brushAttr in new[] { "Stroke", "Fill" })
+                        {
+                            string? val = path.Attribute(brushAttr)?.Value;
+                            if (!string.IsNullOrWhiteSpace(val)
+                                && val.Contains("Danger", StringComparison.OrdinalIgnoreCase))
+                            {
+                                int pathLine = (path as System.Xml.IXmlLineInfo)?.LineNumber ?? line;
+                                violations.Add(
+                                    $"{relPath}:{pathLine} <Path {brushAttr}=\"{val}\"> inside styled <Button> hardcodes a Danger brush instead of binding to Button.Foreground.");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Assert.True(scannedButtons >= 40, $"Expected at least 40 <Button> elements under src/Spawn.Host, scanned {scannedButtons}.");
+        Assert.True(violations.Count == 0, string.Join(Environment.NewLine, violations));
+    }
+
+    [Theory]
+    [InlineData("LightTheme.xaml")]
+    [InlineData("DarkTheme.xaml")]
+    public void DisabledButtonStyles_LightAndDarkThemes_GrayOutDangerPrimarySecondaryAndSwitchControls(string themeFile)
+    {
+        Exception? staException = null;
+        var staThread = new Thread(() =>
+        {
+            try
+            {
+                RuntimeHelpers.RunClassConstructor(typeof(Application).TypeHandle);
+
+                string hostAsm = typeof(MainWindow).Assembly.GetName().Name ?? "Spawn.Host";
+                var resources = new ResourceDictionary();
+                resources.MergedDictionaries.Add(new ResourceDictionary
+                {
+                    Source = new Uri($"pack://application:,,,/{hostAsm};component/Themes/{themeFile}", UriKind.Absolute),
+                });
+                resources.MergedDictionaries.Add(new ResourceDictionary
+                {
+                    Source = new Uri($"pack://application:,,,/{hostAsm};component/Themes/Controls.xaml", UriKind.Absolute),
+                });
+
+                Color expectedDisabledText = ((SolidColorBrush)resources["DisabledTextBrush"]).Color;
+                Color expectedDisabledSurface = ((SolidColorBrush)resources["DisabledSurfaceBrush"]).Color;
+                Color expectedDisabledBorder = ((SolidColorBrush)resources["DisabledBorderBrush"]).Color;
+                AssertNeutralGray(expectedDisabledText, $"{themeFile} DisabledTextBrush");
+                AssertNeutralGray(expectedDisabledSurface, $"{themeFile} DisabledSurfaceBrush");
+                AssertNeutralGray(expectedDisabledBorder, $"{themeFile} DisabledBorderBrush");
+
+                var host = new StackPanel
+                {
+                    Width = 320,
+                    Resources = resources,
+                };
+                host.SetResourceReference(Panel.BackgroundProperty, "FloatingMenuBackgroundBrush");
+
+                // 1. DangerMenuItemButtonStyle (e.g., "切回主分支并删除当前分支" / "删除此快照")
+                var dangerMenuBtn = new Button
+                {
+                    Style = (Style)resources["DangerMenuItemButtonStyle"],
+                    Content = "切回主分支并删除当前分支",
+                    Width = 220,
+                    IsEnabled = true,
+                };
+                host.Children.Add(dangerMenuBtn);
+
+                // 2. DangerSecondaryCapsuleButtonStyle (e.g., cloud endpoint "删除")
+                var dangerSecondaryBtn = new Button
+                {
+                    Style = (Style)resources["DangerSecondaryCapsuleButtonStyle"],
+                    Content = "删除",
+                    Width = 100,
+                    IsEnabled = true,
+                };
+                host.Children.Add(dangerSecondaryBtn);
+
+                // 3. DangerSubtleIconButtonStyle with bound <Path Stroke>
+                var dangerIconPath = new System.Windows.Shapes.Path
+                {
+                    Data = Geometry.Parse("M0,0 L8,8 M8,0 L0,8"),
+                    StrokeThickness = 1.5,
+                };
+                dangerIconPath.SetBinding(Shape.StrokeProperty, new Binding("Foreground")
+                {
+                    RelativeSource = new RelativeSource(RelativeSourceMode.FindAncestor, typeof(Button), 1),
+                });
+                var dangerIconBtn = new Button
+                {
+                    Style = (Style)resources["DangerSubtleIconButtonStyle"],
+                    Content = dangerIconPath,
+                    IsEnabled = true,
+                };
+                host.Children.Add(dangerIconBtn);
+
+                // 4. Primary / Running / Warning / Secondary / Floating / Subtle / Link buttons
+                var primaryBtn = new Button
+                {
+                    Style = (Style)resources["PrimaryCapsuleButtonStyle"],
+                    Content = "创建快照",
+                    Width = 140,
+                    IsEnabled = true,
+                };
+                var runningPrimaryBtn = new Button
+                {
+                    Style = (Style)resources["RunningPrimaryCapsuleButtonStyle"],
+                    Content = "停止修改器",
+                    Width = 140,
+                    IsEnabled = true,
+                };
+                var warningPrimaryBtn = new Button
+                {
+                    Style = (Style)resources["WarningPrimaryCapsuleButtonStyle"],
+                    Content = "忽略 Mod 差异强制回滚",
+                    Width = 180,
+                    IsEnabled = true,
+                };
+                var secondaryBtn = new Button
+                {
+                    Style = (Style)resources["SecondaryCapsuleButtonStyle"],
+                    Content = "新建分叉",
+                    Width = 120,
+                    IsEnabled = true,
+                };
+                var floatingMenuBtn = new Button
+                {
+                    Style = (Style)resources["FloatingMenuItemButtonStyle"],
+                    Content = "重命名 / 修改分支颜色",
+                    Width = 220,
+                    IsEnabled = true,
+                };
+                var linkBtn = new Button
+                {
+                    Style = (Style)resources["AccentLinkButtonStyle"],
+                    Content = "↳ 跳转至父节点快照",
+                    Width = 180,
+                    IsEnabled = true,
+                };
+                var switchBox = new CheckBox
+                {
+                    Style = (Style)resources["ModernSwitchCheckBoxStyle"],
+                    Content = "分叉后立即切换并检出",
+                    IsChecked = true,
+                    IsEnabled = true,
+                };
+
+                host.Children.Add(primaryBtn);
+                host.Children.Add(runningPrimaryBtn);
+                host.Children.Add(warningPrimaryBtn);
+                host.Children.Add(secondaryBtn);
+                host.Children.Add(floatingMenuBtn);
+                host.Children.Add(linkBtn);
+                host.Children.Add(switchBox);
+
+                LayoutElement(host, 320, 480);
+
+                // Verify ENABLED states: danger buttons are distinctly red, primary buttons are chromatic
+                AssertRedDominant(GetSolidColor(dangerMenuBtn.Foreground), $"{themeFile} DangerMenuItem enabled foreground");
+                AssertRedDominant(GetSolidColor(dangerSecondaryBtn.Foreground), $"{themeFile} DangerSecondary enabled foreground");
+                AssertRedDominant(GetSolidColor(dangerIconBtn.Foreground), $"{themeFile} DangerSubtleIcon enabled foreground");
+                AssertRedDominant(GetSolidColor(dangerIconPath.Stroke), $"{themeFile} DangerSubtleIcon Path enabled stroke");
+                AssertChromatic(GetSolidColor(GetTemplateBorder(primaryBtn).Background), $"{themeFile} Primary enabled background");
+                AssertChromatic(GetSolidColor(GetTemplateBorder(runningPrimaryBtn).Background), $"{themeFile} RunningPrimary enabled background");
+                AssertChromatic(GetSolidColor(GetTemplateBorder(warningPrimaryBtn).Background), $"{themeFile} WarningPrimary enabled background");
+                AssertChromatic(GetSolidColor(linkBtn.Foreground), $"{themeFile} AccentLink enabled foreground");
+
+                int enabledRedPixels = CountRedDominantPixels(dangerMenuBtn, 220, 34);
+                Assert.True(enabledRedPixels > 20, $"[{themeFile}] Expected enabled DangerMenuItem to render > 20 red pixels, got {enabledRedPixels}.");
+
+                // Switch ALL controls to DISABLED
+                dangerMenuBtn.IsEnabled = false;
+                dangerSecondaryBtn.IsEnabled = false;
+                dangerIconBtn.IsEnabled = false;
+                primaryBtn.IsEnabled = false;
+                runningPrimaryBtn.IsEnabled = false;
+                warningPrimaryBtn.IsEnabled = false;
+                secondaryBtn.IsEnabled = false;
+                floatingMenuBtn.IsEnabled = false;
+                linkBtn.IsEnabled = false;
+                switchBox.IsEnabled = false;
+
+                LayoutElement(host, 320, 480);
+
+                // Danger buttons MUST become neutral muted gray (ZERO red bleed-through!)
+                foreach (var (name, btn) in new (string, Button)[]
+                {
+                    ("DangerMenuItem", dangerMenuBtn),
+                    ("DangerSecondary", dangerSecondaryBtn),
+                    ("DangerSubtleIcon", dangerIconBtn),
+                    ("PrimaryCapsule", primaryBtn),
+                    ("RunningPrimaryCapsule", runningPrimaryBtn),
+                    ("WarningPrimaryCapsule", warningPrimaryBtn),
+                    ("SecondaryCapsule", secondaryBtn),
+                    ("FloatingMenuItem", floatingMenuBtn),
+                    ("AccentLink", linkBtn),
+                })
+                {
+                    Color fg = GetSolidColor(btn.Foreground);
+                    Assert.Equal(expectedDisabledText, fg);
+                    AssertNeutralGray(fg, $"{themeFile} {name} disabled Foreground");
+
+                    Border bd = GetTemplateBorder(btn);
+                    Color inheritedFg = GetSolidColor(TextElement.GetForeground(bd));
+                    Assert.Equal(expectedDisabledText, inheritedFg);
+                    AssertNeutralGray(inheritedFg, $"{themeFile} {name} disabled Bd TextElement.Foreground");
+                }
+
+                // Bound Path inside disabled danger icon button MUST also turn neutral gray
+                Color disabledPathStroke = GetSolidColor(dangerIconPath.Stroke);
+                Assert.Equal(expectedDisabledText, disabledPathStroke);
+                AssertNeutralGray(disabledPathStroke, $"{themeFile} DangerSubtleIcon Path disabled stroke");
+
+                // Filled/outlined capsule buttons MUST switch background & border to neutral disabled gray
+                foreach (var (name, btn) in new (string, Button)[]
+                {
+                    ("PrimaryCapsule", primaryBtn),
+                    ("RunningPrimaryCapsule", runningPrimaryBtn),
+                    ("WarningPrimaryCapsule", warningPrimaryBtn),
+                    ("SecondaryCapsule", secondaryBtn),
+                    ("DangerSecondaryCapsule", dangerSecondaryBtn),
+                })
+                {
+                    Border bd = GetTemplateBorder(btn);
+                    Color bg = GetSolidColor(bd.Background);
+                    Color border = GetSolidColor(bd.BorderBrush);
+                    Assert.Equal(expectedDisabledSurface, bg);
+                    Assert.Equal(expectedDisabledBorder, border);
+                    AssertNeutralGray(bg, $"{themeFile} {name} disabled Background");
+                    AssertNeutralGray(border, $"{themeFile} {name} disabled BorderBrush");
+                }
+
+                // Rendered pixels of disabled DangerMenuItem MUST have ZERO red-dominant pixels!
+                int disabledRedPixels = CountRedDominantPixels(dangerMenuBtn, 220, 34);
+                Assert.Equal(0, disabledRedPixels);
+
+                // Disabled switch track & label MUST turn neutral gray even when IsChecked == true
+                Assert.Equal(expectedDisabledText, GetSolidColor(switchBox.Foreground));
+                var track = (Border)switchBox.Template.FindName("Track", switchBox);
+                Assert.Equal(expectedDisabledSurface, GetSolidColor(track.Background));
+            }
+            catch (Exception ex)
+            {
+                staException = ex;
+            }
+            finally
+            {
+                Dispatcher.CurrentDispatcher.InvokeShutdown();
+            }
+        });
+
+        staThread.SetApartmentState(ApartmentState.STA);
+        staThread.IsBackground = true;
+        staThread.Start();
+        Assert.True(staThread.Join(TimeSpan.FromSeconds(60)), $"STA disabled button test timed out for {themeFile}.");
+
+        if (staException is not null)
+        {
+            ExceptionDispatchInfo.Capture(staException).Throw();
+        }
+    }
+
+    private static void LayoutElement(FrameworkElement element, double width, double height)
+    {
+        element.Measure(new Size(width, height));
+        element.Arrange(new Rect(0, 0, width, height));
+        element.UpdateLayout();
+    }
+
+    private static Border GetTemplateBorder(Button button)
+    {
+        button.ApplyTemplate();
+        var bd = button.Template.FindName("Bd", button) as Border;
+        Assert.NotNull(bd);
+        return bd!;
+    }
+
+    private static Color GetSolidColor(Brush? brush)
+    {
+        var solid = Assert.IsType<SolidColorBrush>(brush);
+        return solid.Color;
+    }
+
+    private static void AssertNeutralGray(Color color, string label)
+    {
+        int chroma = Math.Max(color.R, Math.Max(color.G, color.B)) - Math.Min(color.R, Math.Min(color.G, color.B));
+        Assert.True(
+            chroma <= 16,
+            $"Expected neutral gray (chroma <= 16) for {label}, got #{color.R:X2}{color.G:X2}{color.B:X2} (chroma={chroma}).");
+    }
+
+    private static void AssertRedDominant(Color color, string label)
+    {
+        Assert.True(
+            color.R > color.G + 40 && color.R > color.B + 40,
+            $"Expected red-dominant color for {label}, got #{color.R:X2}{color.G:X2}{color.B:X2}.");
+    }
+
+    private static void AssertChromatic(Color color, string label)
+    {
+        int chroma = Math.Max(color.R, Math.Max(color.G, color.B)) - Math.Min(color.R, Math.Min(color.G, color.B));
+        Assert.True(
+            chroma > 40,
+            $"Expected chromatic color (chroma > 40) for {label}, got #{color.R:X2}{color.G:X2}{color.B:X2} (chroma={chroma}).");
+    }
+
+    private static int CountRedDominantPixels(FrameworkElement element, int width, int height)
+    {
+        var rtb = new RenderTargetBitmap(width, height, 96.0, 96.0, PixelFormats.Pbgra32);
+        rtb.Render(element);
+        byte[] pixels = new byte[width * height * 4];
+        rtb.CopyPixels(pixels, width * 4, 0);
+
+        int redPixels = 0;
+        for (int i = 0; i < pixels.Length; i += 4)
+        {
+            byte b = pixels[i];
+            byte g = pixels[i + 1];
+            byte r = pixels[i + 2];
+            byte a = pixels[i + 3];
+            if (a > 20 && r > g + 25 && r > b + 25)
+            {
+                redPixels++;
+            }
+        }
+
+        return redPixels;
+    }
+
+    [Fact]
+    public async Task MainWindow_HeadlessStaInitializeComponent_SucceedsWithoutShowingWindow()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"spawn-mainwindow-init-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+
+        try
+        {
+            var paths = SpawnPaths.CreateIsolated(tempDir, workspaceRootHint: tempDir);
+            paths.EnsureDirectoriesExist();
+
+            var services = new ServiceCollection();
+            App.RegisterHostCoreAndModuleServices(services, paths);
+            services.AddSingleton<TrayIconService>();
+
+            await using ServiceProvider sp = services.BuildServiceProvider(new ServiceProviderOptions
+            {
+                ValidateOnBuild = true,
+                ValidateScopes = true,
+            });
+
+            await sp.GetRequiredService<SpawnDatabase>().InitializeAsync();
+
+            using MainWindowViewModel mainVm = sp.GetRequiredService<MainWindowViewModel>();
+            using TrayIconService trayService = sp.GetRequiredService<TrayIconService>();
+
+            Exception? staException = null;
+            var staThread = new Thread(() =>
+            {
+                try
+                {
+                    RuntimeHelpers.RunClassConstructor(typeof(Application).TypeHandle);
+
+                    var window = new MainWindow(mainVm, trayService, static () => { });
+                    try
+                    {
+                        Assert.False(window.IsVisible);
+                        Assert.NotNull(window.FindName("WindowOuterBorder"));
+                        Assert.NotNull(window.FindName("SaveSidebarSearchTextBox"));
+                        Assert.NotNull(window.FindName("TrainerSidebarSearchTextBox"));
+                    }
+                    finally
+                    {
+                        window.Close();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    staException = ex;
+                }
+                finally
+                {
+                    Dispatcher.CurrentDispatcher.InvokeShutdown();
+                }
+            });
+
+            staThread.SetApartmentState(ApartmentState.STA);
+            staThread.IsBackground = true;
+            staThread.Start();
+            Assert.True(staThread.Join(TimeSpan.FromSeconds(60)), "STA headless MainWindow InitializeComponent test timed out.");
+
+            if (staException is not null)
+            {
+                ExceptionDispatchInfo.Capture(staException).Throw();
+            }
+        }
+        finally
+        {
+            try
+            {
+                Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+                if (Directory.Exists(tempDir))
+                {
+                    Directory.Delete(tempDir, recursive: true);
+                }
+            }
+            catch
+            {
+                // Best-effort temp cleanup.
+            }
+        }
     }
 
     [Theory]
@@ -652,16 +1226,17 @@ public sealed class OverlayAndShellHeadlessGateTests
     [Fact]
     public void M3A16_MainWindowXaml_RemovesTopBarQuickImportCapsule_ConsolidatesLibraryScanToSettings_AndEnforcesDedicatedTrainersRailAndThreeSubTabsSixSettingsCategories()
     {
-        // 1. Enum invariants: 4 PrimaryNavSection items (Library, Achievements, Trainers, Settings) + 3 GameDetail sub-tabs + 6 Settings categories.
+        // 1. Enum invariants: 5 PrimaryNavSection items (Library, Achievements, Saves, Trainers, Settings) + 4 GameDetail sub-tabs + 8 Settings categories.
         Assert.Equal(
-            [PrimaryNavSection.Library, PrimaryNavSection.Achievements, PrimaryNavSection.Trainers, PrimaryNavSection.Settings],
+            [PrimaryNavSection.Library, PrimaryNavSection.Achievements, PrimaryNavSection.Saves, PrimaryNavSection.Trainers, PrimaryNavSection.Settings],
             Enum.GetValues<PrimaryNavSection>());
         Assert.Equal(
-            [GameDetailSubTab.Achievements, GameDetailSubTab.GameData, GameDetailSubTab.Trainers],
+            [GameDetailSubTab.Achievements, GameDetailSubTab.Saves, GameDetailSubTab.GameData, GameDetailSubTab.Trainers],
             Enum.GetValues<GameDetailSubTab>());
+        Assert.Contains(SettingsCategory.SavesAndCloudSync, Enum.GetValues<SettingsCategory>());
         Assert.Contains(SettingsCategory.TrainerAndSandbox, Enum.GetValues<SettingsCategory>());
         Assert.Contains(SettingsCategory.Updates, Enum.GetValues<SettingsCategory>());
-        Assert.Equal(7, Enum.GetValues<SettingsCategory>().Length);
+        Assert.Equal(8, Enum.GetValues<SettingsCategory>().Length);
 
         string repoRoot = LocateRepositoryRoot();
         string mainWindowXamlPath = Path.Combine(repoRoot, "src", "Spawn.Host", "Views", "MainWindow.xaml");
@@ -708,12 +1283,25 @@ public sealed class OverlayAndShellHeadlessGateTests
         Assert.Contains("ManagedTrainerRowMoreBtn", mainWindowXaml, StringComparison.Ordinal);
         Assert.Contains("TrainerWorkbenchTemplate", mainWindowXaml, StringComparison.Ordinal);
 
-        // 6. Column 1 XAML check: 4 RadioButtons in PrimaryRailGroup (Library, Achievements, Trainers, Settings).
+        // 5b. Dedicated Saves Time Machine & Branching Tree Sidebar Rail, Overview Mode, IME-guarded search, and shared SaveWorkbenchControl checks!
+        Assert.Contains("PrimaryNavSection.Saves", mainWindowXaml, StringComparison.Ordinal);
+        Assert.Contains("GameDetailSubTab.Saves", mainWindowXaml, StringComparison.Ordinal);
+        Assert.Contains("OpenGameSavesSubTabCommand", mainWindowXaml, StringComparison.Ordinal);
+        Assert.Contains("SettingsCategory.SavesAndCloudSync", mainWindowXaml, StringComparison.Ordinal);
+        Assert.Contains("存档与云同步", mainWindowXaml, StringComparison.Ordinal);
+        Assert.Contains("全部存档总览", mainWindowXaml, StringComparison.Ordinal);
+        Assert.Contains("SaveSidebarSearchTextBox", mainWindowXaml, StringComparison.Ordinal);
+        Assert.Contains("OnSaveSidebarSearchPreviewKeyDown", mainWindowXaml, StringComparison.Ordinal);
+        Assert.Contains("ShowSavesOverviewPanel", mainWindowXaml, StringComparison.Ordinal);
+        Assert.Contains("ShowSavesSingleGamePanel", mainWindowXaml, StringComparison.Ordinal);
+        Assert.Contains("SaveWorkbenchControl", mainWindowXaml, StringComparison.Ordinal);
+
+        // 6. Column 1 XAML check: 5 RadioButtons in PrimaryRailGroup (Library, Achievements, Saves, Trainers, Settings).
         XDocument doc = XDocument.Load(mainWindowXamlPath);
         int railButtons = doc.Descendants()
             .Count(e => e.Name.LocalName == "RadioButton"
                         && string.Equals(e.Attribute("GroupName")?.Value, "PrimaryRailGroup", StringComparison.Ordinal));
-        Assert.Equal(4, railButtons);
+        Assert.Equal(5, railButtons);
     }
 
     [Fact]

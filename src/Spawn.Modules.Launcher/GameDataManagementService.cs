@@ -630,6 +630,30 @@ public sealed class GameDataManagementService : IGameDataManagementService
         return latest is null ? null : ToUndoDto(latest.Value.Manifest, latest.Value.SnapshotDirectory);
     }
 
+    public async Task<IReadOnlyList<GameDataUndoSnapshotDto>> ListUndoSnapshotsAsync(
+        string gameId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(gameId))
+        {
+            return [];
+        }
+
+        var all = await LoadAllUndoManifestsAsync(gameId, cancellationToken).ConfigureAwait(false);
+        if (all.Count == 0)
+        {
+            return [];
+        }
+
+        var dtos = new List<GameDataUndoSnapshotDto>(all.Count);
+        foreach (var (manifest, snapshotDir) in all)
+        {
+            dtos.Add(ToUndoDto(manifest, snapshotDir));
+        }
+
+        return dtos;
+    }
+
     public async Task<GameDataCleanResult> RestoreLastCleanupAsync(
         string gameId,
         CancellationToken cancellationToken = default)
@@ -656,7 +680,190 @@ public sealed class GameDataManagementService : IGameDataManagementService
             return GameDataCleanResult.Fail("未找到可供恢复的清理回收站快照。");
         }
 
-        var (manifest, snapshotDir) = latest.Value;
+        return await RestoreSnapshotCoreAsync(
+            game,
+            latest.Value.Manifest,
+            latest.Value.SnapshotDirectory,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<GameDataCleanResult> RestoreUndoSnapshotAsync(
+        string gameId,
+        string snapshotId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(gameId))
+        {
+            return GameDataCleanResult.Fail("游戏标识不能为空。");
+        }
+
+        if (string.IsNullOrWhiteSpace(snapshotId) || !IsSafeSnapshotIdentifier(snapshotId))
+        {
+            return GameDataCleanResult.Fail("回收站快照标识无效。");
+        }
+
+        var game = await _database.GetGameByIdAsync(gameId, cancellationToken).ConfigureAwait(false);
+        if (game is null)
+        {
+            return GameDataCleanResult.Fail("未在游戏库中找到该游戏记录。");
+        }
+
+        if (IsGameCurrentlyRunning(game))
+        {
+            return GameDataCleanResult.Fail($"《{game.Title}》当前正在运行中，请先关闭游戏后再恢复备份。");
+        }
+
+        var all = await LoadAllUndoManifestsAsync(gameId, cancellationToken).ConfigureAwait(false);
+        var match = all.FirstOrDefault(x => string.Equals(x.Manifest.SnapshotId, snapshotId.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (match.Manifest is null || string.IsNullOrWhiteSpace(match.SnapshotDirectory))
+        {
+            return GameDataCleanResult.Fail($"未找到指定的清理回收站快照（{snapshotId}）。");
+        }
+
+        return await RestoreSnapshotCoreAsync(
+            game,
+            match.Manifest,
+            match.SnapshotDirectory,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<GameDataTrashPurgeResult> PurgeTrashSnapshotsAsync(
+        string gameId,
+        string? snapshotId = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(gameId))
+        {
+            return GameDataTrashPurgeResult.Fail("游戏标识不能为空。");
+        }
+
+        bool purgeSingle = !string.IsNullOrWhiteSpace(snapshotId);
+        if (purgeSingle && !IsSafeSnapshotIdentifier(snapshotId!))
+        {
+            return GameDataTrashPurgeResult.Fail("回收站快照标识无效。");
+        }
+
+        string gameTrashRoot = _paths.GetGameTrashDirectory(gameId);
+        if (!Directory.Exists(gameTrashRoot))
+        {
+            return GameDataTrashPurgeResult.Ok("该游戏当前没有可清理的回收站快照。", deletedSnapshotCount: 0, freedBytes: 0);
+        }
+
+        string trashRootPrefix = Path.TrimEndingDirectorySeparator(Path.GetFullPath(_paths.TrashDir)) + Path.DirectorySeparatorChar;
+        string normalizedGameTrashRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(gameTrashRoot));
+        if (!normalizedGameTrashRoot.StartsWith(trashRootPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return GameDataTrashPurgeResult.Fail("安全围栏拦截：回收站目录越界。");
+        }
+
+        if ((new DirectoryInfo(normalizedGameTrashRoot).Attributes & FileAttributes.ReparsePoint) != 0)
+        {
+            return GameDataTrashPurgeResult.Fail("安全围栏拦截：禁止操作重解析点回收站目录。");
+        }
+
+        string gameTrashRootPrefix = normalizedGameTrashRoot + Path.DirectorySeparatorChar;
+        var targetsToDelete = new List<string>();
+
+        if (purgeSingle)
+        {
+            var all = await LoadAllUndoManifestsAsync(gameId, cancellationToken).ConfigureAwait(false);
+            var match = all.FirstOrDefault(x => string.Equals(x.Manifest.SnapshotId, snapshotId!.Trim(), StringComparison.OrdinalIgnoreCase));
+            if (match.Manifest is not null && !string.IsNullOrWhiteSpace(match.SnapshotDirectory))
+            {
+                targetsToDelete.Add(match.SnapshotDirectory);
+            }
+            else
+            {
+                string directDir = Path.Combine(gameTrashRoot, snapshotId!.Trim());
+                if (Directory.Exists(directDir))
+                {
+                    targetsToDelete.Add(directDir);
+                }
+            }
+
+            if (targetsToDelete.Count == 0)
+            {
+                return GameDataTrashPurgeResult.Fail($"未找到指定的清理回收站快照（{snapshotId}）。");
+            }
+        }
+        else
+        {
+            foreach (string subDir in Directory.EnumerateDirectories(gameTrashRoot))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                targetsToDelete.Add(subDir);
+            }
+
+            if (targetsToDelete.Count == 0)
+            {
+                TryDeleteDirectoryIfCompletelyEmpty(gameTrashRoot);
+                return GameDataTrashPurgeResult.Ok("该游戏当前没有可清理的回收站快照。", deletedSnapshotCount: 0, freedBytes: 0);
+            }
+        }
+
+        int deletedCount = 0;
+        long freedBytes = 0;
+        var warnings = new List<string>();
+
+        foreach (string candidateDir in targetsToDelete)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            string fullCandidate;
+            try
+            {
+                fullCandidate = Path.TrimEndingDirectorySeparator(Path.GetFullPath(candidateDir));
+            }
+            catch
+            {
+                continue;
+            }
+
+            if (!fullCandidate.StartsWith(gameTrashRootPrefix, StringComparison.OrdinalIgnoreCase)
+                || !Directory.Exists(fullCandidate))
+            {
+                continue;
+            }
+
+            var dirInfo = new DirectoryInfo(fullCandidate);
+            if ((dirInfo.Attributes & FileAttributes.ReparsePoint) != 0)
+            {
+                warnings.Add($"跳过重解析点目录：{fullCandidate}");
+                continue;
+            }
+
+            var (_, bytes, _) = InspectFilesystemStats(fullCandidate);
+            try
+            {
+                Directory.Delete(fullCandidate, recursive: true);
+                deletedCount++;
+                freedBytes += bytes;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                warnings.Add($"删除快照目录失败 ({Path.GetFileName(fullCandidate)})：{ex.Message}");
+            }
+        }
+
+        TryDeleteDirectoryIfCompletelyEmpty(gameTrashRoot);
+
+        if (deletedCount == 0 && warnings.Count > 0)
+        {
+            return GameDataTrashPurgeResult.Fail(warnings[0], warnings);
+        }
+
+        string msg = purgeSingle
+            ? $"已从回收站永久删除 1 份快照，释放 {freedBytes} 字节。"
+            : $"已清空该游戏 {deletedCount} 份回收站备份快照，释放 {freedBytes} 字节。";
+
+        return GameDataTrashPurgeResult.Ok(msg, deletedCount, freedBytes, warnings);
+    }
+
+    private async Task<GameDataCleanResult> RestoreSnapshotCoreAsync(
+        GameRecord game,
+        UndoManifestModel manifest,
+        string snapshotDir,
+        CancellationToken cancellationToken)
+    {
         var restoreIdentity = await BuildTargetIdentityAsync(game, cancellationToken).ConfigureAwait(false);
         int restoredCount = 0;
         long restoredBytes = 0;
@@ -2740,20 +2947,34 @@ public sealed class GameDataManagementService : IGameDataManagementService
         }
     }
 
-    private async Task<(UndoManifestModel Manifest, string SnapshotDirectory)?> LoadLatestUndoManifestAsync(
+    private static bool IsSafeSnapshotIdentifier(string snapshotId)
+    {
+        string trimmed = snapshotId.Trim();
+        if (trimmed.Length == 0 || trimmed is "." or "..")
+        {
+            return false;
+        }
+
+        return !trimmed.Contains('\\', StringComparison.Ordinal)
+               && !trimmed.Contains('/', StringComparison.Ordinal)
+               && !trimmed.Contains("..", StringComparison.Ordinal)
+               && !trimmed.Contains(':', StringComparison.Ordinal);
+    }
+
+    private async Task<List<(UndoManifestModel Manifest, string SnapshotDirectory)>> LoadAllUndoManifestsAsync(
         string gameId,
         CancellationToken cancellationToken)
     {
         string gameTrashRoot = _paths.GetGameTrashDirectory(gameId);
         if (!Directory.Exists(gameTrashRoot))
         {
-            return null;
+            return [];
         }
 
-        (UndoManifestModel Manifest, string Dir)? newest = null;
-
+        var manifests = new List<(UndoManifestModel Manifest, string SnapshotDirectory)>();
         foreach (string subDir in Directory.EnumerateDirectories(gameTrashRoot))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             string manifestPath = Path.Combine(subDir, "manifest.json");
             if (!File.Exists(manifestPath))
             {
@@ -2765,10 +2986,9 @@ public sealed class GameDataManagementService : IGameDataManagementService
                 string json = await File.ReadAllTextAsync(manifestPath, Encoding.UTF8, cancellationToken)
                     .ConfigureAwait(false);
                 var parsed = JsonSerializer.Deserialize<UndoManifestModel>(json, ManifestJsonOptions);
-                if (parsed is not null
-                    && (newest is null || parsed.CreatedUtc >= newest.Value.Manifest.CreatedUtc))
+                if (parsed is not null)
                 {
-                    newest = (parsed, subDir);
+                    manifests.Add((parsed, subDir));
                 }
             }
             catch
@@ -2777,7 +2997,23 @@ public sealed class GameDataManagementService : IGameDataManagementService
             }
         }
 
-        return newest;
+        manifests.Sort(static (left, right) =>
+        {
+            int cmp = right.Manifest.CreatedUtc.CompareTo(left.Manifest.CreatedUtc);
+            return cmp != 0
+                ? cmp
+                : string.Compare(right.Manifest.SnapshotId, left.Manifest.SnapshotId, StringComparison.Ordinal);
+        });
+
+        return manifests;
+    }
+
+    private async Task<(UndoManifestModel Manifest, string SnapshotDirectory)?> LoadLatestUndoManifestAsync(
+        string gameId,
+        CancellationToken cancellationToken)
+    {
+        var all = await LoadAllUndoManifestsAsync(gameId, cancellationToken).ConfigureAwait(false);
+        return all.Count > 0 ? all[0] : null;
     }
 
     private static List<PcGamingWikiRawRule> DeserializeCachedRules(string? rulesJson)
@@ -2797,17 +3033,47 @@ public sealed class GameDataManagementService : IGameDataManagementService
         }
     }
 
-    private static GameDataUndoSnapshotDto ToUndoDto(UndoManifestModel manifest, string snapshotDir) =>
-        new()
+    private static GameDataUndoSnapshotDto ToUndoDto(UndoManifestModel manifest, string snapshotDir)
+    {
+        int payloadFileCount = 0;
+        long payloadBytes = 0;
+        try
+        {
+            string filesDir = Path.Combine(snapshotDir, "files");
+            if (Directory.Exists(filesDir))
+            {
+                var (fc, fb, _) = InspectFilesystemStats(filesDir);
+                payloadFileCount += fc;
+                payloadBytes += fb;
+            }
+
+            string regDir = Path.Combine(snapshotDir, "registry");
+            if (Directory.Exists(regDir))
+            {
+                var (rc, rb, _) = InspectFilesystemStats(regDir);
+                payloadFileCount += rc;
+                payloadBytes += rb;
+            }
+        }
+        catch
+        {
+            // Fall back to manifest-recorded metadata.
+        }
+
+        return new GameDataUndoSnapshotDto
         {
             SnapshotId = manifest.SnapshotId,
             GameId = manifest.GameId,
             BackupDirectory = snapshotDir,
             CreatedUtc = manifest.CreatedUtc,
             BackedUpEntryCount = manifest.Items.Count,
-            TotalBytes = manifest.TotalBytes,
+            BackedUpFileCount = payloadFileCount > 0 ? payloadFileCount : manifest.Items.Count,
+            TotalBytes = Math.Max(manifest.TotalBytes, payloadBytes),
             IncludedSpawnStateReset = manifest.IncludedSpawnStateReset,
+            Status = string.IsNullOrWhiteSpace(manifest.Status) ? UndoManifestStatus.Completed : manifest.Status,
+            BackedUpTargets = manifest.Items.Select(static i => i.OriginalPathOrKey).ToArray(),
         };
+    }
 
     private static (bool IsSafe, string? Reason) MapRegValidation((bool IsSafe, string? SubKey, string? Reason) reg) =>
         (reg.IsSafe, reg.Reason);

@@ -260,6 +260,9 @@ print(json.dumps({"ok": True, "selfInJob": bool(in_job_out.value)}))
         Assert.Contains("Uninstall\\${SPAWN_APP_ID}", activeNsiText, StringComparison.Ordinal);
         Assert.Contains("!insertmacro SPAWN_REMOVE_INSTALLED_FILES", activeNsiText, StringComparison.Ordinal);
         Assert.Contains("--quit-for-update", activeNsiText, StringComparison.Ordinal);
+        Assert.Contains("!define SPAWN_START_MENU_DIR \"$SMPROGRAMS\"", activeNsiText, StringComparison.Ordinal);
+        Assert.Contains("!define SPAWN_DESKTOP_DIR \"$DESKTOP\"", activeNsiText, StringComparison.Ordinal);
+        Assert.Contains("${ElseIfNot} ${Silent}", activeNsiText, StringComparison.Ordinal);
         Assert.DoesNotContain("TerminateProcess", activeNsiText, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("taskkill", activeNsiText, StringComparison.OrdinalIgnoreCase);
         string[] recursiveRemovals = activeNsiLines
@@ -273,7 +276,7 @@ print(json.dumps({"ok": True, "selfInJob": bool(in_job_out.value)}))
         // 2b. W10 release tooling and ECDSA P-256 update-signing public key hygiene
         string releasePyPath = Path.Combine(repoRoot!, "scripts", "release.py");
         string signCsPath = Path.Combine(repoRoot!, "scripts", "sign_update.cs");
-        string pubKeyPath = Path.Combine(repoRoot!, "installer", "update-signing-public.pem");
+        string pubKeyPath = Path.Combine(repoRoot!, "release-keys", $"{Spawn.Core.Update.UpdateSigningPublicKey.KeyId}.pub.pem");
         Assert.True(File.Exists(releasePyPath), $"Missing release script: {releasePyPath}");
         Assert.True(File.Exists(signCsPath), $"Missing signing tool: {signCsPath}");
         Assert.True(File.Exists(pubKeyPath), $"Missing update signing public key: {pubKeyPath}");

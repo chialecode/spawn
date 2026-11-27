@@ -279,19 +279,39 @@ public sealed class ExternalTrainerBackend : ITrainerBackend, ITrainerBackendSes
         }
     }
 
-    public async Task SetWindowVisibilityAsync(string sessionId, bool visible, CancellationToken ct = default)
+    public async Task<TrainerSetWindowVisibilityResponse> SetWindowVisibilityWithResultAsync(
+        string sessionId,
+        bool visible,
+        CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
         if (!_sessions.TryGetValue(sessionId, out WorkerSessionContext? ctx))
         {
-            return;
+            return new TrainerSetWindowVisibilityResponse
+            {
+                Succeeded = false,
+                AffectedWindowCount = 0,
+                ErrorMessage = $"未找到活跃修改器会话 '{sessionId}'。",
+            };
         }
 
-        _ = await ctx.Server.InvokeAsync<TrainerSetWindowVisibilityRequest, TrainerSetWindowVisibilityResponse>(
+        TrainerSetWindowVisibilityResponse? reply = await ctx.Server.InvokeAsync<TrainerSetWindowVisibilityRequest, TrainerSetWindowVisibilityResponse>(
             TrainerIpcMethods.SetWindowVisibility,
             new TrainerSetWindowVisibilityRequest { SessionId = sessionId, Visible = visible },
             _rpcTimeout,
             ct).ConfigureAwait(false);
+
+        return reply ?? new TrainerSetWindowVisibilityResponse
+        {
+            Succeeded = false,
+            AffectedWindowCount = 0,
+            ErrorMessage = "Worker 未返回窗口显隐切换结果。",
+        };
+    }
+
+    public async Task SetWindowVisibilityAsync(string sessionId, bool visible, CancellationToken ct = default)
+    {
+        _ = await SetWindowVisibilityWithResultAsync(sessionId, visible, ct).ConfigureAwait(false);
     }
 
     public async Task ApplyAudioFallbackAsync(

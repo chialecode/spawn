@@ -717,7 +717,7 @@ public sealed partial class SpawnDatabase : IDisposable, IAsyncDisposable
                     """;
 
                 DateTimeOffset? effectiveTime = unlock.IsUnlocked
-                    ? (unlock.UnlockedUtc ?? DateTimeOffset.UtcNow)
+                    ? unlock.UnlockedUtc
                     : null;
 
                 cmd.Parameters.AddWithValue("$game_id", gameId);
@@ -821,7 +821,7 @@ public sealed partial class SpawnDatabase : IDisposable, IAsyncDisposable
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             SELECT * FROM achievement_unlocks
-            WHERE is_unlocked = 1
+            WHERE is_unlocked = 1 AND unlocked_at_utc IS NOT NULL
             ORDER BY unlocked_at_utc DESC
             LIMIT $limit;
             """;
@@ -908,6 +908,18 @@ public sealed partial class SpawnDatabase : IDisposable, IAsyncDisposable
             ? game!.AchievementChannelLabel!
             : FormatDefaultChannelLabel(captureMode);
 
+        bool hasGbeActivated = hasEnabler || captureMode == AchievementCaptureMode.GbeForkActivated;
+        bool isOfficialSteamPath = !string.IsNullOrWhiteSpace(game?.InstallDir)
+                                   && (game.InstallDir.Replace('/', '\\').Contains(@"\steamapps\common\", StringComparison.OrdinalIgnoreCase)
+                                       || game.InstallDir.Replace('/', '\\').EndsWith(@"\steamapps\common", StringComparison.OrdinalIgnoreCase));
+        bool canActivateGbe = game is { AntiCheatTier: AntiCheatTier.Tier0 }
+                              && !hasGbeActivated
+                              && !isOfficialSteamPath
+                              && game.PlatformSource is not (PlatformSource.SteamLocal or PlatformSource.GogOffline)
+                              && captureMode is AchievementCaptureMode.PendingGbeForkActivation
+                                  or AchievementCaptureMode.SteamEmulator
+                                  or AchievementCaptureMode.None;
+
         return new GameAchievementSummaryDto
         {
             GameId = gameId,
@@ -915,9 +927,8 @@ public sealed partial class SpawnDatabase : IDisposable, IAsyncDisposable
             SchemaSource = schemaSource,
             CaptureMode = captureMode,
             ChannelStatusText = channelText,
-            HasGbeForkActivated = hasEnabler || captureMode == AchievementCaptureMode.GbeForkActivated,
-            CanActivateGbeFork = game is { AntiCheatTier: AntiCheatTier.Tier0 }
-                                 && captureMode is AchievementCaptureMode.PendingGbeForkActivation or AchievementCaptureMode.SteamEmulator or AchievementCaptureMode.None,
+            HasGbeForkActivated = hasGbeActivated,
+            CanActivateGbeFork = canActivateGbe,
             UnlockedCount = unlockedCount,
             TotalCount = items.Count,
             LastSyncedUtc = lastSyncedUtc,
@@ -1055,6 +1066,10 @@ public sealed partial class SpawnDatabase : IDisposable, IAsyncDisposable
         bool mute = all.TryGetValue(AppSettingKeys.OverlayMuteSound, out string? rawMute)
                     && bool.TryParse(rawMute, out bool parsedMute) && parsedMute;
 
+        bool enhanceRareAndPlatinum = !all.TryGetValue(AppSettingKeys.OverlayEnhanceRareAndPlatinumSound, out string? rawEnhance)
+                                      || !bool.TryParse(rawEnhance, out bool parsedEnhance)
+                                      || parsedEnhance;
+
         return new OverlaySettingsDto
         {
             Theme = theme,
@@ -1064,6 +1079,7 @@ public sealed partial class SpawnDatabase : IDisposable, IAsyncDisposable
             AudioOutputDeviceId = audioOutputDeviceId,
             SoundVolume = vol,
             MuteSound = mute,
+            EnhanceRareAndPlatinumSound = enhanceRareAndPlatinum,
         };
     }
 
@@ -1083,6 +1099,7 @@ public sealed partial class SpawnDatabase : IDisposable, IAsyncDisposable
             cancellationToken).ConfigureAwait(false);
         await SetSettingAsync(AppSettingKeys.OverlaySoundVolume, Math.Clamp(settings.SoundVolume, 0.0, 1.0).ToString("0.###", CultureInfo.InvariantCulture), cancellationToken).ConfigureAwait(false);
         await SetSettingAsync(AppSettingKeys.OverlayMuteSound, settings.MuteSound ? "true" : "false", cancellationToken).ConfigureAwait(false);
+        await SetSettingAsync(AppSettingKeys.OverlayEnhanceRareAndPlatinumSound, settings.EnhanceRareAndPlatinumSound ? "true" : "false", cancellationToken).ConfigureAwait(false);
     }
 
     // -------------------------------------------------------------------------
@@ -1533,6 +1550,7 @@ public sealed partial class SpawnDatabase : IDisposable, IAsyncDisposable
 
         await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         await ApplyV4TrainerMigrationsAsync(conn, cancellationToken).ConfigureAwait(false);
+        await ApplyV5SaveTimeMachineMigrationsAsync(conn, cancellationToken).ConfigureAwait(false);
     }
 
     private static GameDataRuleCacheRecord MapGameDataRuleRecord(SqliteDataReader reader) =>

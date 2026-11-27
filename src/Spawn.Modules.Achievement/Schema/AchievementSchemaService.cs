@@ -76,9 +76,16 @@ public sealed partial class AchievementSchemaService : IDisposable
         }
     }
 
-    public async Task<ResolvedSchemaWaterfallResult> FetchAndBuildSchemaAsync(
+    public Task<ResolvedSchemaWaterfallResult> FetchAndBuildSchemaAsync(
         GameRecord game,
         string preferredLanguage = "schinese",
+        CancellationToken cancellationToken = default) =>
+        FetchAndBuildSchemaAsync(game, preferredLanguage, forceRefreshIcons: false, cancellationToken);
+
+    public async Task<ResolvedSchemaWaterfallResult> FetchAndBuildSchemaAsync(
+        GameRecord game,
+        string preferredLanguage,
+        bool forceRefreshIcons,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(game);
@@ -195,7 +202,7 @@ public sealed partial class AchievementSchemaService : IDisposable
         if (merged.Count > 0)
         {
             merged = await _iconProcessor.CacheAndProcessIconsAsync(
-                schemaKey, merged, _httpClient, _options.AllowNetworkDownloads, cancellationToken).ConfigureAwait(false);
+                schemaKey, merged, _httpClient, _options.AllowNetworkDownloads, forceRefreshIcons, cancellationToken).ConfigureAwait(false);
         }
 
         return new ResolvedSchemaWaterfallResult(

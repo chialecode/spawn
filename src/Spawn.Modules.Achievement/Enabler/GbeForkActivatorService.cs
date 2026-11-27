@@ -79,7 +79,7 @@ public sealed class GbeForkActivatorService : IDisposable
             return false;
         }
 
-        string? dllPath = FindPrimarySteamApiDll(game.InstallDir);
+        string? dllPath = FindPrimarySteamApiDll(game.InstallDir, game.ExecutableRelPath);
         if (dllPath is null)
         {
             return false;
@@ -142,7 +142,7 @@ public sealed class GbeForkActivatorService : IDisposable
             return GbeForkActivationResult.Fail("安全红线拦截：严禁修改正版 Steam 库目录（steamapps\\common）下的任何文件。");
         }
 
-        string? dllPath = FindPrimarySteamApiDll(game.InstallDir);
+        string? dllPath = FindPrimarySteamApiDll(game.InstallDir, game.ExecutableRelPath);
         if (dllPath is null)
         {
             return GbeForkActivationResult.Fail("未在游戏目录中检测到 steam_api64.dll 或 steam_api.dll。");
@@ -169,12 +169,16 @@ public sealed class GbeForkActivatorService : IDisposable
         byte[]? gbeDllBytes = null;
         if (!alreadyGbeDll)
         {
-            gbeDllBytes = await _binarySource.GetSteamApiDllAsync(is64Bit, cancellationToken).ConfigureAwait(false);
-            if (gbeDllBytes is null || gbeDllBytes.Length == 0)
+            GbeForkBinaryAcquisitionResult acquired = await _binarySource.AcquireSteamApiDllAsync(is64Bit, cancellationToken).ConfigureAwait(false);
+            if (!acquired.Succeeded || acquired.DllBytes is null || acquired.DllBytes.Length == 0)
             {
-                return GbeForkActivationResult.Fail(
-                    $"未能获取经 SHA-256 校验的固定版本 gbe_fork {PinnedGbeForkReleaseSource.PinnedReleaseTag} 组件 {(is64Bit ? "steam_api64.dll" : "steam_api.dll")}（本地缓存缺失或校验失败，且当前无法联网下载）。");
+                string failureDetail = !string.IsNullOrWhiteSpace(acquired.ErrorMessage)
+                    ? acquired.ErrorMessage!
+                    : $"未能获取经 SHA-256 校验的固定版本 gbe_fork {PinnedGbeForkReleaseSource.PinnedReleaseTag} 组件 {(is64Bit ? "steam_api64.dll" : "steam_api.dll")}。";
+                return GbeForkActivationResult.Fail(failureDetail);
             }
+
+            gbeDllBytes = acquired.DllBytes;
         }
 
         var createdFiles = new List<string>();
@@ -424,22 +428,159 @@ public sealed class GbeForkActivatorService : IDisposable
         return JsonSerializer.Serialize(items, IndentedJsonOptions);
     }
 
-    private static string? FindPrimarySteamApiDll(string installDir)
+    private static readonly HashSet<string> LowPriorityAuxiliaryFolders = new(StringComparer.OrdinalIgnoreCase)
     {
-        string? api64 = SteamEmulatorFormatParsers.EnumerateFilesSafe(installDir, "steam_api64.dll", maxDepth: 6).FirstOrDefault();
-        if (api64 is not null)
+        "redist",
+        "_commonredist",
+        "extras",
+        "extra",
+        "tools",
+        "tool",
+        "sdk",
+        "crashreporter",
+        "crashhandler",
+        "launcher",
+        "soundtrack",
+        "ost",
+        "bonus",
+        "artbook",
+        "dedicatedserver",
+        "server",
+    };
+
+    /// <summary>
+    /// Locates the primary <c>steam_api64.dll</c> or <c>steam_api.dll</c> for a game, strongly preferring DLLs
+    /// co-located in or immediately adjacent to the game executable's directory (including Unity <c>*_Data\Plugins</c>)
+    /// rather than arbitrary alphabetical auxiliary folders (e.g. crash reporters or bundled launchers).
+    /// </summary>
+    public static string? FindPrimarySteamApiDll(string installDir, string? executableRelPath = null)
+    {
+        if (string.IsNullOrWhiteSpace(installDir) || !Directory.Exists(installDir))
         {
-            return api64;
+            return null;
         }
 
-        return SteamEmulatorFormatParsers.EnumerateFilesSafe(installDir, "steam_api.dll", maxDepth: 6).FirstOrDefault();
+        string normInstallDir = Path.TrimEndingDirectorySeparator(Path.GetFullPath(installDir));
+        var candidates = new List<string>();
+        candidates.AddRange(SteamEmulatorFormatParsers.EnumerateFilesSafe(normInstallDir, "steam_api64.dll", maxDepth: 6));
+        candidates.AddRange(SteamEmulatorFormatParsers.EnumerateFilesSafe(normInstallDir, "steam_api.dll", maxDepth: 6));
+
+        if (candidates.Count == 0)
+        {
+            return null;
+        }
+
+        string? exeFullPath = null;
+        string? exeDir = null;
+        string? exeStem = null;
+        bool? exeIs64Bit = null;
+
+        if (!string.IsNullOrWhiteSpace(executableRelPath))
+        {
+            try
+            {
+                string combined = Path.IsPathFullyQualified(executableRelPath)
+                    ? Path.GetFullPath(executableRelPath)
+                    : Path.GetFullPath(Path.Combine(normInstallDir, executableRelPath));
+                exeFullPath = combined;
+                string? rawDir = Path.GetDirectoryName(combined);
+                if (!string.IsNullOrWhiteSpace(rawDir))
+                {
+                    exeDir = Path.TrimEndingDirectorySeparator(rawDir);
+                }
+
+                exeStem = Path.GetFileNameWithoutExtension(combined);
+                if (File.Exists(combined))
+                {
+                    exeIs64Bit = TryDetectPeIs64Bit(combined);
+                }
+            }
+            catch
+            {
+                // Ignore malformed relative path and fall back to installDir ranking.
+            }
+        }
+
+        string? bestCandidate = null;
+        (int Tier, int AuxPenalty, int HopDistance, int BitnessMismatch, int Prefer64Penalty, int DepthFromRoot, string PathKey)? bestScore = null;
+
+        foreach (string dllPath in candidates)
+        {
+            string fullDll = Path.GetFullPath(dllPath);
+            string dllDir = Path.TrimEndingDirectorySeparator(Path.GetDirectoryName(fullDll) ?? normInstallDir);
+            bool dllIs64 = Is64BitPe(fullDll);
+
+            int tier = 3;
+            int hopDistance = ComputeDirectoryHopDistance(normInstallDir, dllDir);
+            if (!string.IsNullOrWhiteSpace(exeDir))
+            {
+                hopDistance = ComputeDirectoryHopDistance(exeDir, dllDir);
+                if (string.Equals(dllDir, exeDir, StringComparison.OrdinalIgnoreCase))
+                {
+                    tier = 0;
+                }
+                else if (IsUnderDirectory(dllDir, exeDir))
+                {
+                    string relToExe = Path.GetRelativePath(exeDir, dllDir);
+                    bool isUnityDataPlugin = !string.IsNullOrWhiteSpace(exeStem)
+                                             && relToExe.StartsWith(exeStem + "_Data", StringComparison.OrdinalIgnoreCase);
+                    tier = isUnityDataPlugin ? 1 : 2;
+                }
+                else
+                {
+                    tier = 3;
+                }
+            }
+
+            string relToRoot = Path.GetRelativePath(normInstallDir, dllDir);
+            string[] relSegments = relToRoot == "."
+                ? []
+                : relToRoot.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries);
+            int auxPenalty = relSegments.Any(LowPriorityAuxiliaryFolders.Contains) ? 1 : 0;
+            int bitnessMismatch = exeIs64Bit.HasValue && exeIs64Bit.Value != dllIs64 ? 1 : 0;
+            int prefer64Penalty = dllIs64 ? 0 : 1;
+            int depthFromRoot = relSegments.Length;
+
+            var score = (tier, auxPenalty, hopDistance, bitnessMismatch, prefer64Penalty, depthFromRoot, fullDll.ToUpperInvariant());
+            if (bestScore is null || score.CompareTo(bestScore.Value) < 0)
+            {
+                bestScore = score;
+                bestCandidate = fullDll;
+            }
+        }
+
+        return bestCandidate;
     }
 
-    private static bool Is64BitPe(string dllPath)
+    private static bool IsUnderDirectory(string candidateDir, string ancestorDir)
+    {
+        string prefix = Path.TrimEndingDirectorySeparator(ancestorDir) + Path.DirectorySeparatorChar;
+        return candidateDir.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static int ComputeDirectoryHopDistance(string fromDir, string toDir)
     {
         try
         {
-            using var fs = new FileStream(dllPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            string rel = Path.GetRelativePath(fromDir, toDir);
+            if (rel == "." || string.IsNullOrEmpty(rel))
+            {
+                return 0;
+            }
+
+            return rel.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries).Length;
+        }
+        catch
+        {
+            return 99;
+        }
+    }
+
+    private static bool? TryDetectPeIs64Bit(string pePath)
+    {
+        try
+        {
+            using var fs = new FileStream(pePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
             if (fs.Length >= 0x44)
             {
                 Span<byte> header = stackalloc byte[64];
@@ -468,11 +609,14 @@ public sealed class GbeForkActivatorService : IDisposable
         }
         catch
         {
-            // Fallback to filename heuristic.
+            // Ignore unreadable headers.
         }
 
-        return dllPath.EndsWith("64.dll", StringComparison.OrdinalIgnoreCase);
+        return null;
     }
+
+    private static bool Is64BitPe(string dllPath) =>
+        TryDetectPeIs64Bit(dllPath) ?? dllPath.EndsWith("64.dll", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsAlreadyGoldbergOrGbeDll(string dllPath)
     {

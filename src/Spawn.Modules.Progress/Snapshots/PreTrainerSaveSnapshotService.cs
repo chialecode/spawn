@@ -26,6 +26,7 @@ public sealed class PreTrainerSaveSnapshotService : IPreTrainerSaveSnapshotServi
     private readonly ILogger<PreTrainerSaveSnapshotService> _logger;
     private readonly Action<string, int>? _afterSingleFileCopyHook;
     private readonly long? _maxBytesOverrideForTest;
+    private readonly Func<string, IReadOnlyList<SafeProcessEntry>> _directoryProcessFinder;
 
     public PreTrainerSaveSnapshotService(
         SpawnDatabase database,
@@ -34,7 +35,7 @@ public sealed class PreTrainerSaveSnapshotService : IPreTrainerSaveSnapshotServi
         IGameLaunchService gameLaunchService,
         TimeProvider? timeProvider = null,
         ILogger<PreTrainerSaveSnapshotService>? logger = null)
-        : this(database, paths, gameDataService, gameLaunchService, timeProvider, logger, afterSingleFileCopyHook: null, maxBytesOverrideForTest: null)
+        : this(database, paths, gameDataService, gameLaunchService, timeProvider, logger, afterSingleFileCopyHook: null, maxBytesOverrideForTest: null, directoryProcessFinder: null)
     {
     }
 
@@ -46,7 +47,8 @@ public sealed class PreTrainerSaveSnapshotService : IPreTrainerSaveSnapshotServi
         TimeProvider? timeProvider,
         ILogger<PreTrainerSaveSnapshotService>? logger,
         Action<string, int>? afterSingleFileCopyHook,
-        long? maxBytesOverrideForTest = null)
+        long? maxBytesOverrideForTest = null,
+        Func<string, IReadOnlyList<SafeProcessEntry>>? directoryProcessFinder = null)
     {
         ArgumentNullException.ThrowIfNull(database);
         ArgumentNullException.ThrowIfNull(paths);
@@ -61,17 +63,26 @@ public sealed class PreTrainerSaveSnapshotService : IPreTrainerSaveSnapshotServi
         _logger = logger ?? NullLogger<PreTrainerSaveSnapshotService>.Instance;
         _afterSingleFileCopyHook = afterSingleFileCopyHook;
         _maxBytesOverrideForTest = maxBytesOverrideForTest;
+        _directoryProcessFinder = directoryProcessFinder
+            ?? (static dir => SafeProcessInspector.FindProcessesUnderDirectory(dir, excludeAuxiliary: true));
     }
 
     public Task<PreTrainerSnapshotResult> CreateAsync(
         string gameId,
         string? trainerId,
         CancellationToken ct = default) =>
+        CreateAsync(gameId, trainerId, isManual: false, ct);
+
+    public Task<PreTrainerSnapshotResult> CreateAsync(
+        string gameId,
+        string? trainerId,
+        bool isManual,
+        CancellationToken ct = default) =>
         CreateInternalAsync(
             gameId,
             trainerId,
             PreTrainerSnapshotTriggerKind.PreTrainer,
-            enforceSettingsEnabled: true,
+            enforceSettingsEnabled: !isManual,
             ct);
 
     public async Task<IReadOnlyList<PreTrainerSnapshotRecord>> ListAsync(
@@ -119,11 +130,12 @@ public sealed class PreTrainerSaveSnapshotService : IPreTrainerSaveSnapshotServi
             return new PreTrainerRestoreResult
             {
                 Succeeded = false,
-                Message = $"快照 {snapshotId} 状态为 {record.Status}，不包含可恢复的完整清单。",
+                Message = $"快照 {snapshotId} 状态为「{FormatSnapshotStatusLabel(record.Status)}」，不包含可恢复的完整清单。",
             };
         }
 
-        // Hard safety guard: never overwrite saves while the game is actively running.
+        // Hard safety guard: never overwrite saves while the game is actively running
+        // (both SPAWN-tracked sessions and externally launched games via read-only 0x1000 directory probe).
         if (_gameLaunchService.GetActiveSession(record.GameId) is not null)
         {
             return new PreTrainerRestoreResult
@@ -131,6 +143,20 @@ public sealed class PreTrainerSaveSnapshotService : IPreTrainerSaveSnapshotServi
                 Succeeded = false,
                 Message = "游戏当前正在运行中，已拒绝回滚存档快照，请先退出游戏后再试。",
             };
+        }
+
+        GameRecord? targetGame = await _database.GetGameByIdAsync(record.GameId, ct).ConfigureAwait(false);
+        if (targetGame is not null && !string.IsNullOrWhiteSpace(targetGame.InstallDir))
+        {
+            IReadOnlyList<SafeProcessEntry> externalProcesses = _directoryProcessFinder(targetGame.InstallDir);
+            if (externalProcesses.Count > 0)
+            {
+                return new PreTrainerRestoreResult
+                {
+                    Succeeded = false,
+                    Message = $"检测到外部启动的游戏进程（{externalProcesses[0].ExeFileName}）正在运行中，已拒绝回滚存档快照，请先退出游戏后再试。",
+                };
+            }
         }
 
         if (!PreTrainerSnapshotManifestStore.TryResolveContainedPath(
@@ -313,7 +339,7 @@ public sealed class PreTrainerSaveSnapshotService : IPreTrainerSaveSnapshotServi
                 {
                     Succeeded = false,
                     SafetySnapshot = safetyResult.Snapshot,
-                    Message = $"回滚前无法备份当前存档现场（{safetyResult.SkipReason}），已中止回滚以防数据丢失：{safetyResult.Message}",
+                    Message = $"回滚前无法备份当前存档现场（{FormatSkipReasonLabel(safetyResult.SkipReason)}），已中止回滚以防数据丢失：{safetyResult.Message}",
                 };
             }
         }
@@ -1427,4 +1453,24 @@ public sealed class PreTrainerSaveSnapshotService : IPreTrainerSaveSnapshotServi
         long BytesCopied,
         DateTimeOffset LastWriteTimeUtc,
         string? Sha256Hex);
+
+    private static string FormatSnapshotStatusLabel(PreTrainerSnapshotStatus status) => status switch
+    {
+        PreTrainerSnapshotStatus.Completed => "已备份",
+        PreTrainerSnapshotStatus.Skipped => "已跳过",
+        PreTrainerSnapshotStatus.Failed => "备份失败",
+        _ => "未知状态",
+    };
+
+    private static string FormatSkipReasonLabel(PreTrainerSnapshotSkipReason reason) => reason switch
+    {
+        PreTrainerSnapshotSkipReason.DisabledBySettings => "已在设置中关闭自动快照",
+        PreTrainerSnapshotSkipReason.NoSaveLocationsFound => "未检测到现存存档文件",
+        PreTrainerSnapshotSkipReason.SizeThresholdExceeded => "存档体积超出阈值",
+        PreTrainerSnapshotSkipReason.FileLockedSharingViolation => "存档文件被占用锁定",
+        PreTrainerSnapshotSkipReason.ConcurrentModificationDetected => "存档正在写入中",
+        PreTrainerSnapshotSkipReason.SafetyFenceBlocked => "路径未通过安全围栏",
+        PreTrainerSnapshotSkipReason.Timeout => "创建快照超时",
+        _ => "未写入文件",
+    };
 }

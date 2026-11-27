@@ -47,7 +47,7 @@ SPAWN_Vault/
 *.p12
 *.key
 *.pem
-!installer/update-signing-public.pem
+!release-keys/98ada0750903e1ab.pub.pem
 *.snk
 
 # Crash dumps and transient logs

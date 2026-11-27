@@ -139,7 +139,34 @@ public sealed record OverlayToastRequest
     public double SoundVolume { get; init; } = 1.0;
     public bool MuteSound { get; init; }
     public int DurationMs { get; init; } = 4500;
+    public bool ReplaceActivePreview { get; init; }
+    public int? DisplayDurationMs { get; init; }
+    public bool EnhanceRareAndPlatinumSound { get; init; } = true;
 }
+
+/// <summary>
+/// Optional diagnostic surface exposed by <c>Spawn.Host</c>'s overlay IPC wrapper so achievement callers
+/// can present actionable launch failure reasons without breaking <see cref="IOverlayIpcClient"/>.
+/// </summary>
+public interface IOverlayIpcDiagnostics
+{
+    string? LastLaunchError { get; }
+}
+
+/// <summary>
+/// Honest outcome of dispatching a test or preview achievement toast over Overlay IPC.
+/// </summary>
+public sealed record OverlayToastDispatchResult(
+    bool Succeeded,
+    string Message);
+
+/// <summary>
+/// Honest outcome of manually marking or resetting an achievement unlock state.
+/// </summary>
+public sealed record ManualAchievementToggleResult(
+    bool Succeeded,
+    bool SyncedToLocalEmulatorFile,
+    string Message);
 
 /// <summary>
 /// Well-known logical identifiers for <see cref="OverlaySettingsDto.AudioOutputDeviceId"/>.
@@ -181,6 +208,7 @@ public sealed record OverlaySettingsDto
     public string? AudioOutputDeviceId { get; init; }
     public double SoundVolume { get; init; } = 1.0;
     public bool MuteSound { get; init; }
+    public bool EnhanceRareAndPlatinumSound { get; init; } = true;
 }
 
 /// <summary>
@@ -196,6 +224,7 @@ public static class AppSettingKeys
     public const string OverlayAudioDeviceId = "overlay.audio_device_id";
     public const string OverlaySoundVolume = "overlay.sound_volume";
     public const string OverlayMuteSound = "overlay.mute_sound";
+    public const string OverlayEnhanceRareAndPlatinumSound = "overlay.enhance_rare_platinum_sound";
     public const string AchievementRevealSpoilers = "achievement.reveal_spoilers";
     public const string AchievementLanguage = "achievement.language";
     public const string LibraryScanDirectories = "library.scan_directories";
@@ -216,4 +245,15 @@ public static class AppSettingKeys
     public const string TrainerStrictVanguardMode = "trainer.strict_vanguard_mode";
     public const string TrainerIncludeFlingArchive = "trainer.include_fling_archive";
     public const string TrainerDefaultScanCodeMode = "trainer.default_scancode_mode";
+
+    // M4 Save Time Machine & Cloud Sync settings
+    public const string SaveMachineId = "saves.machine_id";
+    public const string SaveMachineDisplayName = "saves.machine_display_name";
+    public const string SaveAutoWatchByDefault = "saves.auto_watch_default";
+    public const string SavePostExitSnapshotByDefault = "saves.post_exit_default";
+    public const string SaveQuiescentDebounceMs = "saves.quiescent_debounce_ms";
+    public const string SaveDefaultMaxRollingSnapshots = "saves.default_max_rolling_snapshots";
+    public const string SaveDefaultMaxSnapshotSizeMb = "saves.default_max_snapshot_size_mb";
+    public const string SaveIncludeConfigFilesByDefault = "saves.include_config_default";
+    public const string SaveGcGracePeriodHours = "saves.gc_grace_period_hours";
 }

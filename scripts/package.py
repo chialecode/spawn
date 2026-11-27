@@ -6,6 +6,7 @@ NSIS 3.13 build is fetched on first use (SHA-256 checked) into the Git-ignored .
 Usage examples:
   python -B scripts/package.py --channel dev
   python -B scripts/package.py --install-dev
+  python -B scripts/package.py --check-nsis
   python -B scripts/package.py --identity spawn-dev-test --install --no-relaunch
   python -B scripts/package.py --identity spawn-dev-test --uninstall
 """
@@ -13,6 +14,7 @@ Usage examples:
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterable
 import ctypes
 from ctypes import wintypes
 from dataclasses import dataclass
@@ -26,6 +28,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Callable
 import urllib.request
@@ -85,6 +88,22 @@ _APP_OVERRIDE_ENV_VARS = frozenset(
         "SPAWN_MUTE_AUDIO",
     }
 )
+
+_INHERITED_GIT_ENV_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+)
+
+
+def _clean_git_env() -> dict[str, str]:
+    env = os.environ.copy()
+    for key in _INHERITED_GIT_ENV_VARS:
+        env.pop(key, None)
+    return env
 
 
 @dataclass(frozen=True)
@@ -341,8 +360,12 @@ def compile_nsis_installer(
     create_shortcuts: bool,
     fast_compression: bool,
     cwd: Path,
+    start_menu_dir: Path | None = None,
+    desktop_dir: Path | None = None,
 ) -> None:
     """Write the uninstall file list into work_dir and compile installer/spawn.nsi into out_file."""
+    if (start_menu_dir is not None or desktop_dir is not None) and not profile.identity.endswith("-test"):
+        raise ValueError("Custom shortcut directories are restricted to isolated *-test identities.")
     work_dir.mkdir(parents=True, exist_ok=True)
     files_nsh = work_dir / "installed-files.nsh"
     files_nsh.write_text(render_remove_files_nsh(app_dir), encoding="utf-8", newline="\n")
@@ -367,6 +390,10 @@ def compile_nsis_installer(
         f"-DSPAWN_CREATE_SHORTCUTS={'1' if create_shortcuts else '0'}",
         f"-DSPAWN_DESKTOP_ON_UPDATE={'1' if profile.dev_like else '0'}",
     ]
+    if start_menu_dir is not None:
+        cmd.append(f"-DSPAWN_START_MENU_DIR={nsis_escape(str(start_menu_dir))}")
+    if desktop_dir is not None:
+        cmd.append(f"-DSPAWN_DESKTOP_DIR={nsis_escape(str(desktop_dir))}")
     if fast_compression:
         cmd.append("-DSPAWN_FAST_COMPRESSION")
     cmd.append(str(nsi_path))
@@ -377,11 +404,111 @@ def compile_nsis_installer(
         raise RuntimeError(f"makensis succeeded but installer not found at {out_file}")
 
 
+def check_nsis_script(
+    repo_root: Path,
+    *,
+    makensis_exe: Path | None = None,
+    nsi_path: Path | None = None,
+    profiles: Iterable[IdentityProfile] | None = None,
+    compile_fn: Callable[..., None] = compile_nsis_installer,
+) -> list[tuple[str, bool]]:
+    """Compile-check installer/spawn.nsi with -WX across every identity and shortcut mode.
+
+    Uses a tiny dummy application directory in a temporary folder and never executes any
+    compiled installer. Any NSIS warning fails compilation via makensis -WX.
+    """
+    resolved_makensis = makensis_exe if makensis_exe is not None else find_makensis()
+    resolved_nsi = nsi_path if nsi_path is not None else (repo_root / "installer" / "spawn.nsi")
+    if not resolved_nsi.is_file():
+        raise FileNotFoundError(f"NSIS installer script not found: {resolved_nsi}")
+
+    rel_ico, dev_ico = ensure_icons(repo_root)
+    target_profiles = list(profiles) if profiles is not None else list(IDENTITY_PROFILES.values())
+    if not target_profiles:
+        raise ValueError("check_nsis_script requires at least one identity profile")
+
+    numeric_version = compute_numeric_version(NEXT_BASE_VERSION)
+    checked: list[tuple[str, bool]] = []
+
+    with tempfile.TemporaryDirectory(prefix="spawn-nsis-check-") as tmp_str:
+        tmp_root = Path(tmp_str)
+        for profile in target_profiles:
+            fake_app = tmp_root / "app" / profile.identity
+            for rel_file, payload in (
+                (f"{profile.identity}.exe", b"MZ-dummy-host"),
+                ("Spawn.OverlayHost.exe", b"MZ-dummy-overlay"),
+                ("Workers/Trainer/Spawn.TrainerWorker.exe", b"MZ-dummy-worker"),
+                ("VERSION.txt", f"identity={profile.identity}\nchannel={profile.channel}\n".encode("utf-8")),
+                ("THIRD-PARTY-NOTICES.txt", b"SPAWN dummy third-party notices\n"),
+                ("assets/icon.ico", b"ICO"),
+            ):
+                target_file = fake_app / rel_file
+                target_file.parent.mkdir(parents=True, exist_ok=True)
+                target_file.write_bytes(payload)
+
+            icon_file = dev_ico if profile.dev_like else rel_ico
+            version = f"{NEXT_BASE_VERSION}-dev.202611240000" if profile.dev_like else NEXT_BASE_VERSION
+
+            for create_shortcuts in (False, True):
+                combo_dir = tmp_root / "out" / f"{profile.identity}-shortcuts-{int(create_shortcuts)}"
+                out_file = combo_dir / f"{profile.identity}-check.exe"
+                work_dir = combo_dir / "work"
+                compile_fn(
+                    resolved_makensis,
+                    resolved_nsi,
+                    profile=profile,
+                    version=version,
+                    numeric_version=numeric_version,
+                    icon_file=icon_file,
+                    app_dir=fake_app,
+                    out_file=out_file,
+                    work_dir=work_dir,
+                    create_shortcuts=create_shortcuts,
+                    fast_compression=profile.dev_like,
+                    cwd=repo_root,
+                )
+                checked.append((profile.identity, create_shortcuts))
+
+    print(
+        f"[package] NSIS compile-only check passed: {len(checked)} combinations "
+        f"({len(target_profiles)} identities x shortcuts=0/1, -WX, no install)."
+    )
+    return checked
+
+
+def _run_git_quiet(args: list[str], *, cwd: Path, timeout: float = 10.0) -> subprocess.CompletedProcess[str] | None:
+    """Run a read-only git metadata command without inherited worktree/hook GIT_* pollution."""
+    flags = (BELOW_NORMAL_PRIORITY_CLASS | CREATE_NO_WINDOW) if os.name == "nt" else 0
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=str(cwd),
+            env=_clean_git_env(),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=flags,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
 def resolve_git_short_sha(repo_root: Path) -> str:
-    proc = _run_quiet(["git", "rev-parse", "--short=12", "HEAD"], cwd=repo_root, timeout=10.0)
-    if proc.returncode == 0 and proc.stdout.strip():
+    proc = _run_git_quiet(["rev-parse", "--short=12", "HEAD"], cwd=repo_root)
+    if proc is not None and proc.returncode == 0 and proc.stdout.strip():
         return proc.stdout.strip()
     return "unknown"
+
+
+def resolve_git_branch(repo_root: Path) -> str | None:
+    proc = _run_git_quiet(["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_root)
+    if proc is not None and proc.returncode == 0 and proc.stdout.strip():
+        return proc.stdout.strip()
+    return None
 
 
 def compute_numeric_version(version_str: str) -> str:
@@ -1502,7 +1629,13 @@ def wait_while_window_open(
     return True, False, int((monotonic() - start) * 1000)
 
 
-def new_install_receipt(profile: IdentityProfile, new_version: str) -> dict[str, object]:
+def new_install_receipt(
+    profile: IdentityProfile,
+    new_version: str,
+    *,
+    git_branch: str | None = None,
+    git_commit: str | None = None,
+) -> dict[str, object]:
     """Install receipt with the unified camelCase fields, each present from the start."""
     return {
         "identity": profile.identity,
@@ -1514,6 +1647,8 @@ def new_install_receipt(profile: IdentityProfile, new_version: str) -> dict[str,
         "firstInstall": False,
         "oldVersion": None,
         "newVersion": new_version,
+        "gitBranch": git_branch,
+        "gitCommit": git_commit,
         "installLocation": None,
         "wasRunning": False,
         "windowOpen": False,
@@ -1555,7 +1690,12 @@ def install_package(
     asked to --quit-for-update (never force-killed).
     """
     t0 = time.monotonic()
-    receipt = new_install_receipt(profile, expected_version)
+    receipt = new_install_receipt(
+        profile,
+        expected_version,
+        git_branch=resolve_git_branch(repo_root),
+        git_commit=resolve_git_short_sha(repo_root),
+    )
 
     def save_and_return() -> dict[str, object]:
         receipt["elapsedMs"] = int((time.monotonic() - t0) * 1000)
@@ -1769,7 +1909,11 @@ def main() -> int:
     parser.add_argument("--channel", choices=("dev", "release"), default="dev")
     parser.add_argument("--identity", choices=tuple(IDENTITY_PROFILES.keys()), default=None)
     parser.add_argument("--version", default=None, help="Explicit package version override.")
-    parser.add_argument("--install-dev", action="store_true", help="Build and silently install/update SPAWN Dev.")
+    parser.add_argument(
+        "--install-dev",
+        action="store_true",
+        help="Build and silently install/update SPAWN Dev (works on both clean PR branches for pre-review testing and main).",
+    )
     parser.add_argument("--install", action="store_true", help="Silently install the selected --identity.")
     parser.add_argument("--install-only", action="store_true", help="Install existing dist/<identity> package without rebuilding.")
     parser.add_argument("--uninstall", action="store_true", help="Silently uninstall the selected --identity.")
@@ -1789,10 +1933,20 @@ def main() -> int:
         action="store_true",
         help="Only fetch the pinned NSIS build into .tools/ (SHA-256 checked) and print makensis.exe.",
     )
+    parser.add_argument(
+        "--check-nsis",
+        action="store_true",
+        help="Compile-check installer/spawn.nsi with -WX for every identity x shortcut mode against a dummy app dir (never runs the installer).",
+    )
     args = parser.parse_args()
 
     if args.fetch_nsis:
         print(find_makensis())
+        if not args.check_nsis:
+            return 0
+
+    if args.check_nsis:
+        check_nsis_script(REPO_ROOT)
         return 0
 
     repo_root = REPO_ROOT
@@ -1823,7 +1977,12 @@ def main() -> int:
     if args.install_dev:
         skip_reason = should_skip_dev_auto_install()
         if skip_reason is not None:
-            skipped_receipt = new_install_receipt(profile, version)
+            skipped_receipt = new_install_receipt(
+                profile,
+                version,
+                git_branch=resolve_git_branch(repo_root),
+                git_commit=resolve_git_short_sha(repo_root),
+            )
             skipped_receipt["skipped"] = True
             skipped_receipt["reason"] = skip_reason
             receipt_path.parent.mkdir(parents=True, exist_ok=True)

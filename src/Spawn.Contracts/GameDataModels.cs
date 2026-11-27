@@ -88,8 +88,45 @@ public sealed record GameDataUndoSnapshotDto
     public required string BackupDirectory { get; init; }
     public required DateTimeOffset CreatedUtc { get; init; }
     public int BackedUpEntryCount { get; init; }
+    public int BackedUpFileCount { get; init; }
     public long TotalBytes { get; init; }
     public bool IncludedSpawnStateReset { get; init; }
+    public string Status { get; init; } = "completed";
+    public IReadOnlyList<string> BackedUpTargets { get; init; } = [];
+}
+
+/// <summary>
+/// Result of manually purging one or all reversible cleanup trash snapshots for a game.
+/// </summary>
+public sealed record GameDataTrashPurgeResult
+{
+    public required bool Succeeded { get; init; }
+    public required string Message { get; init; }
+    public int DeletedSnapshotCount { get; init; }
+    public long FreedBytes { get; init; }
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+
+    public static GameDataTrashPurgeResult Ok(
+        string message,
+        int deletedSnapshotCount = 0,
+        long freedBytes = 0,
+        IReadOnlyList<string>? warnings = null) =>
+        new()
+        {
+            Succeeded = true,
+            Message = message,
+            DeletedSnapshotCount = deletedSnapshotCount,
+            FreedBytes = freedBytes,
+            Warnings = warnings ?? [],
+        };
+
+    public static GameDataTrashPurgeResult Fail(string message, IReadOnlyList<string>? warnings = null) =>
+        new()
+        {
+            Succeeded = false,
+            Message = message,
+            Warnings = warnings ?? [],
+        };
 }
 
 /// <summary>

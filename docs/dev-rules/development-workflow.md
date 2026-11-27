@@ -37,8 +37,9 @@
 4. **提交**：Conventional Commits（`feat: …`、`fix(trainer): …`），每个提交 `git commit -s`；用 `git add -u` 或显式路径暂存。一个 PR 只做一件事；PR 合并时 squash 成一个提交，分支里提交几次都可以。
 5. **PR**：push 后建 PR，按模板写关联 issue、做了什么、验证（命令 / 结果 / 未运行项）、风险。碰了高风险清单就加 `risk:high` 标签。
 6. **审查**：CI 通过后，由干净上下文的审查者（新开的子代理，或交给另一个 Agent）按 [REVIEW](../../REVIEW.md) 审查完整改动；作者不能自己审自己。阻塞项修完再审。
-7. **合并**：低风险 PR 由 Agent `gh pr merge <号> --squash --match-head-commit <头提交>` 合并；`risk:high` 的 PR 留给用户合并。不轮询长挂命令（如 `gh pr checks --watch`）。
-8. **合并后**：本地 `git switch main && git pull --ff-only`，运行[开发版自动安装](#dev-install-at-handoff)；在 issue 或对话里报告结果与一个首选下一步。
+7. **审核前本地预装开发版**：凡需要用户审核或实机测试的 PR（尤其是 `risk:high` 或涉及界面、行为、安装链路改动的 PR），在 CI 与独立审查通过后、请用户审核前，先在该干净 PR 分支执行 `python -B scripts/package.py --install-dev` 更新本机 `SPAWN Dev`，并将安装回执（含版本号、`gitBranch`、`gitCommit`）记入 PR 正文或 `Agent：` 评论，让用户先测试再审核。
+8. **合并**：低风险且无需用户预先实测的 PR 由 Agent `gh pr merge <号> --squash --match-head-commit <头提交>` 合并；`risk:high` 或等待用户实测的 PR 保持打开，等用户测试确认后再合并。不轮询长挂命令（如 `gh pr checks --watch`）。
+9. **合并后**：本地 `git switch main && git pull --ff-only`，再次运行[开发版自动安装](#dev-install-at-handoff)保持本机与 `main` 同步；在 issue 或对话里报告结果与一个首选下一步。
 
 <a id="high-risk"></a>
 ### 2.1 高风险清单
@@ -46,7 +47,7 @@
 PR 只要碰到下列任一项就是高风险，加 `risk:high`，Agent 不自行合并：
 
 - 安装包、安装与卸载行为、开发版自动安装（`scripts/package.py`、`installer/`、卸载项）；
-- 更新、签名、发布流程与密钥（应用内更新与验签、`scripts/release.py`、`release.yml`、`installer/update-signing-public.pem`）；
+- 更新、签名、发布流程与密钥（应用内更新与验签、`scripts/release.py`、`release.yml`、`release-keys/`）；
 - 反作弊联锁与进程隔离（`AntiCheatTier`、15 秒冷却、Clean Host 引用与 IAT 门禁白名单、`JobObject` 标志、提权与 UAC、跨完整性级别 IPC ACL）；
 - `spawn.db` Schema 与迁移、`SPAWN_Vault` / 硬链接 / Junction 部署、存档备份与回滚、凭据存储；
 - 游戏数据清理与删除（`GameDataManagementService`、安全围栏、回收站与还原、注册表导出）；
@@ -59,17 +60,17 @@ PR 只要碰到下列任一项就是高风险，加 `risk:high`，Agent 不自�
 <a id="dev-install-at-handoff"></a>
 ### 2.2 开发版自动安装
 
-每次合并进 `main` 后（本机拉取 `main` 后），以及请用户实机检查前，Agent 在本机执行（`D-34`）：
+在两种节点由 Agent 在本机执行（`D-34`、`D-35`）：① **请用户审核 PR 前**（凡需用户审核/实测的 PR，在 CI 与独立审查通过后直接于干净 PR 分支运行，让用户先测后审）；② **每次合并进 `main` 后**（拉取 `main` 后运行，保持本机与 `main` 同步）。
 
 ```powershell
 python -B scripts/package.py --install-dev
 ```
 
-1. **安全无损**：脚本先在 `dist/.staging-*/` 编译 `spawn-dev.exe`、`Spawn.OverlayHost.exe`、`Workers\Trainer\Spawn.TrainerWorker.exe` 与免 UAC 按用户 NSIS 安装包并原子替换到 `dist/spawn-dev/`（[D-35](../decisions/confirmed-decisions.md#d-35)）；只读写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.chialecode.spawn-dev`，没有这个卸载项就是首次安装，同样静默完成；从不碰正式版。
+1. **安全无损与快捷方式规则**：脚本先在 `dist/.staging-*/` 编译 `spawn-dev.exe`、`Spawn.OverlayHost.exe`、`Workers\Trainer\Spawn.TrainerWorker.exe` 与免 UAC 按用户 NSIS 安装包并原子替换到 `dist/spawn-dev/`（[D-35](../decisions/confirmed-decisions.md#d-35)）；支持在干净 PR 分支与 `main` 上运行；只读写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.chialecode.spawn-dev`，没有这个卸载项就是首次安装，同样静默完成；从不碰正式版。快捷方式策略：首次安装创建开始菜单与桌面快捷方式（测试身份 `--no-shortcuts` 除外）；**静默覆盖重装永不创建、覆写或删除开始菜单快捷方式**（用户已删则保持缺失，仍保留则保持原样与原 `LastWriteTime` 不动），开发版静默重装仍可安装/保留桌面快捷方式（正式版静默更新不重建已删桌面快捷方式）；交互式向导与完整卸载行为不变。
 2. **窗口开着时推迟**：已安装的 `spawn-dev.exe` 有可见的顶层窗口（最小化也算，隐藏到托盘不算）时说明用户正在使用，每 2 秒检查一次，最多等 10 分钟；仍开着就跳过这次安装（跳过不算失败），回执记 `reason=window_open` 并提示关窗后运行 `python -B scripts/package.py --install-dev --install-only`。窗口按已安装的 `spawn-dev.exe` 路径匹配：用 `dotnet run` 从源码运行的副本共用同一个单实例互斥量，却不算“窗口开着”，安装时同样会被请求保存退出。只在托盘运行时经 `--quit-for-update` 命名管道请其保存退出（最多 30 秒，从不强杀），装完一律以 `--background` 静默回到托盘、不弹出窗口（`StartupWindowPolicy` 对 `dev-install` 重启只进托盘，`D-23`）。
-3. **回执**：写 `.local/reports/<阶段>/install-dev.json`，字段统一为 camelCase：`identity`、`installed`、`skipped`、`reason`、`error`、`firstInstall`、`oldVersion`、`newVersion`、`installLocation`、`wasRunning`、`windowOpen`、`deferred`、`deferMs`、`quitMs`、`relaunched`、`background`、`inJob`、`guidance`、`elapsedMs`、`at`，另有 `displayName`、`installedExe`、`installedTrainerWorker`、`installedNotices`、`viaShell`、`pid` 等。
-4. **隔离边界**：`SPAWN_DEV_AUTO_INSTALL=0` 或 `CI=true` 时跳过；`quick_gate.py` 与单元测试严禁调用 `--install-dev` 触碰 `spawn` 或 `spawn-dev`（安装包测试用隔离身份 `--identity spawn-dev-test --no-shortcuts --no-relaunch`）。
-5. 装好的版本写进 PR 或 issue 评论。
+3. **回执**：写 `.local/reports/<阶段>/install-dev.json`，字段统一为 camelCase：`identity`、`installed`、`skipped`、`reason`、`error`、`firstInstall`、`oldVersion`、`newVersion`、`installLocation`、`wasRunning`、`windowOpen`、`deferred`、`deferMs`、`quitMs`、`relaunched`、`background`、`inJob`、`guidance`、`elapsedMs`、`at`，另有 `displayName`、`gitBranch`、`gitCommit`、`installedExe`、`installedTrainerWorker`、`installedNotices`、`viaShell`、`pid` 等。
+4. **隔离边界**：`SPAWN_DEV_AUTO_INSTALL=0` 或 `CI=true` 时跳过；`quick_gate.py` 与单元测试严禁调用 `--install-dev` 触碰 `spawn` 或 `spawn-dev`（安装包测试用隔离身份 `--identity spawn-dev-test --no-shortcuts --no-relaunch`，或使用隔离临时快捷方式目录的 `*-test` 演练）。
+5. 审核前预装与合并后同步所装好的版本、分支与回执均写进 PR 正文或 `Agent：` 评论。
 
 <a id="next-step"></a>
 ### 2.3 收尾报告

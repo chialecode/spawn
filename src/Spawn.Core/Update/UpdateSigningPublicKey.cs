@@ -3,11 +3,14 @@ namespace Spawn.Core.Update;
 /// <summary>
 /// Compiled-in ECDSA P-256 (<c>prime256v1</c> / <c>nistP256</c>) SubjectPublicKeyInfo PEM used to verify
 /// <c>update-windows-x64.json</c> against <c>update-windows-x64.json.sig</c>.
-/// Must stay byte-for-byte identical to <c>installer/update-signing-public.pem</c> (enforced by
+/// Must stay byte-for-byte identical to <c>release-keys/98ada0750903e1ab.pub.pem</c> (enforced by
 /// <c>UpdatePublicKeyParityGateTests</c>).
 /// </summary>
 public static class UpdateSigningPublicKey
 {
+    public const string KeyId = "98ada0750903e1ab";
+    public const string RepositoryRelativePath = "release-keys/" + KeyId + ".pub.pem";
+
     public const string Pem =
         "-----BEGIN PUBLIC KEY-----\n" +
         "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEviFYm4m0nzmSQeNkdg2Be4LQJTDi\n" +

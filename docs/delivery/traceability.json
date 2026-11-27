@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "project": "SPAWN",
-  "updatedAt": "2026-11-22",
+  "updatedAt": "2026-11-25",
   "requirements": [
     {
       "id": "REQ-SPW-01",
@@ -142,7 +142,7 @@
       "priority": "P0",
       "title": "原生 ludusavi-manifest 存档探测与配置剥离",
       "stage": "M4",
-      "status": "planned",
+      "status": "implemented",
       "decisions": [
         "docs/decisions/0004-cas-fastcdc-storage-and-mod-junction-topology.md"
       ],
@@ -156,14 +156,14 @@
         "AC-09"
       ],
       "cases": [],
-      "notes": "D-25：自 M3 顺延至 M4 存档时间机器与云同步独立交付轨道"
+      "notes": "Issue #50 已交付：Schema v5 ludusavi_rules 索引、20+ 内置规则种子与 JSON 导入、16 占位符展开器、[save]/[config]/HKCU 分流及离线单测"
     },
     {
       "id": "REQ-PRG-02",
       "priority": "P0",
       "title": "基于 FastCDC 的存档时间机器与防撕裂原子回滚",
       "stage": "M4",
-      "status": "planned",
+      "status": "implemented",
       "decisions": [
         "docs/decisions/0004-cas-fastcdc-storage-and-mod-junction-topology.md"
       ],
@@ -178,14 +178,14 @@
         "AC-10"
       ],
       "cases": [],
-      "notes": "D-25：自 M3 顺延至 M4 存档时间机器与云同步独立交付轨道"
+      "notes": "Issue #50 已交付：FastCDC+BLAKE3+Zstd CAS 存储、Git 式命名分支树（save_branches / save_game_state）、2500ms 静默防撕裂监听、原子回滚与旧 PreTrainer 快照桥接及端到端测试"
     },
     {
       "id": "REQ-PRG-03",
       "priority": "P1",
       "title": "32MB SPPK Packfile 自建云同步与血缘合并",
       "stage": "M4",
-      "status": "planned",
+      "status": "implemented",
       "decisions": [
         "docs/decisions/0004-cas-fastcdc-storage-and-mod-junction-topology.md"
       ],
@@ -200,7 +200,7 @@
         "AC-11"
       ],
       "cases": [],
-      "notes": "D-25：自 M3 顺延至 M4 存档时间机器与云同步独立交付轨道"
+      "notes": "Issue #50 已交付：32MB SPPK v1 二进制封装与 Range 尾部解析、LocalFolder/WebDAV/S3 SigV4 后端、DPAPI 凭据与 64 代三路血缘分叉无损保留及自动化测试"
     },
     {
       "id": "REQ-PRG-04",

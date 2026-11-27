@@ -12,7 +12,9 @@ Validates:
 from __future__ import annotations
 
 import argparse
+import base64
 from collections import Counter
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -95,7 +97,7 @@ FORBIDDEN_FILE_PATTERNS = (
 
 ALLOWED_PUBLIC_KEY_PEMS = frozenset(
     {
-        "installer/update-signing-public.pem",
+        "release-keys/98ada0750903e1ab.pub.pem",
     }
 )
 
@@ -502,6 +504,20 @@ def check_repository(root: Path) -> tuple[list[str], dict[str, int]]:
                     and pem_text.rstrip("\n").endswith("-----END PUBLIC KEY-----")
                 ):
                     errors.append(f"{rel}: allowed PEM must be a strict SubjectPublicKeyInfo PUBLIC KEY block")
+                elif rel.startswith("release-keys/") and rel.endswith(".pub.pem"):
+                    expected_key_id = Path(rel).name.removesuffix(".pub.pem")
+                    b64_body = "".join(
+                        ln.strip() for ln in pem_text.splitlines() if ln.strip() and not ln.startswith("-----")
+                    )
+                    try:
+                        actual_key_id = hashlib.sha256(base64.b64decode(b64_body, validate=True)).hexdigest()[:16]
+                    except ValueError as exc:
+                        errors.append(f"{rel}: invalid base64 in public key PEM ({exc})")
+                    else:
+                        if actual_key_id != expected_key_id:
+                            errors.append(
+                                f"{rel}: public key filename keyId {expected_key_id!r} does not match SPKI SHA-256 prefix {actual_key_id!r}"
+                            )
         else:
             for forbidden_pat in FORBIDDEN_FILE_PATTERNS:
                 if forbidden_pat.search(rel):

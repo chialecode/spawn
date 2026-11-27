@@ -463,8 +463,14 @@ class ManifestSigningAndChecksumsTests(unittest.TestCase):
             (pkg_dir / "THIRD-PARTY-NOTICES.txt").write_text("Apache-2.0 / MIT notices\n", encoding="utf-8", newline="\n")
 
             out_dir = root / "dist" / "spawn"
+            # Verify signing works via default %APPDATA%\spawn-release\update-signing.key when SPAWN_UPDATE_SIGNING_KEY is unset
+            appdata_dir = root / "appdata-e2e"
+            appdata_key = appdata_dir / "spawn-release" / "update-signing.key"
+            appdata_key.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(priv_key_1, appdata_key)
             sign_env = os.environ.copy()
-            sign_env[rel.SIGNING_KEY_ENV_VAR] = str(priv_key_1)
+            sign_env.pop(rel.SIGNING_KEY_ENV_VAR, None)
+            sign_env["APPDATA"] = str(appdata_dir)
 
             assembled = rel.assemble_release_from_package(
                 REPO_ROOT,
@@ -518,7 +524,7 @@ class ManifestSigningAndChecksumsTests(unittest.TestCase):
                 rel.verify_manifest_signature(REPO_ROOT, manifest_path, sig_path, pub_key_2)
             with self.assertRaises(RuntimeError):
                 rel.verify_manifest_signature(
-                    REPO_ROOT, manifest_path, sig_path, REPO_ROOT / "installer" / "update-signing-public.pem"
+                    REPO_ROOT, manifest_path, sig_path, REPO_ROOT / rel.DEFAULT_PUBLIC_KEY_REL
                 )
             if openssl:
                 ossl_wrong = _run_silent(
@@ -593,9 +599,70 @@ class ManifestSigningAndChecksumsTests(unittest.TestCase):
             self.assertNotIn("DO_NOT_LEAK_CORRUPT_KEY_77312", corrupt_proc.stdout + corrupt_proc.stderr)
             self.assertNotIn("not-a-valid-pem-key", corrupt_proc.stdout + corrupt_proc.stderr)
 
+    def test_signing_key_resolution_defaults_to_appdata_and_rejects_in_repo_keys(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="spawn-key-resolve-") as td:
+            root = Path(td)
+            fake_repo = root / "repo"
+            fake_repo.mkdir(parents=True, exist_ok=True)
+            fake_appdata = root / "appdata"
+            default_key = fake_appdata / "spawn-release" / "update-signing.key"
+            default_key.parent.mkdir(parents=True, exist_ok=True)
+            default_key.write_text("dummy-pkcs8-key\n", encoding="utf-8", newline="\n")
+
+            # 1. Unset SPAWN_UPDATE_SIGNING_KEY falls back to %APPDATA%\spawn-release\update-signing.key
+            resolved = rel.resolve_signing_key_path(fake_repo, env={"APPDATA": str(fake_appdata)})
+            self.assertEqual(resolved, default_key.resolve())
+
+            # 2. Explicit out-of-repo override takes precedence (e.g. CI RUNNER_TEMP)
+            ci_key = root / "runner-temp" / "ephemeral.pem"
+            ci_key.parent.mkdir(parents=True, exist_ok=True)
+            ci_key.write_text("dummy-ci-key\n", encoding="utf-8", newline="\n")
+            resolved_ci = rel.resolve_signing_key_path(
+                fake_repo,
+                env={"APPDATA": str(fake_appdata), rel.SIGNING_KEY_ENV_VAR: str(ci_key)},
+            )
+            self.assertEqual(resolved_ci, ci_key.resolve())
+
+            # 3. Any key inside the repository tree is refused and its path is never leaked in the error
+            in_repo_secret = fake_repo / ".local" / "secrets" / "update-signing" / "DO_NOT_LEAK_IN_REPO_8821.pem"
+            in_repo_secret.parent.mkdir(parents=True, exist_ok=True)
+            in_repo_secret.write_text("dummy-in-repo\n", encoding="utf-8", newline="\n")
+            with self.assertRaises(RuntimeError) as ctx_override:
+                rel.resolve_signing_key_path(
+                    fake_repo,
+                    env={rel.SIGNING_KEY_ENV_VAR: str(in_repo_secret)},
+                )
+            self.assertIn("outside the repository", str(ctx_override.exception))
+            self.assertNotIn("DO_NOT_LEAK_IN_REPO_8821", str(ctx_override.exception))
+
+            # Even if APPDATA itself is pointed inside the repo, it is refused
+            in_repo_appdata = fake_repo / "bad-appdata"
+            in_repo_default = in_repo_appdata / "spawn-release" / "update-signing.key"
+            in_repo_default.parent.mkdir(parents=True, exist_ok=True)
+            in_repo_default.write_text("dummy\n", encoding="utf-8", newline="\n")
+            with self.assertRaises(RuntimeError) as ctx_appdata:
+                rel.resolve_signing_key_path(fake_repo, env={"APPDATA": str(in_repo_appdata)})
+            self.assertIn("outside the repository", str(ctx_appdata.exception))
+            self.assertNotIn("bad-appdata", str(ctx_appdata.exception))
+
+            # 4. Missing default key fails without leaking the resolved filesystem path
+            missing_appdata = root / "MISSING_APPDATA_SENTINEL_4412"
+            with self.assertRaises(RuntimeError) as ctx_missing:
+                rel.resolve_signing_key_path(fake_repo, env={"APPDATA": str(missing_appdata)})
+            self.assertNotIn("MISSING_APPDATA_SENTINEL_4412", str(ctx_missing.exception))
+
+            # 5. Neither env var nor APPDATA fails cleanly
+            with self.assertRaises(RuntimeError):
+                rel.resolve_signing_key_path(fake_repo, env={})
+
     def test_committed_public_key_and_gitignore_hygiene(self) -> None:
-        pub_path = REPO_ROOT / "installer" / "update-signing-public.pem"
-        self.assertTrue(pub_path.is_file(), "installer/update-signing-public.pem must exist")
+        pub_rel = rel.DEFAULT_PUBLIC_KEY_REL.as_posix()
+        pub_path = REPO_ROOT / rel.DEFAULT_PUBLIC_KEY_REL
+        self.assertTrue(pub_path.is_file(), f"{pub_rel} must exist")
+        self.assertFalse(
+            (REPO_ROOT / "installer" / "update-signing-public.pem").exists(),
+            "Legacy installer/update-signing-public.pem must not remain after moving to release-keys/",
+        )
         raw = pub_path.read_bytes()
         self.assertFalse(raw.startswith(b"\xef\xbb\xbf"), "Public key PEM must not have UTF-8 BOM")
         self.assertNotIn(b"\r", raw, "Public key PEM must use LF line endings")
@@ -603,6 +670,7 @@ class ManifestSigningAndChecksumsTests(unittest.TestCase):
         self.assertTrue(text.startswith("-----BEGIN PUBLIC KEY-----\n"))
         self.assertTrue(text.rstrip("\n").endswith("-----END PUBLIC KEY-----"))
         self.assertNotIn("PRIVATE KEY", text)
+        self.assertEqual(rel.compute_public_key_id(pub_path), rel.DEFAULT_PUBLIC_KEY_ID)
 
         # Verify OpenSSL parses the committed public key as prime256v1 / P-256
         openssl = _find_openssl()
@@ -611,35 +679,35 @@ class ManifestSigningAndChecksumsTests(unittest.TestCase):
             self.assertEqual(info.returncode, 0, info.stderr)
             self.assertIn("prime256v1", info.stdout)
 
-        # Verify .gitignore rules protect .local/ and dist/ while tracking installer/update-signing-public.pem
+        # Verify .gitignore rules protect .local/ and dist/ while tracking release-keys/<keyId>.pub.pem
         gi = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
         self.assertIn(".local/", gi)
         self.assertIn("dist/", gi)
-        self.assertIn("!installer/update-signing-public.pem", gi)
+        self.assertIn(f"!{pub_rel}", gi)
 
-        # Verify check_docs.py allows installer/update-signing-public.pem and blocks other .pem files
+        # Verify check_docs.py allows release-keys/<keyId>.pub.pem and blocks other .pem files
         import check_docs as cd  # noqa: E402
 
-        self.assertIn("installer/update-signing-public.pem", cd.ALLOWED_PUBLIC_KEY_PEMS)
+        self.assertIn(pub_rel, cd.ALLOWED_PUBLIC_KEY_PEMS)
         with tempfile.TemporaryDirectory(prefix="spawn-checkdocs-pem-") as td:
             fake_root = Path(td)
-            (fake_root / "installer").mkdir(parents=True, exist_ok=True)
-            (fake_root / "installer" / "other.pem").write_text(text, encoding="utf-8", newline="\n")
+            (fake_root / "release-keys").mkdir(parents=True, exist_ok=True)
+            (fake_root / "release-keys" / "other.pem").write_text(text, encoding="utf-8", newline="\n")
             errs, _ = cd.check_repository(fake_root)
             self.assertTrue(
-                any("installer/other.pem" in e and "forbidden" in e for e in errs),
+                any("release-keys/other.pem" in e and "forbidden" in e for e in errs),
                 f"Expected check_docs to block arbitrary .pem file, got: {errs}",
             )
 
-            (fake_root / "installer" / "other.pem").unlink()
-            (fake_root / "installer" / "update-signing-public.pem").write_text(
+            (fake_root / "release-keys" / "other.pem").unlink()
+            (fake_root / rel.DEFAULT_PUBLIC_KEY_REL).write_text(
                 "-----BEGIN " + "PRIVATE KEY-----\nfake\n-----END " + "PRIVATE KEY-----\n",
                 encoding="utf-8",
                 newline="\n",
             )
             errs_priv, _ = cd.check_repository(fake_root)
             self.assertTrue(
-                any("installer/update-signing-public.pem" in e and "private key" in e.lower() for e in errs_priv),
+                any(pub_rel in e and "private key" in e.lower() for e in errs_priv),
                 f"Expected check_docs to reject private key inside allowed pem, got: {errs_priv}",
             )
 

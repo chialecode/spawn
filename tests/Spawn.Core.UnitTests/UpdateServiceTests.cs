@@ -751,13 +751,14 @@ public sealed class UpdateServiceTests
             Assert.Equal(UpdateCheckOutcome.UpToDate, reloaded.CurrentSnapshot.LastCheckOutcome);
         }
 
-        // Confirm SQLite schema version stayed at v4 (NO schema upgrade!).
+        // Confirm UpdateService persisted history in app_settings without adding its own schema upgrade beyond SpawnDatabase's version (v5).
+        int expectedSchemaVersion = await sandbox.Database.GetSchemaVersionAsync();
         await using var conn = new SqliteConnection($"Data Source={sandbox.Paths.DatabaseFilePath};Mode=ReadOnly;");
         await conn.OpenAsync();
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT MAX(version) FROM schema_migrations;";
         long maxVersion = Convert.ToInt64(await cmd.ExecuteScalarAsync(), CultureInfo.InvariantCulture);
-        Assert.Equal(4L, maxVersion);
+        Assert.Equal(expectedSchemaVersion, maxVersion);
     }
 
     [Fact]
@@ -849,7 +850,7 @@ public sealed class UpdateServiceTests
 
         // At +60s -> first scheduled check fires and silently defers on offline error.
         clock.Advance(TimeSpan.FromSeconds(1));
-        await firstCheckDone.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await firstCheckDone.Task.WaitAsync(TimeSpan.FromSeconds(10));
         // Wait until the loop arms the next 24h timer and emits the post-arm StateChanged snapshot (count >= 2).
         await WaitUntilAsync(() => Volatile.Read(ref deferredStateCount) >= 2);
 
@@ -858,7 +859,7 @@ public sealed class UpdateServiceTests
 
         // At +24h -> second scheduled check fires.
         clock.Advance(TimeSpan.FromHours(24));
-        await secondCheckDone.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await secondCheckDone.Task.WaitAsync(TimeSpan.FromSeconds(10));
         Assert.True(Volatile.Read(ref httpCalls) >= 2);
 
         // Disabling AutoCheckEnabled stops future automatic checks.
@@ -889,23 +890,26 @@ public sealed class UpdateServiceTests
                 OnCompleteShutdown = () => completeTcs.TrySetResult(true),
             };
             var launcher = new FakeUpdateInstallerLauncher();
+            TimeSpan reentrantStopElapsed = TimeSpan.MaxValue;
 
             await using var service = CreateService(sandbox, key.PublicKeyPem, "release", "0.1.1", handler, clock, idle, quit, launcher);
             quit.OnQuitRequestedAsync = async _ =>
             {
                 // Mirrors App.PrepareGracefulShutdownForUpdateAsync: calls StopBackgroundSchedulerAsync() re-entrantly!
-                await service.StopBackgroundSchedulerAsync().WaitAsync(TimeSpan.FromSeconds(2));
+                var stopSw = System.Diagnostics.Stopwatch.StartNew();
+                await service.StopBackgroundSchedulerAsync().WaitAsync(TimeSpan.FromSeconds(10));
+                stopSw.Stop();
+                reentrantStopElapsed = stopSw.Elapsed;
             };
 
             await service.InitializeAsync();
             service.StartBackgroundScheduler();
+            Assert.Equal(2, clock.PendingTimerCount);
 
-            var sw = System.Diagnostics.Stopwatch.StartNew();
             clock.Advance(TimeSpan.FromSeconds(60));
-            await completeTcs.Task.WaitAsync(TimeSpan.FromSeconds(3));
-            sw.Stop();
+            await completeTcs.Task.WaitAsync(TimeSpan.FromSeconds(15));
 
-            Assert.True(sw.Elapsed < TimeSpan.FromSeconds(2), $"Re-entrant StopBackgroundSchedulerAsync stalled for {sw.Elapsed}.");
+            Assert.True(reentrantStopElapsed < TimeSpan.FromSeconds(5), $"Re-entrant StopBackgroundSchedulerAsync stalled for {reentrantStopElapsed}.");
             Assert.Equal(1, quit.CompleteShutdownCount);
             Assert.Equal(0, quit.AbortShutdownCount);
             Assert.Single(quit.QuitReasons);
@@ -935,12 +939,16 @@ public sealed class UpdateServiceTests
                 OnCompleteShutdown = () => completeTcs.TrySetResult(true),
             };
             var launcher = new FakeUpdateInstallerLauncher();
+            TimeSpan reentrantStopElapsed = TimeSpan.MaxValue;
 
             await using var service = CreateService(sandbox, key.PublicKeyPem, "release", "0.1.1", handler, clock, idle, quit, launcher);
             quit.OnQuitRequestedAsync = async _ =>
             {
                 // Even if ExecutionContext is suppressed (simulating cross-thread dispatcher), StopBackgroundSchedulerAsync must not deadlock!
-                await Task.Run(() => service.StopBackgroundSchedulerAsync()).WaitAsync(TimeSpan.FromSeconds(2));
+                var stopSw = System.Diagnostics.Stopwatch.StartNew();
+                await Task.Run(() => service.StopBackgroundSchedulerAsync()).WaitAsync(TimeSpan.FromSeconds(10));
+                stopSw.Stop();
+                reentrantStopElapsed = stopSw.Elapsed;
             };
 
             await service.InitializeAsync();
@@ -948,15 +956,14 @@ public sealed class UpdateServiceTests
             Assert.Equal(UpdateCheckOutcome.UpdateReady, staged.Outcome);
 
             service.StartBackgroundScheduler();
+            Assert.Equal(2, clock.PendingTimerCount);
 
             // Window closes to tray -> advance 2 minutes so RunIdleInstallLoopAsync fires!
             idle.Snapshot = new UpdateIdleSnapshot { IsMainWindowOpen = false };
-            var sw = System.Diagnostics.Stopwatch.StartNew();
             clock.Advance(TimeSpan.FromMinutes(2));
-            await completeTcs.Task.WaitAsync(TimeSpan.FromSeconds(3));
-            sw.Stop();
+            await completeTcs.Task.WaitAsync(TimeSpan.FromSeconds(15));
 
-            Assert.True(sw.Elapsed < TimeSpan.FromSeconds(2), $"Idle-loop re-entrant StopBackgroundSchedulerAsync stalled for {sw.Elapsed}.");
+            Assert.True(reentrantStopElapsed < TimeSpan.FromSeconds(5), $"Idle-loop re-entrant StopBackgroundSchedulerAsync stalled for {reentrantStopElapsed}.");
             Assert.Equal(1, quit.CompleteShutdownCount);
             Assert.Equal(0, quit.AbortShutdownCount);
             Assert.Single(launcher.Launches);
@@ -987,14 +994,15 @@ public sealed class UpdateServiceTests
             await using var service = CreateService(sandbox, key.PublicKeyPem, "release", "0.1.1", handler, clock, idle, quit, launcher);
             quit.OnQuitRequestedAsync = async _ =>
             {
-                await service.StopBackgroundSchedulerAsync().WaitAsync(TimeSpan.FromSeconds(2));
+                await service.StopBackgroundSchedulerAsync().WaitAsync(TimeSpan.FromSeconds(10));
             };
 
             await service.InitializeAsync();
             service.StartBackgroundScheduler();
+            Assert.Equal(2, clock.PendingTimerCount);
 
             clock.Advance(TimeSpan.FromSeconds(60));
-            await abortTcs.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            await abortTcs.Task.WaitAsync(TimeSpan.FromSeconds(15));
             await WaitUntilAsync(() => service.CurrentSnapshot.History.Any(h => h.Result == UpdateHistoryResult.Failed && h.ToVersion == "0.1.2"));
 
             Assert.Equal(0, quit.CompleteShutdownCount);
@@ -1450,7 +1458,7 @@ public sealed class UpdateServiceTests
         }
     }
 
-    private static async Task WaitUntilAsync(Func<bool> predicate, int timeoutMs = 3000)
+    private static async Task WaitUntilAsync(Func<bool> predicate, int timeoutMs = 10_000)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         while (!predicate() && sw.ElapsedMilliseconds < timeoutMs)

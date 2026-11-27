@@ -18,7 +18,10 @@ public sealed partial class GameSourceGroupViewModel : ObservableObject
 
     public int Count => Items.Count;
     public bool HasItems => Items.Count > 0;
+    public int RunningCount => Items.Count(static i => i.IsRunning);
     public string HeaderTitle => $"{BaseTitle}";
+
+    public void NotifyRunningStateChanged() => OnPropertyChanged(nameof(RunningCount));
 
     public GameSourceGroupViewModel(string groupKey, string baseTitle, bool initiallyExpanded = true)
     {

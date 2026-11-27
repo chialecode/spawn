@@ -12,6 +12,48 @@ public interface IGameLibraryService
     Task<GameRecord?> RescanGameAsync(string gameId, CancellationToken cancellationToken = default);
     Task<GameRecord?> UpdateGameMetadataAsync(string gameId, GameMetadataUpdate update, CancellationToken cancellationToken = default);
     Task<bool> RemoveGameAsync(string gameId, CancellationToken cancellationToken = default);
+
+    async Task<GameImportBatchResult> ImportGameDetailedAsync(
+        string directoryOrExePath,
+        CancellationToken cancellationToken = default)
+    {
+        var single = await ImportGameAsync(directoryOrExePath, cancellationToken).ConfigureAwait(false);
+        return single is null
+            ? new GameImportBatchResult { FailureReason = "未识别到可导入的游戏主程序。" }
+            : new GameImportBatchResult { ImportedGames = [single], AddedCount = 1 };
+    }
+
+    async Task<LibraryScanReport> ScanLibraryDirectoryDetailedAsync(
+        string rootDirectory,
+        CancellationToken cancellationToken = default)
+    {
+        bool accessible = !string.IsNullOrWhiteSpace(rootDirectory) && Directory.Exists(rootDirectory);
+        if (!accessible)
+        {
+            return new LibraryScanReport
+            {
+                RootDirectory = rootDirectory ?? string.Empty,
+                RootAccessible = false,
+                InaccessibleDirectories = string.IsNullOrWhiteSpace(rootDirectory) ? [] : [rootDirectory],
+            };
+        }
+
+        var list = await ScanLibraryDirectoryAsync(rootDirectory, cancellationToken).ConfigureAwait(false);
+        return new LibraryScanReport
+        {
+            RootDirectory = rootDirectory,
+            RootAccessible = true,
+            AddedGames = list,
+        };
+    }
+
+    Task<GameRecord?> RelocateGameDirectoryAsync(
+        string gameId,
+        string newInstallDir,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult<GameRecord?>(null);
+
+    IReadOnlyList<DiscoveredLibraryDirectory> DiscoverLocalPlatformLibraries() => [];
 }
 
 /// <summary>
@@ -25,6 +67,19 @@ public interface IGameLaunchService
     ActiveGameSession? GetActiveSession(string gameId);
     Task<GameLaunchResult> LaunchGameAsync(string gameId, CancellationToken cancellationToken = default);
     Task<bool> StopGameAsync(string gameId, CancellationToken cancellationToken = default);
+
+    async Task<GameStopResult> StopGameAsync(
+        string gameId,
+        bool forceKill,
+        TimeSpan? gracefulTimeout = null,
+        CancellationToken cancellationToken = default)
+    {
+        bool stopped = await StopGameAsync(gameId, cancellationToken).ConfigureAwait(false);
+        return stopped
+            ? (forceKill ? GameStopResult.ForceKilled() : GameStopResult.StoppedGracefully())
+            : GameStopResult.NotRunning();
+    }
+
     void RegisterTrustedOverlayWindow(nint windowHandle, int processId);
     void UnregisterTrustedOverlayWindow(nint windowHandle);
 }
@@ -70,6 +125,34 @@ public interface IGameDataManagementService
     Task<GameDataCleanResult> RestoreLastCleanupAsync(
         string gameId,
         CancellationToken cancellationToken = default);
+
+    async Task<IReadOnlyList<GameDataUndoSnapshotDto>> ListUndoSnapshotsAsync(
+        string gameId,
+        CancellationToken cancellationToken = default)
+    {
+        var latest = await GetLatestUndoSnapshotAsync(gameId, cancellationToken).ConfigureAwait(false);
+        return latest is null ? [] : [latest];
+    }
+
+    async Task<GameDataCleanResult> RestoreUndoSnapshotAsync(
+        string gameId,
+        string snapshotId,
+        CancellationToken cancellationToken = default)
+    {
+        var latest = await GetLatestUndoSnapshotAsync(gameId, cancellationToken).ConfigureAwait(false);
+        if (latest is not null && string.Equals(latest.SnapshotId, snapshotId, StringComparison.OrdinalIgnoreCase))
+        {
+            return await RestoreLastCleanupAsync(gameId, cancellationToken).ConfigureAwait(false);
+        }
+
+        return GameDataCleanResult.Fail("未找到指定的清理回收站快照。");
+    }
+
+    Task<GameDataTrashPurgeResult> PurgeTrashSnapshotsAsync(
+        string gameId,
+        string? snapshotId = null,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(GameDataTrashPurgeResult.Fail("当前服务实现不支持清空回收站快照。"));
 
     /// <summary>
     /// Read-only enumeration of discovered save directories/files and <c>HKCU</c> registry keys for a game
@@ -180,7 +263,7 @@ public interface IGameDataManagementService
         {
             if (!loc.IsSafeToClean
                 || loc.IsRegistryEntry
-                || loc.Category != GameDataCategory.SaveData
+                || (loc.Category != GameDataCategory.SaveData && loc.Category != GameDataCategory.ConfigAndLogs)
                 || string.IsNullOrWhiteSpace(loc.PathOrRegistryKey))
             {
                 continue;

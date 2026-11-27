@@ -118,12 +118,94 @@ public static class UiFormatters
         _ => "未检测",
     };
 
-    public static string FormatPreTrainerSnapshotStatus(PreTrainerSnapshotStatus status, string? skipReason) => status switch
+    public static string FormatTrainerElevationLevel(TrainerElevationLevel? level) => level switch
     {
-        PreTrainerSnapshotStatus.Completed => "已备份",
-        PreTrainerSnapshotStatus.Skipped => string.IsNullOrWhiteSpace(skipReason) ? "已跳过" : $"已跳过（{skipReason}）",
-        PreTrainerSnapshotStatus.Failed => string.IsNullOrWhiteSpace(skipReason) ? "备份失败" : $"备份失败（{skipReason}）",
-        _ => "未知",
+        TrainerElevationLevel.Level1MediumIl => "普通权限 (Level 1)",
+        TrainerElevationLevel.Level2HighIlUac => "管理员权限 (Level 2 UAC)",
+        _ => "默认权限",
+    };
+
+    public static string FormatTrainerTitleSource(TrainerTitleSource source) => source switch
+    {
+        TrainerTitleSource.AcfName => "Steam 清单名称",
+        TrainerTitleSource.SteamAppDetails => "Steam 商店英文名",
+        TrainerTitleSource.GogInfo => "GOG 游戏信息",
+        TrainerTitleSource.Cleaner => "目录清洗名",
+        TrainerTitleSource.User => "手动指定检索词",
+        _ => "自动解析",
+    };
+
+    public static string FormatPreTrainerSnapshotSkipReason(PreTrainerSnapshotSkipReason reason) => reason switch
+    {
+        PreTrainerSnapshotSkipReason.DisabledBySettings => "已在设置中关闭自动备份",
+        PreTrainerSnapshotSkipReason.NoSaveLocationsFound => "未发现可备份的存档路径",
+        PreTrainerSnapshotSkipReason.SizeThresholdExceeded => "存档体积超过备份上限",
+        PreTrainerSnapshotSkipReason.FileLockedSharingViolation => "存档文件被游戏占用",
+        PreTrainerSnapshotSkipReason.ConcurrentModificationDetected => "备份期间检测到存档写入变化",
+        PreTrainerSnapshotSkipReason.SafetyFenceBlocked => "存档路径未通过安全边界校验",
+        PreTrainerSnapshotSkipReason.Timeout => "创建快照超时",
+        _ => string.Empty,
+    };
+
+    public static string FormatPreTrainerSnapshotSkipReason(string? rawSkipReason)
+    {
+        if (string.IsNullOrWhiteSpace(rawSkipReason))
+        {
+            return string.Empty;
+        }
+
+        string trimmed = rawSkipReason.Trim();
+        if (Enum.TryParse<PreTrainerSnapshotSkipReason>(trimmed, ignoreCase: true, out PreTrainerSnapshotSkipReason parsed))
+        {
+            return FormatPreTrainerSnapshotSkipReason(parsed);
+        }
+
+        if (string.Equals(trimmed, nameof(SaveSnapshotSkipReason.UnchangedFromHead), StringComparison.OrdinalIgnoreCase))
+        {
+            return "存档与当前最新快照一致";
+        }
+
+        return trimmed;
+    }
+
+    public static string FormatPreTrainerSnapshotStatus(PreTrainerSnapshotStatus status, PreTrainerSnapshotSkipReason skipReason) =>
+        FormatPreTrainerSnapshotStatus(status, FormatPreTrainerSnapshotSkipReason(skipReason));
+
+    public static string FormatPreTrainerSnapshotStatus(PreTrainerSnapshotStatus status, string? skipReason)
+    {
+        string formattedReason = FormatPreTrainerSnapshotSkipReason(skipReason);
+        return status switch
+        {
+            PreTrainerSnapshotStatus.Completed => "已备份",
+            PreTrainerSnapshotStatus.Skipped => string.IsNullOrWhiteSpace(formattedReason) ? "已跳过" : $"已跳过（{formattedReason}）",
+            PreTrainerSnapshotStatus.Failed => string.IsNullOrWhiteSpace(formattedReason) ? "备份失败" : $"备份失败（{formattedReason}）",
+            _ => "未知",
+        };
+    }
+
+    public static string FormatAntiCheatGuardPhase(AntiCheatGuardPhase phase) => phase switch
+    {
+        AntiCheatGuardPhase.IdleSafe => "安全空闲",
+        AntiCheatGuardPhase.ProtectedRunning => "受保护游戏运行中",
+        AntiCheatGuardPhase.ResidualGuardWatch => "等待反作弊残影退出",
+        AntiCheatGuardPhase.CooldownLocked => "15 秒余温冷却锁定",
+        _ => "安全锁定",
+    };
+
+    public static string FormatTrainerImportFailureKind(TrainerImportFailureKind kind) => kind switch
+    {
+        TrainerImportFailureKind.NetworkError => "网络请求失败",
+        TrainerImportFailureKind.ChallengeOrHtmlFallback => "外部站点触发人机验证",
+        TrainerImportFailureKind.InvalidMagicOrFormat => "文件格式或魔数校验失败",
+        TrainerImportFailureKind.ZipSlipRejected => "检测到不安全路径或符号链接",
+        TrainerImportFailureKind.SizeLimitExceeded => "文件体积超过安全上限",
+        TrainerImportFailureKind.AntivirusQuarantined => "文件被杀毒软件拦截或隔离",
+        TrainerImportFailureKind.SmartAppControlBlocked => "受 Smart App Control 策略拦截",
+        TrainerImportFailureKind.MultipleExecutablesSelectionRequired => "需手动选择主修改器程序",
+        TrainerImportFailureKind.IntegrityHashMismatch => "文件 SHA-256 校验不一致",
+        TrainerImportFailureKind.UnsupportedArchiveFormat => "不支持的压缩包格式",
+        TrainerImportFailureKind.Cancelled => "操作已取消",
+        _ => "导入未完成",
     };
 
     public static string FormatDefenderStatusBadge(DefenderExclusionStatus status) => status switch
@@ -163,4 +245,72 @@ public static class UiFormatters
         OverlaySoundPreset.CustomWav => "自定义 WAV 音频文件",
         _ => "Steam 原版同款音效（推荐）",
     };
+
+    public static string FormatSaveTriggerLabel(SaveSnapshotTriggerKind trigger) => trigger switch
+    {
+        SaveSnapshotTriggerKind.Manual => "手动备份",
+        SaveSnapshotTriggerKind.ManualPin => "手动固定",
+        SaveSnapshotTriggerKind.AutoQuiescent => "静默热备",
+        SaveSnapshotTriggerKind.PostExit => "退出自动",
+        SaveSnapshotTriggerKind.PreRollbackSafety => "回滚安全点",
+        SaveSnapshotTriggerKind.PreBranchSwitchSafety => "切分支安全点",
+        SaveSnapshotTriggerKind.PreTrainerImport => "修改器前导入",
+        SaveSnapshotTriggerKind.CloudPull => "云端拉取",
+        SaveSnapshotTriggerKind.CloudDivergenceBackup => "分叉保留备份",
+        SaveSnapshotTriggerKind.BranchFork => "分支起点",
+        _ => "存档快照",
+    };
+
+    public static string FormatSaveFileCategoryTag(SaveFileCategory category) => category switch
+    {
+        SaveFileCategory.Save => "[save]",
+        SaveFileCategory.Config => "[config]",
+        SaveFileCategory.RegistryExport => "[registry]",
+        _ => "[save]",
+    };
+
+    public static string FormatCloudProviderLabel(CloudSyncProviderType provider) => provider switch
+    {
+        CloudSyncProviderType.LocalFolder => "本地同步目录 / 网盘",
+        CloudSyncProviderType.WebDav => "WebDAV 服务器",
+        CloudSyncProviderType.S3 => "S3 / R2 对象存储",
+        _ => "本地同步目录",
+    };
+
+    public static string FormatCloudSyncRelationLabel(CloudSyncRelation relation) => relation switch
+    {
+        CloudSyncRelation.NotConfigured => "未配置云端端点",
+        CloudSyncRelation.UpToDate => "已与云端同步",
+        CloudSyncRelation.FastForwardPush => "本机领先 · 可推送至云端",
+        CloudSyncRelation.FastForwardPull => "云端有新进度 · 可拉取",
+        CloudSyncRelation.Diverged => "发现双端分叉冲突",
+        CloudSyncRelation.Error => "云同步异常",
+        _ => "未知状态",
+    };
+
+    public static string FormatSaveWatcherStatusLabel(SaveWatcherStatusKind status) => status switch
+    {
+        SaveWatcherStatusKind.Watching => "实时监听中",
+        SaveWatcherStatusKind.Debouncing => "检测到写入 · 静默防撕裂等待中",
+        SaveWatcherStatusKind.Capturing => "正在增量备份快照…",
+        SaveWatcherStatusKind.Error => "监听异常",
+        _ => "待机未监听",
+    };
+
+    public static string FormatDeduplicationPercent(double ratio)
+    {
+        double pct = Math.Clamp(ratio, 0.0, 1.0) * 100.0;
+        return string.Create(CultureInfo.InvariantCulture, $"去重节省 {pct:0.0}%");
+    }
+
+    public static string FormatByteDelta(long deltaBytes)
+    {
+        if (deltaBytes == 0)
+        {
+            return "±0 B";
+        }
+
+        string sign = deltaBytes > 0 ? "+" : "-";
+        return $"{sign}{FormatByteSize(Math.Abs(deltaBytes))}";
+    }
 }

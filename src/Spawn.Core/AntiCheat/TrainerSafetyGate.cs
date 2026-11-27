@@ -223,6 +223,20 @@ public sealed class TrainerSafetyGate : ITrainerSafetyGate, IDisposable
         bool strictVanguardMode = false,
         CancellationToken ct = default)
     {
+        TrainerGameSafetySnapshot snapshot = await EvaluateGameSafetySnapshotAsync(game, strictVanguardMode, ct)
+            .ConfigureAwait(false);
+        return snapshot.AllowanceDecision;
+    }
+
+    /// <summary>
+    /// Runs static four-layer inspection, a single live read-only anti-cheat probe, controlled offline bypass
+    /// evaluation, and final allowance judgment in one consolidated pass without duplicate live OS probes.
+    /// </summary>
+    public async Task<TrainerGameSafetySnapshot> EvaluateGameSafetySnapshotAsync(
+        GameRecord game,
+        bool strictVanguardMode = false,
+        CancellationToken ct = default)
+    {
         ArgumentNullException.ThrowIfNull(game);
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
 
@@ -232,6 +246,33 @@ public sealed class TrainerSafetyGate : ITrainerSafetyGate, IDisposable
         var bypass = await EvaluateOfflineBypassCoreAsync(game, fourLayer, live, ct).ConfigureAwait(false);
         var guardSnapshot = _antiCheatGuard.CurrentSnapshot;
 
+        TrainerAllowanceDecision decision = BuildAllowanceDecision(
+            game,
+            fourLayer,
+            staticTier,
+            live,
+            bypass,
+            guardSnapshot,
+            strictVanguardMode);
+
+        return new TrainerGameSafetySnapshot
+        {
+            FourLayerReport = fourLayer,
+            LiveProbe = live,
+            OfflineBypass = bypass,
+            AllowanceDecision = decision,
+        };
+    }
+
+    private static TrainerAllowanceDecision BuildAllowanceDecision(
+        GameRecord game,
+        FourLayerAntiCheatReport fourLayer,
+        AntiCheatTier staticTier,
+        LiveAntiCheatProbeReport live,
+        VerifiedOfflineBypass bypass,
+        AntiCheatGuardSnapshot guardSnapshot,
+        bool strictVanguardMode)
+    {
         // 1. Static Tier 1 & Tier 3 are permanently locked out of trainers (D-27).
         if (staticTier is AntiCheatTier.Tier1 or AntiCheatTier.Tier3)
         {
@@ -251,22 +292,45 @@ public sealed class TrainerSafetyGate : ITrainerSafetyGate, IDisposable
             };
         }
 
-        // 2. Non-single-player Tier 2 games are also permanently blocked (D-27).
+        // 2. Tier 2 without confirmed single-player eligibility: fail closed, while honestly distinguishing
+        //    confirmed multiplayer-only titles (permanent ban) from offline/unverifiable checks (retry when online).
         if (staticTier == AntiCheatTier.Tier2 && !bypass.IsEligible)
         {
+            bool isConfirmedMultiplayerOnly = fourLayer.IsMultiplayerOnly || fourLayer.HasSinglePlayerCategory == false;
+            bool isOfflineVerificationPending = !isConfirmedMultiplayerOnly
+                && fourLayer.HasSinglePlayerCategory is null
+                && (fourLayer.OfflineConservativeFallbackApplied || game.SteamAppId is > 0);
+
+            string tier2BlockMessage;
+            if (bypass.WasAutoInvalidated && !string.IsNullOrWhiteSpace(bypass.InvalidationReason))
+            {
+                tier2BlockMessage = bypass.InvalidationReason!;
+            }
+            else if (isConfirmedMultiplayerOnly)
+            {
+                tier2BlockMessage = "目标游戏确认为无单人模式的纯多人 Tier 2 受保护游戏，永久禁止启用修改器。";
+            }
+            else if (isOfflineVerificationPending)
+            {
+                tier2BlockMessage = "当前离线无法联网核验该 Tier 2 游戏是否具备单人模式资格（离线保守拦截，请联网后点击重试）。";
+            }
+            else
+            {
+                tier2BlockMessage = "未能确认该 Tier 2 游戏是否具备单人模式资格（离线保守拦截，请联网核验或补充 Steam AppID 后重试）。";
+            }
+
             return new TrainerAllowanceDecision
             {
                 Outcome = TrainerAllowanceOutcome.BlockedByTier,
                 IsAllowed = false,
-                Message = bypass.WasAutoInvalidated && !string.IsNullOrWhiteSpace(bypass.InvalidationReason)
-                    ? bypass.InvalidationReason!
-                    : "目标游戏为无单人模式的 Tier 2 受保护多人游戏，永久禁止启用修改器。",
+                Message = tier2BlockMessage,
                 StaticGameTier = staticTier,
                 GuardPhase = guardSnapshot.Phase,
                 RemainingCooldownSeconds = guardSnapshot.RemainingCooldownSeconds,
                 CanConfirmOfflineBypass = false,
                 IsVanguardIdleWarning = live.IsVanguardKernelIdleLoaded,
                 UsedVerifiedOfflineBypass = false,
+                IsOfflineSinglePlayerVerificationPending = !isConfirmedMultiplayerOnly && !bypass.WasAutoInvalidated,
                 DetectedAntiCheatProcesses = live.ActiveAntiCheatProcesses,
                 DetectedAntiCheatDrivers = live.ActiveSessionAntiCheatDrivers,
             };
@@ -280,7 +344,7 @@ public sealed class TrainerSafetyGate : ITrainerSafetyGate, IDisposable
         {
             string guardReason = guardSnapshot.Phase == AntiCheatGuardPhase.CooldownLocked
                 ? $"反作弊安全守卫处于 15 秒余温冷却锁定态（剩余 {guardSnapshot.RemainingCooldownSeconds:0.0} 秒），禁止启用修改器。"
-                : $"反作弊安全守卫处于全局锁定态 [{guardSnapshot.Phase}]，禁止启用修改器。";
+                : $"反作弊安全守卫处于全局锁定态（{FormatGuardPhaseLabel(guardSnapshot.Phase)}），禁止启用修改器。";
 
             return new TrainerAllowanceDecision
             {
@@ -406,6 +470,15 @@ public sealed class TrainerSafetyGate : ITrainerSafetyGate, IDisposable
             DetectedAntiCheatDrivers = [],
         };
     }
+
+    private static string FormatGuardPhaseLabel(AntiCheatGuardPhase phase) => phase switch
+    {
+        AntiCheatGuardPhase.IdleSafe => "安全空闲",
+        AntiCheatGuardPhase.ProtectedRunning => "受保护游戏运行中",
+        AntiCheatGuardPhase.ResidualGuardWatch => "等待反作弊残影退出",
+        AntiCheatGuardPhase.CooldownLocked => "15 秒余温冷却锁定",
+        _ => "安全锁定",
+    };
 
     public void NotifyTrainerSessionStarted(string sessionId, string gameId)
     {
@@ -586,7 +659,7 @@ public sealed class TrainerSafetyGate : ITrainerSafetyGate, IDisposable
             var guardSnap = _antiCheatGuard.CurrentSnapshot;
             if (guardSnap.Phase != AntiCheatGuardPhase.IdleSafe)
             {
-                reasons.Add($"反作弊守卫进入锁定态 [{guardSnap.Phase}]");
+                reasons.Add($"反作弊守卫进入锁定态（{FormatGuardPhaseLabel(guardSnap.Phase)}）");
                 triggeringGameId ??= guardSnap.ActiveProtectedGameId;
             }
 

@@ -103,3 +103,17 @@ jobs:
 
       - name: Run Architecture IAT & Core test suites (headless, temp-isolated)
         run: dotnet test Spawn.sln -c Release --no-build -nologo --verbosity normal
+
+      # Kept after `dotnet test` so CI never runs the installer inside unit tests;
+      # compiles installer/spawn.nsi with -WX across all identities and shortcut modes.
+      - name: Cache pinned NSIS 3.13
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .tools/nsis-3.13
+          key: ${{ runner.os }}-nsis-3.13-ba63dffc4410ee89193e1cb5a41989991bd77c61068da17e3156d136b7b0b3d8
+
+      - name: Fetch pinned NSIS 3.13
+        run: python -B scripts/package.py --fetch-nsis
+
+      - name: Compile-check installer/spawn.nsi (all identities, -WX, no install)
+        run: python -B scripts/package.py --check-nsis

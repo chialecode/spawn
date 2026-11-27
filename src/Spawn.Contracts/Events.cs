@@ -34,7 +34,9 @@ public sealed record ActiveGameSessionChangedEvent(
     ActiveGameSession? Session,
     PlaySessionActivityState CurrentState,
     PlaySessionRecord? CompletedSession = null,
-    DateTimeOffset? OccurredUtc = null)
+    DateTimeOffset? OccurredUtc = null,
+    bool LaunchedViaSteam = false,
+    bool SuppressAchievementToast = false)
 {
     public DateTimeOffset EffectiveOccurredUtc => OccurredUtc ?? DateTimeOffset.UtcNow;
 }

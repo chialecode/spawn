@@ -1,5 +1,3 @@
-using Microsoft.Win32;
-
 namespace Spawn.Core;
 
 /// <summary>
@@ -19,7 +17,7 @@ public sealed record SteamClientSoundProbeResult(
 
 /// <summary>
 /// Clean-Host compliant, zero-hardcoded-path locator that discovers the local Steam client installation
-/// via standard Windows registry keys and special folders to resolve the achievement toast sound.
+/// via <see cref="SteamClientLocator"/> to resolve the achievement toast sound.
 /// <para>
 /// The Steam client maps its <c>ToastAchievement</c> sound to <c>steamui\sounds\desktop_toast_default.wav</c> in the regular
 /// desktop UI and only to <c>deck_ui_achievement_toast.wav</c> in Big Picture / Steam Deck gamepad UI. SPAWN therefore prefers
@@ -91,88 +89,19 @@ public static class SteamClientSoundLocator
 
     public static IReadOnlyList<string> EnumerateCandidateSteamDirectories(string? explicitSteamRootOverride = null)
     {
-        var candidates = new List<string>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        void TryAddCandidate(string? rawPath)
+        IReadOnlyList<(string Directory, Contracts.SteamPathDiscoverySource Source)> discovered =
+            SteamClientLocator.Default.EnumerateCandidateInstallDirectories(explicitSteamRootOverride);
+        if (discovered.Count == 0)
         {
-            if (string.IsNullOrWhiteSpace(rawPath))
-            {
-                return;
-            }
-
-            try
-            {
-                string normalized = Path.TrimEndingDirectorySeparator(
-                    Path.GetFullPath(rawPath.Trim().Trim('"').Replace('/', Path.DirectorySeparatorChar)));
-                if (Directory.Exists(normalized) && seen.Add(normalized))
-                {
-                    candidates.Add(normalized);
-                }
-            }
-            catch
-            {
-                // Ignore malformed registry path strings.
-            }
+            return [];
         }
 
-        if (!string.IsNullOrWhiteSpace(explicitSteamRootOverride))
+        var candidates = new List<string>(discovered.Count);
+        for (int i = 0; i < discovered.Count; i++)
         {
-            TryAddCandidate(explicitSteamRootOverride);
-            return candidates;
-        }
-
-        // 1. HKCU\Software\Valve\Steam ("SteamPath" and "SteamExe")
-        TryAddCandidate(TryReadRegistryString(RegistryHive.CurrentUser, RegistryView.Default, @"Software\Valve\Steam", "SteamPath"));
-        string? hkcuExe = TryReadRegistryString(RegistryHive.CurrentUser, RegistryView.Default, @"Software\Valve\Steam", "SteamExe");
-        if (!string.IsNullOrWhiteSpace(hkcuExe))
-        {
-            try
-            {
-                TryAddCandidate(Path.GetDirectoryName(hkcuExe.Trim().Trim('"').Replace('/', Path.DirectorySeparatorChar)));
-            }
-            catch
-            {
-                // Ignore malformed SteamExe value.
-            }
-        }
-
-        // 2. HKLM\SOFTWARE\WOW6432Node\Valve\Steam & HKLM\SOFTWARE\Valve\Steam ("InstallPath")
-        TryAddCandidate(TryReadRegistryString(RegistryHive.LocalMachine, RegistryView.Registry32, @"SOFTWARE\Valve\Steam", "InstallPath"));
-        TryAddCandidate(TryReadRegistryString(RegistryHive.LocalMachine, RegistryView.Registry64, @"SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath"));
-        TryAddCandidate(TryReadRegistryString(RegistryHive.LocalMachine, RegistryView.Registry64, @"SOFTWARE\Valve\Steam", "InstallPath"));
-
-        // 3. Standard ProgramFiles(x86)\Steam & ProgramFiles\Steam fallbacks
-        string progX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
-        if (!string.IsNullOrWhiteSpace(progX86))
-        {
-            TryAddCandidate(Path.Combine(progX86, "Steam"));
-        }
-
-        string progX64 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-        if (!string.IsNullOrWhiteSpace(progX64))
-        {
-            TryAddCandidate(Path.Combine(progX64, "Steam"));
+            candidates.Add(discovered[i].Directory);
         }
 
         return candidates;
-    }
-
-    private static string? TryReadRegistryString(
-        RegistryHive hive,
-        RegistryView view,
-        string subKeyPath,
-        string valueName)
-    {
-        try
-        {
-            using var baseKey = RegistryKey.OpenBaseKey(hive, view);
-            using var subKey = baseKey.OpenSubKey(subKeyPath, writable: false);
-            return subKey?.GetValue(valueName) as string;
-        }
-        catch
-        {
-            return null;
-        }
     }
 }

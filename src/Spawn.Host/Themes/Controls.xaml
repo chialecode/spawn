@@ -211,6 +211,23 @@
                             </MultiTrigger.Conditions>
                             <Setter TargetName="Bd" Property="Background" Value="{DynamicResource DangerSolidPressedBrush}" />
                         </MultiTrigger>
+                        <Trigger Property="Tag" Value="WaitingSteam">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource WarningAmberBrush}" />
+                        </Trigger>
+                        <MultiTrigger>
+                            <MultiTrigger.Conditions>
+                                <Condition Property="Tag" Value="WaitingSteam" />
+                                <Condition Property="IsMouseOver" Value="True" />
+                            </MultiTrigger.Conditions>
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource DangerSolidBrush}" />
+                        </MultiTrigger>
+                        <MultiTrigger>
+                            <MultiTrigger.Conditions>
+                                <Condition Property="Tag" Value="WaitingSteam" />
+                                <Condition Property="IsPressed" Value="True" />
+                            </MultiTrigger.Conditions>
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource DangerSolidPressedBrush}" />
+                        </MultiTrigger>
                         <Trigger Property="IsEnabled" Value="False">
                             <Setter TargetName="Bd" Property="Background" Value="{DynamicResource DisabledSurfaceBrush}" />
                             <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource DisabledBorderBrush}" />

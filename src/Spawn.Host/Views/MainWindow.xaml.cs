@@ -31,6 +31,8 @@ public partial class MainWindow : Window
     private readonly MainWindowViewModel _viewModel;
     private readonly TrayIconService _trayService;
     private readonly Action _requestApplicationShutdown;
+    private readonly ISteamClientLocator _steamClientLocator;
+    private readonly ISteamShortcutService _steamShortcutService;
     private readonly HashSet<Popup> _openPopups = [];
     private readonly DispatcherTimer _placementSaveDebounceTimer;
     private HwndSource? _hwndSource;
@@ -52,7 +54,9 @@ public partial class MainWindow : Window
     public MainWindow(
         MainWindowViewModel viewModel,
         TrayIconService trayService,
-        Action requestApplicationShutdown)
+        Action requestApplicationShutdown,
+        ISteamClientLocator? steamClientLocator = null,
+        ISteamShortcutService? steamShortcutService = null)
     {
         ArgumentNullException.ThrowIfNull(viewModel);
         ArgumentNullException.ThrowIfNull(trayService);
@@ -61,6 +65,8 @@ public partial class MainWindow : Window
         _viewModel = viewModel;
         _trayService = trayService;
         _requestApplicationShutdown = requestApplicationShutdown;
+        _steamClientLocator = steamClientLocator ?? viewModel.SteamClientLocator;
+        _steamShortcutService = steamShortcutService ?? viewModel.SteamShortcutService;
         DataContext = _viewModel;
 
         InitializeComponent();
@@ -74,6 +80,7 @@ public partial class MainWindow : Window
 
         _viewModel.ConfirmPromptHandler = ShowNativeConfirmDialog;
         _viewModel.EditGamePropertiesHandler = ShowGamePropertiesDialog;
+        _viewModel.SteamBlockedPromptHandler = ShowSteamBlockedDialog;
 
         _placementSaveDebounceTimer = new DispatcherTimer(DispatcherPriority.Background, Dispatcher)
         {
@@ -884,6 +891,14 @@ public partial class MainWindow : Window
         }
     }
 
+    private void OnSteamBrowseMenuButtonClick(object sender, RoutedEventArgs e)
+    {
+        if (SteamBrowsePopup is not null)
+        {
+            SteamBrowsePopup.IsOpen = !SteamBrowsePopup.IsOpen;
+        }
+    }
+
     private void OnWindowPreviewKeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.Escape)
@@ -1065,7 +1080,8 @@ public partial class MainWindow : Window
 
     private bool ShowNativeConfirmDialog(ShellConfirmPrompt prompt)
     {
-        var dialog = CreateThemedModalWindow(prompt.Title, width: 460);
+        double dialogWidth = prompt.Message.Length > 200 ? 540 : 460;
+        var dialog = CreateThemedModalWindow(prompt.Title, width: dialogWidth);
 
         var root = new StackPanel { Margin = new Thickness(22, 18, 22, 20) };
 
@@ -1078,15 +1094,22 @@ public partial class MainWindow : Window
             TextWrapping = TextWrapping.Wrap,
         });
 
-        root.Children.Add(new TextBlock
+        var messageViewer = new ScrollViewer
         {
-            Text = prompt.Message,
-            FontSize = 13,
-            LineHeight = 20,
-            Foreground = ResolveThemeBrush("SecondaryTextBrush", Colors.DimGray),
-            TextWrapping = TextWrapping.Wrap,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            MaxHeight = Math.Max(260, SystemParameters.WorkArea.Height - 240),
             Margin = new Thickness(0, 10, 0, 20),
-        });
+            Content = new TextBlock
+            {
+                Text = prompt.Message,
+                FontSize = 13,
+                LineHeight = 20,
+                Foreground = ResolveThemeBrush("SecondaryTextBrush", Colors.DimGray),
+                TextWrapping = TextWrapping.Wrap,
+            },
+        };
+        root.Children.Add(messageViewer);
 
         var actions = new StackPanel
         {
@@ -1128,16 +1151,112 @@ public partial class MainWindow : Window
         return dialog.ShowDialog() == true;
     }
 
+    private bool ShowSteamBlockedDialog(ShellSteamBlockedPrompt prompt)
+    {
+        var dialog = CreateThemedModalWindow(prompt.Title, width: 490);
+        var root = new StackPanel { Margin = new Thickness(22, 18, 22, 20) };
+
+        root.Children.Add(new TextBlock
+        {
+            Text = prompt.Title,
+            FontSize = 16,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = ResolveThemeBrush("PrimaryTextBrush", Colors.Black),
+            TextWrapping = TextWrapping.Wrap,
+        });
+
+        root.Children.Add(new TextBlock
+        {
+            Text = prompt.Message,
+            FontSize = 13,
+            LineHeight = 20,
+            Foreground = ResolveThemeBrush("SecondaryTextBrush", Colors.DimGray),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 10, 0, 20),
+        });
+
+        var actions = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+        };
+
+        if (prompt.CanOpenSteamSettings)
+        {
+            var closeBtn = new Button
+            {
+                Content = "关闭",
+                IsCancel = true,
+                Margin = new Thickness(0, 0, 10, 0),
+                Style = ResolveStyle("SecondaryCapsuleButtonStyle"),
+            };
+            closeBtn.Click += (_, _) =>
+            {
+                dialog.DialogResult = false;
+                dialog.Close();
+            };
+
+            var openSettingsBtn = new Button
+            {
+                Content = "前往设置 → 常规与游戏库",
+                IsDefault = true,
+                Style = ResolveStyle("PrimaryCapsuleButtonStyle"),
+            };
+            openSettingsBtn.Click += (_, _) =>
+            {
+                dialog.DialogResult = true;
+                dialog.Close();
+            };
+
+            actions.Children.Add(closeBtn);
+            actions.Children.Add(openSettingsBtn);
+        }
+        else
+        {
+            var okBtn = new Button
+            {
+                Content = "我知道了",
+                IsDefault = true,
+                IsCancel = true,
+                Style = ResolveStyle("PrimaryCapsuleButtonStyle"),
+            };
+            okBtn.Click += (_, _) =>
+            {
+                dialog.DialogResult = false;
+                dialog.Close();
+            };
+
+            actions.Children.Add(okBtn);
+        }
+
+        root.Children.Add(actions);
+        dialog.Content = root;
+        return dialog.ShowDialog() == true;
+    }
+
     private GamePropertiesEditResult? ShowGamePropertiesDialog(GamePropertiesEditRequest req)
     {
-        var dialog = CreateThemedModalWindow($"游戏属性与启动设置 · {req.Title}", width: 580);
+        var dialog = CreateThemedModalWindow($"游戏属性与启动设置 · {req.Title}", width: 610);
+        dialog.MaxHeight = Math.Max(560, SystemParameters.WorkArea.Height - 60);
+
         FontFamily monoFont = TryFindResource("SpawnMonoFont") as FontFamily ?? FontFamily;
         Brush secondaryBrush = ResolveThemeBrush("SecondaryTextBrush", Colors.DimGray);
+        Brush mutedBrush = ResolveThemeBrush("MutedTextBrush", Colors.Gray);
         Brush primaryBrush = ResolveThemeBrush("PrimaryTextBrush", Colors.Black);
         Brush inputBg = ResolveThemeBrush("CapsuleInputBackgroundBrush", Colors.White);
         Brush borderBrush = ResolveThemeBrush("ControlBorderBrush", Colors.LightGray);
         Brush accentBrush = ResolveThemeBrush("AccentBrush", Colors.RoyalBlue);
         Brush dangerBrush = ResolveThemeBrush("Tier23BadgeForegroundBrush", Colors.Firebrick);
+        Brush runningGreenBrush = ResolveThemeBrush("RunningGreenBrush", Colors.SeaGreen);
+        Brush warningAmberBrush = ResolveThemeBrush("WarningAmberBrush", Colors.DarkGoldenrod);
+        Brush infoBgBrush = ResolveThemeBrush("InfoBannerBackgroundBrush", Colors.AliceBlue);
+        Brush infoBorderBrush = ResolveThemeBrush("InfoBannerBorderBrush", Colors.LightSteelBlue);
+        Brush warningBgBrush = ResolveThemeBrush("WarningSoftBannerBackgroundBrush", Colors.Cornsilk);
+        Brush warningBorderBrush = ResolveThemeBrush("WarningSoftBannerBorderBrush", Colors.Khaki);
+        Brush dangerBgBrush = ResolveThemeBrush("DangerSoftBannerBackgroundBrush", Colors.MistyRose);
+        Brush dangerBorderBrush = ResolveThemeBrush("DangerSoftBannerBorderBrush", Colors.LightCoral);
+        Brush subtleBgBrush = ResolveThemeBrush("SubtleSurfaceBrush", Colors.WhiteSmoke);
+        Brush dividerBrush = ResolveThemeBrush("DividerBrush", Colors.Gainsboro);
 
         TextBox CreateInput(string initialText, bool mono = false) => new()
         {
@@ -1163,18 +1282,35 @@ public partial class MainWindow : Window
             Margin = new Thickness(0, topMargin, 0, 4),
         };
 
-        var root = new StackPanel { Margin = new Thickness(22, 16, 22, 20) };
+        var outerGrid = new Grid { Margin = new Thickness(22, 16, 22, 20) };
+        outerGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        outerGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        outerGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
-        root.Children.Add(new TextBlock
+        var headerText = new TextBlock
         {
             Text = "游戏属性与启动设置",
             FontSize = 17,
             FontWeight = FontWeights.SemiBold,
             Foreground = primaryBrush,
-        });
+            Margin = new Thickness(0, 0, 0, 4),
+        };
+        Grid.SetRow(headerText, 0);
+        outerGrid.Children.Add(headerText);
+
+        var root = new StackPanel { Margin = new Thickness(0, 0, 4, 4) };
+        var contentScroll = new ScrollViewer
+        {
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            MaxHeight = Math.Max(380, SystemParameters.WorkArea.Height - 210),
+            Content = root,
+        };
+        Grid.SetRow(contentScroll, 1);
+        outerGrid.Children.Add(contentScroll);
 
         // 1. Title
-        root.Children.Add(CreateLabel("游戏标题", topMargin: 12));
+        root.Children.Add(CreateLabel("游戏标题", topMargin: 8));
         TextBox titleBox = CreateInput(req.Title);
         root.Children.Add(titleBox);
 
@@ -1289,6 +1425,406 @@ public partial class MainWindow : Window
         idsGrid.Children.Add(gogPanel);
         root.Children.Add(idsGrid);
 
+        // 4b. Per-Game Launch Mode (Direct vs Launch via Steam / Steam Input)
+        GameSteamLaunchSettings initialSteamSettings = req.SteamLaunchSettings ?? new GameSteamLaunchSettings();
+        root.Children.Add(CreateLabel("启动方式"));
+
+        var launchModeOptions = new[]
+        {
+            new NamedOption<GameLaunchMode>(GameLaunchMode.Direct, "直接启动（默认）"),
+            new NamedOption<GameLaunchMode>(GameLaunchMode.Steam, "通过 Steam 启动（Steam Input 手柄映射）"),
+        };
+
+        var launchModeCombo = new ComboBox
+        {
+            Height = 34,
+            ItemsSource = launchModeOptions,
+            DisplayMemberPath = nameof(NamedOption<GameLaunchMode>.Label),
+            SelectedValuePath = nameof(NamedOption<GameLaunchMode>.Value),
+            SelectedValue = initialSteamSettings.LaunchMode,
+        };
+        root.Children.Add(launchModeCombo);
+
+        var steamContextPanel = new StackPanel { Margin = new Thickness(0, 8, 0, 0) };
+        root.Children.Add(steamContextPanel);
+
+        var tierBlockedBanner = new Border
+        {
+            CornerRadius = new CornerRadius(8),
+            Background = dangerBgBrush,
+            BorderBrush = dangerBorderBrush,
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(11, 8, 11, 8),
+            Visibility = Visibility.Collapsed,
+        };
+        var tierBlockedText = new TextBlock
+        {
+            FontSize = 12,
+            LineHeight = 18,
+            Foreground = dangerBrush,
+            TextWrapping = TextWrapping.Wrap,
+        };
+        tierBlockedBanner.Child = tierBlockedText;
+        steamContextPanel.Children.Add(tierBlockedBanner);
+
+        var officialSteamBanner = new Border
+        {
+            CornerRadius = new CornerRadius(8),
+            Background = infoBgBrush,
+            BorderBrush = infoBorderBrush,
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(11, 8, 11, 8),
+            Visibility = Visibility.Collapsed,
+        };
+        var officialSteamText = new TextBlock
+        {
+            FontSize = 12,
+            LineHeight = 18,
+            Foreground = primaryBrush,
+            TextWrapping = TextWrapping.Wrap,
+        };
+        officialSteamBanner.Child = officialSteamText;
+        steamContextPanel.Children.Add(officialSteamBanner);
+
+        var nonSteamOptionsPanel = new StackPanel
+        {
+            Visibility = Visibility.Collapsed,
+        };
+
+        var useAppIdNameCheckBox = new CheckBox
+        {
+            Content = "使用 Steam AppID 作为快捷方式名（解锁 Steam 社区手柄布局）",
+            IsChecked = initialSteamSettings.UseSteamAppIdAsShortcutName,
+            FontSize = 12.5,
+            Margin = new Thickness(0, 2, 0, 0),
+        };
+        nonSteamOptionsPanel.Children.Add(useAppIdNameCheckBox);
+
+        var missingAppIdHintText = new TextBlock
+        {
+            Text = "提示：请先在上方填写正整数 Steam AppID 后方可启用社区手柄布局匹配。",
+            FontSize = 11.5,
+            Foreground = mutedBrush,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(23, 3, 0, 0),
+            Visibility = Visibility.Collapsed,
+        };
+        nonSteamOptionsPanel.Children.Add(missingAppIdHintText);
+        steamContextPanel.Children.Add(nonSteamOptionsPanel);
+
+        var steamLiveStatusBorder = new Border
+        {
+            CornerRadius = new CornerRadius(8),
+            Background = subtleBgBrush,
+            BorderBrush = dividerBrush,
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(11, 8, 11, 8),
+            Margin = new Thickness(0, 8, 0, 0),
+            Visibility = Visibility.Collapsed,
+        };
+        var steamLiveStatusText = new TextBlock
+        {
+            FontSize = 12,
+            LineHeight = 18,
+            Foreground = secondaryBrush,
+            TextWrapping = TextWrapping.Wrap,
+        };
+        steamLiveStatusBorder.Child = steamLiveStatusText;
+        steamContextPanel.Children.Add(steamLiveStatusBorder);
+
+        var steamWarningsBorder = new Border
+        {
+            CornerRadius = new CornerRadius(8),
+            Background = warningBgBrush,
+            BorderBrush = warningBorderBrush,
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(11, 8, 11, 8),
+            Margin = new Thickness(0, 8, 0, 0),
+            Visibility = Visibility.Collapsed,
+        };
+        var steamWarningsPanel = new StackPanel();
+        steamWarningsBorder.Child = steamWarningsPanel;
+        steamContextPanel.Children.Add(steamWarningsBorder);
+
+        CancellationTokenSource? steamPreviewCts = null;
+
+        int? TryParseCurrentSteamAppId()
+        {
+            string raw = steamIdBox.Text.Trim();
+            return int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int sid) && sid > 0
+                ? sid
+                : null;
+        }
+
+        GameLaunchMode GetSelectedLaunchMode() =>
+            launchModeCombo.SelectedValue is GameLaunchMode m ? m : GameLaunchMode.Direct;
+
+        void RefreshSteamLaunchSection(bool debounce = false)
+        {
+            steamPreviewCts?.Cancel();
+            steamPreviewCts?.Dispose();
+            steamPreviewCts = null;
+
+            int? parsedAppId = TryParseCurrentSteamAppId();
+            bool isOfficialSteam = req.PlatformSource == PlatformSource.SteamLocal && parsedAppId is > 0;
+            bool isNonSteamTier23 = !isOfficialSteam && req.AntiCheatTier >= AntiCheatTier.Tier2;
+            GameLaunchMode selectedMode = GetSelectedLaunchMode();
+
+            if (isNonSteamTier23)
+            {
+                if (selectedMode == GameLaunchMode.Direct)
+                {
+                    launchModeCombo.IsEnabled = false;
+                }
+                else
+                {
+                    launchModeCombo.IsEnabled = true;
+                }
+
+                tierBlockedText.Text =
+                    $"反作弊覆盖层隔离边界：当前游戏为非 Steam 来源且静态反作弊等级为 {req.AntiCheatTier}，"
+                    + "为防止 Steam 覆盖层注入与内核反作弊冲突，已禁止保存「通过 Steam 启动」（仅正版 Steam 本地库游戏支持通过 Steam 启动）。";
+                tierBlockedBanner.Visibility = Visibility.Visible;
+                officialSteamBanner.Visibility = Visibility.Collapsed;
+                nonSteamOptionsPanel.Visibility = Visibility.Collapsed;
+                steamLiveStatusBorder.Visibility = Visibility.Collapsed;
+                steamWarningsBorder.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            launchModeCombo.IsEnabled = true;
+            tierBlockedBanner.Visibility = Visibility.Collapsed;
+
+            if (selectedMode != GameLaunchMode.Steam)
+            {
+                officialSteamBanner.Visibility = Visibility.Collapsed;
+                nonSteamOptionsPanel.Visibility = Visibility.Collapsed;
+                steamLiveStatusBorder.Visibility = Visibility.Collapsed;
+                steamWarningsBorder.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            if (isOfficialSteam)
+            {
+                string tierNote = req.AntiCheatTier >= AntiCheatTier.Tier2
+                    ? $"\n反作弊保护：当前为 {req.AntiCheatTier}，经由 Steam 启动将强制执行高敏组件清场、Explorer 脱钩与退出后 15 秒安全冷却（忽略单机离线放行）。"
+                    : string.Empty;
+                officialSteamText.Text =
+                    $"将通过官方协议 steam://rungameid/{parsedAppId!.Value.ToString(CultureInfo.InvariantCulture)} 启动本机 Steam 客户端以启用 Steam Input 手柄映射。\n"
+                    + "无需修改 shortcuts.vdf，也不会重启 Steam 客户端。"
+                    + tierNote;
+                officialSteamBanner.Visibility = Visibility.Visible;
+                nonSteamOptionsPanel.Visibility = Visibility.Collapsed;
+            }
+            else
+            {
+                officialSteamBanner.Visibility = Visibility.Collapsed;
+                nonSteamOptionsPanel.Visibility = Visibility.Visible;
+                bool hasAppId = parsedAppId is > 0;
+                useAppIdNameCheckBox.IsEnabled = hasAppId;
+                if (!hasAppId && useAppIdNameCheckBox.IsChecked == true)
+                {
+                    useAppIdNameCheckBox.IsChecked = false;
+                }
+
+                missingAppIdHintText.Visibility = hasAppId ? Visibility.Collapsed : Visibility.Visible;
+            }
+
+            steamLiveStatusBorder.Visibility = Visibility.Visible;
+            steamLiveStatusText.Foreground = secondaryBrush;
+            steamLiveStatusText.Text = "正在检测 Steam 快捷方式状态与兼容性…";
+            steamWarningsBorder.Visibility = Visibility.Collapsed;
+
+            var cts = new CancellationTokenSource();
+            steamPreviewCts = cts;
+            CancellationToken ct = cts.Token;
+
+            string draftTitle = string.IsNullOrWhiteSpace(titleBox.Text) ? req.Title : titleBox.Text.Trim();
+            string draftExe = string.IsNullOrWhiteSpace(exeBox.Text) ? req.ExecutableRelPath : exeBox.Text.Trim();
+            string draftArgs = argsBox.Text.Trim();
+
+            var draftGame = new GameRecord
+            {
+                GameId = req.GameId,
+                Title = draftTitle,
+                InstallDir = req.InstallDir,
+                ExecutableRelPath = draftExe,
+                LaunchArguments = draftArgs,
+                PlatformSource = req.PlatformSource,
+                AntiCheatTier = req.AntiCheatTier,
+                AchievementCaptureMode = req.AchievementCaptureMode,
+                SteamAppId = parsedAppId,
+                GogGameId = gogIdBox.Text.Trim(),
+            };
+
+            var draftSettings = initialSteamSettings with
+            {
+                LaunchMode = GameLaunchMode.Steam,
+                UseSteamAppIdAsShortcutName = useAppIdNameCheckBox.IsChecked == true && parsedAppId is > 0 && !isOfficialSteam,
+            };
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    if (debounce)
+                    {
+                        await Task.Delay(150, ct).ConfigureAwait(false);
+                    }
+
+                    string? steamOverride = _viewModel.Settings.AppliedSteamInstallDirectoryOverride;
+                    uint? preferredAccountId = _viewModel.Settings.SelectedSteamTargetAccountId;
+
+                    SteamLaunchPreparationResult prep = req.PreviewSteamLaunchAsync is not null
+                        ? await req.PreviewSteamLaunchAsync(draftGame, draftSettings, ct).ConfigureAwait(false)
+                        : await _steamShortcutService.PrepareLaunchAsync(
+                            draftGame,
+                            draftSettings,
+                            steamOverride,
+                            preferredAccountId,
+                            ct).ConfigureAwait(false);
+
+                    string? targetAccountLabel = null;
+                    if (prep.TargetAccountId is > 0)
+                    {
+                        SteamClientDiscoveryResult discovery = _steamClientLocator.Discover(steamOverride, preferredAccountId);
+                        targetAccountLabel = discovery.Accounts
+                            .FirstOrDefault(a => a.AccountId == prep.TargetAccountId.Value)
+                            ?.DisplayLabel;
+                    }
+
+                    if (ct.IsCancellationRequested)
+                    {
+                        return;
+                    }
+
+                    await dialog.Dispatcher.InvokeAsync(() =>
+                    {
+                        if (ct.IsCancellationRequested || !dialog.IsVisible)
+                        {
+                            return;
+                        }
+
+                        string accountSuffix = !string.IsNullOrWhiteSpace(targetAccountLabel)
+                            ? $" · 账号：{targetAccountLabel}"
+                            : string.Empty;
+
+                        switch (prep.Status)
+                        {
+                            case SteamLaunchPreparationStatus.ReadyOfficialSteam:
+                                steamLiveStatusText.Foreground = runningGreenBrush;
+                                steamLiveStatusText.Text = $"Steam 客户端已就绪 · 将直接通过 {prep.LaunchUri} 启动";
+                                break;
+                            case SteamLaunchPreparationStatus.ReadyNonSteamShortcut:
+                                steamLiveStatusText.Foreground = runningGreenBrush;
+                                steamLiveStatusText.Text = !string.IsNullOrWhiteSpace(prep.ShortcutAppName)
+                                    ? $"已同步至 Steam 快捷方式（名称：{prep.ShortcutAppName}{accountSuffix}）· 启动时无需重启 Steam"
+                                    : $"已同步至 Steam 快捷方式{accountSuffix} · 启动时无需重启 Steam";
+                                break;
+                            case SteamLaunchPreparationStatus.NeedsShortcutWriteSteamClosed:
+                                steamLiveStatusText.Foreground = accentBrush;
+                                steamLiveStatusText.Text = $"首次启动将自动登记至 Steam 快捷方式{accountSuffix}（当前 Steam 未运行，无需重启）";
+                                break;
+                            case SteamLaunchPreparationStatus.NeedsSteamRestartToSync:
+                                steamLiveStatusText.Foreground = warningAmberBrush;
+                                steamLiveStatusText.Text = initialSteamSettings.RegisteredShortcutAppId is > 0
+                                    ? $"检测到快捷方式配置有更新{accountSuffix}；若 Steam 运行中，下次启动前会先询问是否优雅重启以同步"
+                                    : $"首次启动将自动登记{accountSuffix}，若 Steam 运行中会先询问是否优雅重启";
+                                break;
+                            default:
+                                steamLiveStatusText.Foreground = dangerBrush;
+                                steamLiveStatusText.Text = prep.ErrorMessage ?? "当前无法通过 Steam 启动，请检查 Steam 客户端配置。";
+                                break;
+                        }
+
+                        steamWarningsPanel.Children.Clear();
+                        if (prep.Warnings.Count > 0)
+                        {
+                            steamWarningsPanel.Children.Add(new TextBlock
+                            {
+                                Text = "兼容性提示（不阻塞启动）：",
+                                FontSize = 12,
+                                FontWeight = FontWeights.SemiBold,
+                                Foreground = warningAmberBrush,
+                                Margin = new Thickness(0, 0, 0, 4),
+                            });
+
+                            foreach (SteamLaunchWarning warning in prep.Warnings)
+                            {
+                                steamWarningsPanel.Children.Add(new TextBlock
+                                {
+                                    Text = $"• {warning.Message}",
+                                    FontSize = 11.5,
+                                    LineHeight = 17,
+                                    Foreground = primaryBrush,
+                                    TextWrapping = TextWrapping.Wrap,
+                                    Margin = new Thickness(0, 2, 0, 0),
+                                });
+                            }
+
+                            steamWarningsBorder.Visibility = Visibility.Visible;
+                        }
+                        else
+                        {
+                            steamWarningsBorder.Visibility = Visibility.Collapsed;
+                        }
+                    });
+                }
+                catch (OperationCanceledException)
+                {
+                    // Superseded by newer input or dialog closed.
+                }
+                catch (Exception ex)
+                {
+                    if (!ct.IsCancellationRequested)
+                    {
+                        _ = dialog.Dispatcher.InvokeAsync(() =>
+                        {
+                            if (!ct.IsCancellationRequested && dialog.IsVisible)
+                            {
+                                steamLiveStatusText.Foreground = dangerBrush;
+                                steamLiveStatusText.Text = $"检测 Steam 快捷方式状态失败：{ex.Message}";
+                            }
+                        });
+                    }
+                }
+            }, ct);
+        }
+
+        launchModeCombo.SelectionChanged += (_, _) => RefreshSteamLaunchSection();
+        useAppIdNameCheckBox.Checked += (_, _) => RefreshSteamLaunchSection();
+        useAppIdNameCheckBox.Unchecked += (_, _) => RefreshSteamLaunchSection();
+        steamIdBox.TextChanged += (_, _) => RefreshSteamLaunchSection(debounce: true);
+        titleBox.TextChanged += (_, _) =>
+        {
+            if (GetSelectedLaunchMode() == GameLaunchMode.Steam)
+            {
+                RefreshSteamLaunchSection(debounce: true);
+            }
+        };
+        exeBox.TextChanged += (_, _) =>
+        {
+            if (GetSelectedLaunchMode() == GameLaunchMode.Steam)
+            {
+                RefreshSteamLaunchSection(debounce: true);
+            }
+        };
+        argsBox.TextChanged += (_, _) =>
+        {
+            if (GetSelectedLaunchMode() == GameLaunchMode.Steam)
+            {
+                RefreshSteamLaunchSection(debounce: true);
+            }
+        };
+
+        dialog.Loaded += (_, _) => RefreshSteamLaunchSection();
+        dialog.Closed += (_, _) =>
+        {
+            steamPreviewCts?.Cancel();
+            steamPreviewCts?.Dispose();
+            steamPreviewCts = null;
+        };
+
         // 5. Custom Cover Image & Icon Image
         Grid CreateImagePickerRow(string initialPath, out TextBox box)
         {
@@ -1397,21 +1933,23 @@ public partial class MainWindow : Window
         dirRow.Children.Add(openDirBtn);
         root.Children.Add(dirRow);
 
+        var footerContainer = new StackPanel();
         var validationText = new TextBlock
         {
             FontSize = 12,
             Foreground = dangerBrush,
+            TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 10, 0, 0),
             Visibility = Visibility.Collapsed,
         };
-        root.Children.Add(validationText);
+        footerContainer.Children.Add(validationText);
 
         GamePropertiesEditResult? result = null;
         var footer = new StackPanel
         {
             Orientation = Orientation.Horizontal,
             HorizontalAlignment = HorizontalAlignment.Right,
-            Margin = new Thickness(0, 18, 0, 0),
+            Margin = new Thickness(0, 16, 0, 0),
         };
 
         var cancelBtn = new Button
@@ -1465,6 +2003,20 @@ public partial class MainWindow : Window
                 parsedSteamId = sid;
             }
 
+            GameLaunchMode chosenMode = GetSelectedLaunchMode();
+            bool isOfficialSteam = req.PlatformSource == PlatformSource.SteamLocal && parsedSteamId is > 0;
+            if (chosenMode == GameLaunchMode.Steam && !isOfficialSteam && req.AntiCheatTier >= AntiCheatTier.Tier2)
+            {
+                validationText.Text = $"非 Steam 来源的 {req.AntiCheatTier} 游戏禁止启用「通过 Steam 启动」，请改回「直接启动（默认）」。";
+                validationText.Visibility = Visibility.Visible;
+                return;
+            }
+
+            bool useAppIdName = chosenMode == GameLaunchMode.Steam
+                                && !isOfficialSteam
+                                && parsedSteamId is > 0
+                                && useAppIdNameCheckBox.IsChecked == true;
+
             result = new GamePropertiesEditResult(
                 Title: titleVal,
                 ExecutableRelPath: exeVal,
@@ -1472,16 +2024,20 @@ public partial class MainWindow : Window
                 SteamAppId: parsedSteamId,
                 GogGameId: gogIdBox.Text.Trim(),
                 CoverImagePath: coverBox.Text.Trim(),
-                IconPath: iconBox.Text.Trim());
+                IconPath: iconBox.Text.Trim(),
+                LaunchMode: chosenMode,
+                UseSteamAppIdAsShortcutName: useAppIdName);
             dialog.DialogResult = true;
             dialog.Close();
         };
 
         footer.Children.Add(cancelBtn);
         footer.Children.Add(saveBtn);
-        root.Children.Add(footer);
+        footerContainer.Children.Add(footer);
+        Grid.SetRow(footerContainer, 2);
+        outerGrid.Children.Add(footerContainer);
 
-        dialog.Content = root;
+        dialog.Content = outerGrid;
         return dialog.ShowDialog() == true ? result : null;
     }
 

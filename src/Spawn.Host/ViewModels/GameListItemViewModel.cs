@@ -49,6 +49,9 @@ public sealed partial class GameListItemViewModel : ObservableObject
     private ActiveGameSession? _activeSession;
 
     [ObservableProperty]
+    private GameSteamLaunchSettings _steamLaunchSettings = new();
+
+    [ObservableProperty]
     private int _unlockedAchievements;
 
     [ObservableProperty]
@@ -73,6 +76,23 @@ public sealed partial class GameListItemViewModel : ObservableObject
     public string AntiCheatBadgeHexColor => UiFormatters.FormatAntiCheatTierHexColor(Record.AntiCheatTier);
     public bool HasVerifiedOfflineBypassBadge => Record.AntiCheatTier == AntiCheatTier.Tier2 && Record.VerifiedOfflineBypass;
     public string VerifiedOfflineBypassBadgeText => HasVerifiedOfflineBypassBadge ? "离线无 AC 就绪" : string.Empty;
+
+    public bool IsOfficialSteamLaunchTarget =>
+        Record.PlatformSource == PlatformSource.SteamLocal && Record.SteamAppId is > 0;
+
+    public bool IsSteamLaunchBlockedByAntiCheat =>
+        !IsOfficialSteamLaunchTarget && Record.AntiCheatTier >= AntiCheatTier.Tier2;
+
+    public bool IsSteamLaunchConfigured =>
+        SteamLaunchSettings.LaunchMode == GameLaunchMode.Steam && !IsSteamLaunchBlockedByAntiCheat;
+
+    public string LaunchModeBadgeText => IsSteamLaunchConfigured ? "通过 Steam 启动" : string.Empty;
+
+    public string LaunchModeBadgeToolTip => IsSteamLaunchConfigured
+        ? (IsOfficialSteamLaunchTarget
+            ? $"默认通过 Steam 官方协议（steam://rungameid/{Record.SteamAppId}）启动，启用 Steam Input 手柄映射"
+            : "默认通过 Steam 非 Steam 快捷方式启动，启用 Steam Input 手柄映射（可在「游戏属性与启动设置」修改）")
+        : string.Empty;
 
     /// <summary>
     /// True when <see cref="CoverImage"/> comes from a dedicated poster/cover/hero asset (safe for UniformToFill poster card rendering).
@@ -109,7 +129,9 @@ public sealed partial class GameListItemViewModel : ObservableObject
     public string LiveActivityStateText => LiveActivityState switch
     {
         PlaySessionActivityState.Launching => "正在启动",
-        PlaySessionActivityState.ShellBreakingWatch => "等待游戏主进程",
+        PlaySessionActivityState.ShellBreakingWatch => ActiveSession?.LaunchedViaSteam == true
+            ? "等待 Steam 启动"
+            : "等待游戏主进程",
         PlaySessionActivityState.Active => "有效游玩中",
         PlaySessionActivityState.Background => "后台切出",
         PlaySessionActivityState.Afk => "挂机静默",
@@ -307,6 +329,20 @@ public sealed partial class GameListItemViewModel : ObservableObject
 
         ActiveSession = session;
         NotifyDerivedProperties();
+    }
+
+    public void UpdateSteamLaunchSettings(GameSteamLaunchSettings? settings)
+    {
+        GameSteamLaunchSettings normalized = settings ?? new GameSteamLaunchSettings();
+        if (Equals(SteamLaunchSettings, normalized))
+        {
+            return;
+        }
+
+        SteamLaunchSettings = normalized;
+        OnPropertyChanged(nameof(IsSteamLaunchConfigured));
+        OnPropertyChanged(nameof(LaunchModeBadgeText));
+        OnPropertyChanged(nameof(LaunchModeBadgeToolTip));
     }
 
     public void UpdateAchievementCounts(int unlocked, int total, string? channelStatus = null)
@@ -558,6 +594,11 @@ public sealed partial class GameListItemViewModel : ObservableObject
         OnPropertyChanged(nameof(AntiCheatBadgeHexColor));
         OnPropertyChanged(nameof(HasVerifiedOfflineBypassBadge));
         OnPropertyChanged(nameof(VerifiedOfflineBypassBadgeText));
+        OnPropertyChanged(nameof(IsOfficialSteamLaunchTarget));
+        OnPropertyChanged(nameof(IsSteamLaunchBlockedByAntiCheat));
+        OnPropertyChanged(nameof(IsSteamLaunchConfigured));
+        OnPropertyChanged(nameof(LaunchModeBadgeText));
+        OnPropertyChanged(nameof(LaunchModeBadgeToolTip));
         OnPropertyChanged(nameof(HasPosterCover));
         OnPropertyChanged(nameof(HasFallbackIcon));
         OnPropertyChanged(nameof(IsCoverIconFallback));

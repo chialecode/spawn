@@ -260,6 +260,9 @@ print(json.dumps({"ok": True, "selfInJob": bool(in_job_out.value)}))
         Assert.Contains("Uninstall\\${SPAWN_APP_ID}", activeNsiText, StringComparison.Ordinal);
         Assert.Contains("!insertmacro SPAWN_REMOVE_INSTALLED_FILES", activeNsiText, StringComparison.Ordinal);
         Assert.Contains("--quit-for-update", activeNsiText, StringComparison.Ordinal);
+        Assert.Contains("!define SPAWN_START_MENU_DIR \"$SMPROGRAMS\"", activeNsiText, StringComparison.Ordinal);
+        Assert.Contains("!define SPAWN_DESKTOP_DIR \"$DESKTOP\"", activeNsiText, StringComparison.Ordinal);
+        Assert.Contains("${ElseIfNot} ${Silent}", activeNsiText, StringComparison.Ordinal);
         Assert.DoesNotContain("TerminateProcess", activeNsiText, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("taskkill", activeNsiText, StringComparison.OrdinalIgnoreCase);
         string[] recursiveRemovals = activeNsiLines

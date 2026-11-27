@@ -89,6 +89,22 @@ _APP_OVERRIDE_ENV_VARS = frozenset(
     }
 )
 
+_INHERITED_GIT_ENV_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+)
+
+
+def _clean_git_env() -> dict[str, str]:
+    env = os.environ.copy()
+    for key in _INHERITED_GIT_ENV_VARS:
+        env.pop(key, None)
+    return env
+
 
 @dataclass(frozen=True)
 class IdentityProfile:
@@ -344,8 +360,12 @@ def compile_nsis_installer(
     create_shortcuts: bool,
     fast_compression: bool,
     cwd: Path,
+    start_menu_dir: Path | None = None,
+    desktop_dir: Path | None = None,
 ) -> None:
     """Write the uninstall file list into work_dir and compile installer/spawn.nsi into out_file."""
+    if (start_menu_dir is not None or desktop_dir is not None) and not profile.identity.endswith("-test"):
+        raise ValueError("Custom shortcut directories are restricted to isolated *-test identities.")
     work_dir.mkdir(parents=True, exist_ok=True)
     files_nsh = work_dir / "installed-files.nsh"
     files_nsh.write_text(render_remove_files_nsh(app_dir), encoding="utf-8", newline="\n")
@@ -370,6 +390,10 @@ def compile_nsis_installer(
         f"-DSPAWN_CREATE_SHORTCUTS={'1' if create_shortcuts else '0'}",
         f"-DSPAWN_DESKTOP_ON_UPDATE={'1' if profile.dev_like else '0'}",
     ]
+    if start_menu_dir is not None:
+        cmd.append(f"-DSPAWN_START_MENU_DIR={nsis_escape(str(start_menu_dir))}")
+    if desktop_dir is not None:
+        cmd.append(f"-DSPAWN_DESKTOP_DIR={nsis_escape(str(desktop_dir))}")
     if fast_compression:
         cmd.append("-DSPAWN_FAST_COMPRESSION")
     cmd.append(str(nsi_path))
@@ -452,11 +476,39 @@ def check_nsis_script(
     return checked
 
 
+def _run_git_quiet(args: list[str], *, cwd: Path, timeout: float = 10.0) -> subprocess.CompletedProcess[str] | None:
+    """Run a read-only git metadata command without inherited worktree/hook GIT_* pollution."""
+    flags = (BELOW_NORMAL_PRIORITY_CLASS | CREATE_NO_WINDOW) if os.name == "nt" else 0
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=str(cwd),
+            env=_clean_git_env(),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=flags,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
 def resolve_git_short_sha(repo_root: Path) -> str:
-    proc = _run_quiet(["git", "rev-parse", "--short=12", "HEAD"], cwd=repo_root, timeout=10.0)
-    if proc.returncode == 0 and proc.stdout.strip():
+    proc = _run_git_quiet(["rev-parse", "--short=12", "HEAD"], cwd=repo_root)
+    if proc is not None and proc.returncode == 0 and proc.stdout.strip():
         return proc.stdout.strip()
     return "unknown"
+
+
+def resolve_git_branch(repo_root: Path) -> str | None:
+    proc = _run_git_quiet(["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_root)
+    if proc is not None and proc.returncode == 0 and proc.stdout.strip():
+        return proc.stdout.strip()
+    return None
 
 
 def compute_numeric_version(version_str: str) -> str:
@@ -1577,7 +1629,13 @@ def wait_while_window_open(
     return True, False, int((monotonic() - start) * 1000)
 
 
-def new_install_receipt(profile: IdentityProfile, new_version: str) -> dict[str, object]:
+def new_install_receipt(
+    profile: IdentityProfile,
+    new_version: str,
+    *,
+    git_branch: str | None = None,
+    git_commit: str | None = None,
+) -> dict[str, object]:
     """Install receipt with the unified camelCase fields, each present from the start."""
     return {
         "identity": profile.identity,
@@ -1589,6 +1647,8 @@ def new_install_receipt(profile: IdentityProfile, new_version: str) -> dict[str,
         "firstInstall": False,
         "oldVersion": None,
         "newVersion": new_version,
+        "gitBranch": git_branch,
+        "gitCommit": git_commit,
         "installLocation": None,
         "wasRunning": False,
         "windowOpen": False,
@@ -1630,7 +1690,12 @@ def install_package(
     asked to --quit-for-update (never force-killed).
     """
     t0 = time.monotonic()
-    receipt = new_install_receipt(profile, expected_version)
+    receipt = new_install_receipt(
+        profile,
+        expected_version,
+        git_branch=resolve_git_branch(repo_root),
+        git_commit=resolve_git_short_sha(repo_root),
+    )
 
     def save_and_return() -> dict[str, object]:
         receipt["elapsedMs"] = int((time.monotonic() - t0) * 1000)
@@ -1844,7 +1909,11 @@ def main() -> int:
     parser.add_argument("--channel", choices=("dev", "release"), default="dev")
     parser.add_argument("--identity", choices=tuple(IDENTITY_PROFILES.keys()), default=None)
     parser.add_argument("--version", default=None, help="Explicit package version override.")
-    parser.add_argument("--install-dev", action="store_true", help="Build and silently install/update SPAWN Dev.")
+    parser.add_argument(
+        "--install-dev",
+        action="store_true",
+        help="Build and silently install/update SPAWN Dev (works on both clean PR branches for pre-review testing and main).",
+    )
     parser.add_argument("--install", action="store_true", help="Silently install the selected --identity.")
     parser.add_argument("--install-only", action="store_true", help="Install existing dist/<identity> package without rebuilding.")
     parser.add_argument("--uninstall", action="store_true", help="Silently uninstall the selected --identity.")
@@ -1908,7 +1977,12 @@ def main() -> int:
     if args.install_dev:
         skip_reason = should_skip_dev_auto_install()
         if skip_reason is not None:
-            skipped_receipt = new_install_receipt(profile, version)
+            skipped_receipt = new_install_receipt(
+                profile,
+                version,
+                git_branch=resolve_git_branch(repo_root),
+                git_commit=resolve_git_short_sha(repo_root),
+            )
             skipped_receipt["skipped"] = True
             skipped_receipt["reason"] = skip_reason
             receipt_path.parent.mkdir(parents=True, exist_ok=True)

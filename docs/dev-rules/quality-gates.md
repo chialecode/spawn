@@ -61,7 +61,7 @@
 | 潜在干扰源 | 强制工程约束 |
 | :--- | :--- |
 | **命令行黑框闪烁** | `scripts/quick_gate.py` 与产品进程拉起子进程时必须显式设置 `CreateNoWindow = true` / `UseShellExecute = false`（Python `subprocess` 在 Windows 下附带 `CREATE_NO_WINDOW` 标志） |
-| **抢夺窗口焦点或弹窗** | `tests/Spawn.Core.UnitTests` 全部在无头（Headless）纯内存与独立临时目录（`%TEMP%\spawn-tests-*`）执行，绝不读写 `%LOCALAPPDATA%\spawn` 或 `%LOCALAPPDATA%\spawn-dev`（安装包静默安装/卸载演练仅限使用独立身份 `spawn-dev-test` 并加 `--no-shortcuts --no-relaunch`），也绝不启动外部游戏 EXE 抢占用户桌面焦点；仅在阶段交付人工体验时运行一次 `python -B scripts/package.py --install-dev` 静默驻留托盘 |
+| **抢夺窗口焦点或弹窗** | `tests/Spawn.Core.UnitTests` 全部在无头（Headless）纯内存与独立临时目录（`%TEMP%\spawn-tests-*`）执行，绝不读写 `%LOCALAPPDATA%\spawn` 或 `%LOCALAPPDATA%\spawn-dev`（安装包静默安装/卸载演练仅限使用独立身份 `spawn-dev-test` / `spawn-test`，且不触碰用户真实桌面与开始菜单），也绝不启动外部游戏 EXE 抢占用户桌面焦点；仅在请用户审核 PR 前于 PR 分支以及合并进 `main` 后按[开发版自动安装](development-workflow.md#dev-install-at-handoff)执行 `python -B scripts/package.py --install-dev` 静默驻留托盘 |
 | **系统错误框与防火墙弹窗** | 门禁入口设置无错误弹窗模式；Named Pipe IPC 测试走本地唯一随机测试管道名，GOG Comet 协议测试严格仅绑定 `127.0.0.1` 随机空闲回环端口，严禁绑定 `0.0.0.0` 触发 Windows 防火墙弹窗 |
 | **音频外放与系统提示音** | 测试期间严禁向物理扬声器播放成就解锁音效或触发终端响铃符 `\x07`；弹窗音效引擎在测试态或静音配置下保持 0 发声 |
 | **自动打开外部应用** | 开发与测试命令严禁调用 `explorer.exe`、`Start-Process <url>` 或 `gh ... --web` 自动打开浏览器或资源管理器 |

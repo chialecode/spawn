@@ -85,7 +85,7 @@ spawn/
 python -B scripts/quick_gate.py
 ```
 
-打包并静默安装/更新本机开发版 **`SPAWN Dev`**（安装至 `%LOCALAPPDATA%\Programs\spawn-dev\spawn-dev.exe`，自动生成桌面/开始菜单快捷方式并以 `--background` 驻留系统托盘，数据隔离于 `%LOCALAPPDATA%\spawn-dev`）：
+打包并静默安装/更新本机开发版 **`SPAWN Dev`**（安装至 `%LOCALAPPDATA%\Programs\spawn-dev\spawn-dev.exe`，首次安装生成桌面与开始菜单快捷方式，覆盖重装仅安装桌面快捷方式且不重新生成或改写开始菜单快捷方式，并以 `--background` 驻留系统托盘，数据隔离于 `%LOCALAPPDATA%\spawn-dev`；支持在干净 PR 分支上审前预装）：
 
 ```powershell
 python -B scripts/package.py --install-dev

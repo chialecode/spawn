@@ -36,7 +36,16 @@
 !insertmacro SPAWN_REQUIRE SPAWN_OUT_FILE       ; installer path
 !insertmacro SPAWN_REQUIRE SPAWN_FILES_NSH      ; generated: SPAWN_REMOVE_INSTALLED_FILES
 !insertmacro SPAWN_REQUIRE SPAWN_CREATE_SHORTCUTS   ; 1 or 0 (test identities: 0)
-!insertmacro SPAWN_REQUIRE SPAWN_DESKTOP_ON_UPDATE  ; 1: silent updates make both shortcuts again (dev)
+!insertmacro SPAWN_REQUIRE SPAWN_DESKTOP_ON_UPDATE  ; 1: silent updates install Desktop shortcut only (dev), never Start Menu
+
+; Production builds always target $SMPROGRAMS and $DESKTOP. Isolated *-test runs may override
+; these at compile time to verify shortcut behavior without touching the user's real folders.
+!ifndef SPAWN_START_MENU_DIR
+  !define SPAWN_START_MENU_DIR "$SMPROGRAMS"
+!endif
+!ifndef SPAWN_DESKTOP_DIR
+  !define SPAWN_DESKTOP_DIR "$DESKTOP"
+!endif
 
 !define SPAWN_EXE "${SPAWN_IDENTITY}.exe"
 !define SPAWN_UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${SPAWN_APP_ID}"
@@ -260,23 +269,27 @@ Function .onInit
   ${EndIf}
 
 !if ${SPAWN_CREATE_SHORTCUTS} == 1
-  ; A first install makes both shortcuts; an update keeps the ones that are there, and the
-  ; development channel's silent update makes both again (a sign that a new build arrived).
+  ; First install creates both shortcuts.
+  ; Silent over-installs never touch the Start Menu shortcut (neither creating nor rewriting it);
+  ; dev builds (SPAWN_DESKTOP_ON_UPDATE == 1) still create/install the Desktop shortcut on silent
+  ; updates, while release silent updates only keep an existing Desktop shortcut.
+  ; Interactive updates default each checkbox to whether its shortcut currently exists.
   ${If} $FirstInstall == "1"
     !insertmacro SelectSection ${SecStartMenu}
     !insertmacro SelectSection ${SecDesktop}
   ${Else}
     !insertmacro UnselectSection ${SecStartMenu}
     !insertmacro UnselectSection ${SecDesktop}
-    ${If} ${FileExists} "$SMPROGRAMS\${SPAWN_DISPLAY_NAME}.lnk"
-      !insertmacro SelectSection ${SecStartMenu}
+    ${IfNot} ${Silent}
+      ${If} ${FileExists} "${SPAWN_START_MENU_DIR}\${SPAWN_DISPLAY_NAME}.lnk"
+        !insertmacro SelectSection ${SecStartMenu}
+      ${EndIf}
     ${EndIf}
-    ${If} ${FileExists} "$DESKTOP\${SPAWN_DISPLAY_NAME}.lnk"
+    ${If} ${FileExists} "${SPAWN_DESKTOP_DIR}\${SPAWN_DISPLAY_NAME}.lnk"
       !insertmacro SelectSection ${SecDesktop}
     ${EndIf}
     !if ${SPAWN_DESKTOP_ON_UPDATE} == 1
       ${If} ${Silent}
-        !insertmacro SelectSection ${SecStartMenu}
         !insertmacro SelectSection ${SecDesktop}
       ${EndIf}
     !endif
@@ -346,18 +359,19 @@ Section "-Install"
 SectionEnd
 
 !if ${SPAWN_CREATE_SHORTCUTS} == 1
-; After the files: make the chosen shortcuts and remove the ones left unchosen.
+; After the files: create selected shortcuts; remove unselected shortcuts only in interactive mode
+; so silent over-installs never delete an existing Start Menu shortcut that was intentionally skipped.
 Section "-Shortcuts"
   SetOutPath "$INSTDIR"
   ${If} ${SectionIsSelected} ${SecStartMenu}
-    CreateShortCut "$SMPROGRAMS\${SPAWN_DISPLAY_NAME}.lnk" "$INSTDIR\${SPAWN_EXE}" "" "$INSTDIR\${SPAWN_EXE}"
-  ${Else}
-    Delete "$SMPROGRAMS\${SPAWN_DISPLAY_NAME}.lnk"
+    CreateShortCut "${SPAWN_START_MENU_DIR}\${SPAWN_DISPLAY_NAME}.lnk" "$INSTDIR\${SPAWN_EXE}" "" "$INSTDIR\${SPAWN_EXE}"
+  ${ElseIfNot} ${Silent}
+    Delete "${SPAWN_START_MENU_DIR}\${SPAWN_DISPLAY_NAME}.lnk"
   ${EndIf}
   ${If} ${SectionIsSelected} ${SecDesktop}
-    CreateShortCut "$DESKTOP\${SPAWN_DISPLAY_NAME}.lnk" "$INSTDIR\${SPAWN_EXE}" "" "$INSTDIR\${SPAWN_EXE}"
-  ${Else}
-    Delete "$DESKTOP\${SPAWN_DISPLAY_NAME}.lnk"
+    CreateShortCut "${SPAWN_DESKTOP_DIR}\${SPAWN_DISPLAY_NAME}.lnk" "$INSTDIR\${SPAWN_EXE}" "" "$INSTDIR\${SPAWN_EXE}"
+  ${ElseIfNot} ${Silent}
+    Delete "${SPAWN_DESKTOP_DIR}\${SPAWN_DISPLAY_NAME}.lnk"
   ${EndIf}
 SectionEnd
 !endif
@@ -414,9 +428,9 @@ Section "Uninstall"
   ClearErrors
   ${GetOptions} $0 "/UPDATE" $1
   ${If} ${Errors}
-    Push "$SMPROGRAMS\${SPAWN_DISPLAY_NAME}.lnk"
+    Push "${SPAWN_START_MENU_DIR}\${SPAWN_DISPLAY_NAME}.lnk"
     Call un.SpawnDeleteShortcut
-    Push "$DESKTOP\${SPAWN_DISPLAY_NAME}.lnk"
+    Push "${SPAWN_DESKTOP_DIR}\${SPAWN_DISPLAY_NAME}.lnk"
     Call un.SpawnDeleteShortcut
     DeleteRegKey HKCU "${SPAWN_UNINSTALL_KEY}"
     Delete "$INSTDIR\Uninstall.exe"

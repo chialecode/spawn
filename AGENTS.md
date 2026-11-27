@@ -16,8 +16,8 @@
 完整规则见[开发流程](docs/dev-rules/development-workflow.md#change-loop)，要点：
 
 - **一个 issue 一个小 PR**：分支 `<type>/<issue号>-<简短描述>`（如 `fix/42-tray-restore`），Conventional Commits + DCO（`git commit -s`）。
-- **自己完成到底**：实现 → 快速门禁 `python -B scripts/quick_gate.py` → push → 建 PR（按 PR 模板写验证证据）→ CI 通过 → 独立审查（干净上下文的子代理或另一个 Agent，按 [REVIEW](REVIEW.md)）→ 合并 → 拉取 `main` 后[自动安装开发版](docs/dev-rules/development-workflow.md#dev-install-at-handoff)。push 与建 PR 长期授权。
-- **合并**：低风险 PR 审查通过后由 Agent 直接 squash 合并；碰到[高风险清单](docs/dev-rules/development-workflow.md#high-risk)的 PR 加 `risk:high` 标签，等用户合并。
+- **自己完成到底**：实现 → 快速门禁 `python -B scripts/quick_gate.py` → push → 建 PR（按 PR 模板写验证证据）→ CI 通过 → 独立审查（干净上下文的子代理或另一个 Agent，按 [REVIEW](REVIEW.md)）→ 凡需要用户审核或实机测试的 PR（尤其是高风险或涉及界面/行为改动的 PR），审核前先在 PR 分支执行[开发版自动安装](docs/dev-rules/development-workflow.md#dev-install-at-handoff)并把回执写入 PR 供用户先行实测 → 合并 → 拉取 `main` 后再同步本机开发版。push 与建 PR 长期授权。
+- **合并**：低风险且无需用户预先实测的 PR 审查通过后由 Agent 直接 squash 合并；碰到[高风险清单](docs/dev-rules/development-workflow.md#high-risk)或需用户实测把关的 PR 加 `risk:high` 标签，先在 PR 分支更新本机开发版再等用户测试与合并。
 - **需要用户时**：只有会改变产品范围、反作弊安全边界、数据含义或造成不可逆结果的决定，必须真人判断的实机检查，以及真实账号、密钥或外部服务配置，才建 `needs-user` issue（完整列表见[什么时候找用户](docs/dev-rules/development-workflow.md#user-actions)）；其余按推荐的可逆默认值继续做，并在 PR 里写明。
 - **收尾**：如实说明结果、验证证据（命令 / 结果 / 未运行项）、限制与一个首选下一步；新教训写进 [LESSONS](LESSONS.md)。
 
@@ -40,7 +40,7 @@
 - **100% 纯原生技术栈**：桌面与覆盖层锁定 C# `.NET 10`（LTS，`net10.0-windows`）+ `WPF` + `lepoco/wpfui` + `miroiu/nodify` + `SkiaSharp` + `DirectComposition`，严禁引入 WebView2、Electron、CEF 或前端混合框架（[ADR-0002](docs/decisions/0002-pure-native-wpf-and-nodify-ui-stack.md)）。
 - **Clean Host 零敏感 API 与反作弊 15s 冷却**：`Spawn.Host.exe` 与 `Spawn.OverlayHost.exe` 严禁直接或传递引用内存读写、远程线程、全局低级钩子或重型机器视觉/修改器库（`OpenCvSharp4`、`Sdcb.PaddleOCR`、`Iced`、`Maa.Framework` 仅限独立 Worker 子工程引用；传递污染 `GPL-3.0` 的 `Reloaded.Memory` 家族全仓禁止，见 [ADR-0006](docs/decisions/0006-m3-external-trainer-manager-elevation-and-ipc.md)），必须通过 `Spawn.Architecture.GateTests` 的 `PEReader` IAT 静态审计；主进程查询进程路径一律使用 `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION = 0x1000)`。`Tier 2/3` 受保护网游启动前强制清场并锁定高敏 Worker，退出后必须确认反作弊守护进程消亡且走完 **15 秒余温冷却窗口** 方可解锁（[ADR-0003](docs/decisions/0003-anti-cheat-guard-and-process-isolation.md)）。
 - **非侵入可逆文件与防丢档**：① `spawn.db`（SQLite WAL）严禁放入网盘同步目录，跨端同步只传不可变 `32MB SPPK Packfile` 与 JSON 清单并按 `ParentSnapshotId` 祖先链防覆盖；② Mod 可变配置严禁走硬链接，必须独立物理副本 + `XxHash3` 退出回收；③ 摘除存档槽 NTFS Directory Junction 时严禁递归删除，必须用非递归 `RemoveDirectoryW` / `DirectoryInfo.Delete(recursive: false)`；④ 游戏追踪 `JobObject` **严禁设置** `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`，而 Worker 托管外部修改器/子脚本的专用 Job **必须设置**该标志。
-- **通道与数据目录隔离**：路径、通道名与凭据命名空间统一用小写 `spawn`（正式版，`%LOCALAPPDATA%\spawn`）与 `spawn-dev`（开发版与源码运行，`%LOCALAPPDATA%\spawn-dev`，可用 `SPAWN_DATA_DIR` 覆盖）。自动化测试与 `quick_gate.py` 必须重定向到临时目录（安装演练身份 `spawn-dev-test` / `spawn-test`），严禁读写正式版或开发版真实数据（[安装与数据隔离](docs/dev-rules/data-and-security.md#install-and-data-locations)）。开发版永不自查更新，由 Agent 每次合并进 `main` 后本机安装；正式版由每周发布流水线构建并签名自动更新（[ADR-0007](docs/decisions/0007-weekly-release-and-signed-in-app-update.md)）。
+- **通道与数据目录隔离**：路径、通道名与凭据命名空间统一用小写 `spawn`（正式版，`%LOCALAPPDATA%\spawn`）与 `spawn-dev`（开发版与源码运行，`%LOCALAPPDATA%\spawn-dev`，可用 `SPAWN_DATA_DIR` 覆盖）。自动化测试与 `quick_gate.py` 必须重定向到临时目录（安装演练身份 `spawn-dev-test` / `spawn-test`），严禁读写正式版或开发版真实数据（[安装与数据隔离](docs/dev-rules/data-and-security.md#install-and-data-locations)）。开发版永不自查更新，由 Agent 在请用户审核 PR 前于 PR 分支预装供实测，并在每次合并进 `main` 后同步本机安装；正式版由每周发布流水线构建并签名自动更新（[ADR-0007](docs/decisions/0007-weekly-release-and-signed-in-app-update.md)）。
 - **测试与开发命令前台静音**：自动化测试、门禁脚本与后台子进程静默低优先级运行（`CREATE_NO_WINDOW`、`BELOW_NORMAL_PRIORITY_CLASS`），不抢前台焦点、不弹错误对话框、不发声、不自动打开浏览器或资源管理器（[前台无干扰约束](docs/dev-rules/quality-gates.md#foreground-quiet)）。
 - **真实门禁与诚实证据**：日常用快速门禁；发布前以及改到打包、安装、更新、签名或发布链路时跑整套交付门禁（[两级门禁](docs/dev-rules/quality-gates.md#gate-tiers)）。未安装的环境、未连接的外部硬件或未跑的实机检查如实标记 `not-run`，不靠删除或弱化测试制造通过。
 - **公开内容卫生**：不提交真实密钥、令牌、`.env`、数据库、签名私钥、本机绝对路径、参考项目名或同级仓库名；测试只用合成样本与仓库内无害夹具。

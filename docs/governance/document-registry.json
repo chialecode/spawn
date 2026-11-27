@@ -44,8 +44,8 @@
       "status": "active",
       "owner": "维护者",
       "scope": "SPAWN 开发者与 AI Agent 工作入口：开始工作、issue 与小 PR 流程要点、按变更触发阅读与工程安全红线",
-      "reviewed": "2026-11-24",
-      "basis": "D-34：开发流程统一为 issue 驱动"
+      "reviewed": "2026-11-27",
+      "basis": "#71：增补 PR 审核前先从 PR 分支更新本机开发版供用户实测规则"
     },
     {
       "path": "CLAUDE.md",
@@ -80,8 +80,8 @@
       "status": "active",
       "owner": "维护者",
       "scope": "SPAWN 项目门面：五大核心域、三栏无边框原生 WPF 架构、Spawn.sln 目录地图与 quick_gate.py 入口",
-      "reviewed": "2026-11-24",
-      "basis": "D-34：开发流程统一为 issue 驱动"
+      "reviewed": "2026-11-27",
+      "basis": "#71：同步开发版重装快捷方式策略与 PR 分支审前预装说明"
     },
     {
       "path": "REVIEW.md",
@@ -196,9 +196,9 @@
       "kind": "decision",
       "status": "active",
       "owner": "维护者",
-      "scope": "已确认决策总表 D-01～D-34 与可逆工程默认值 A-01～A-06",
-      "reviewed": "2026-11-24",
-      "basis": "D-34：开发流程统一为 issue 驱动"
+      "scope": "已确认决策总表 D-01～D-35 与可逆工程默认值 A-01～A-06",
+      "reviewed": "2026-11-27",
+      "basis": "#71：更新 D-34/D-35（静默重装不触碰开始菜单快捷方式、PR 审核前预装开发版）"
     },
     {
       "path": "docs/decisions/open-questions.md",
@@ -315,8 +315,8 @@
       "status": "active",
       "owner": "维护者",
       "scope": "开发流程：Issues 需求队列、什么时候找用户、每次改动的流程、高风险清单、开发版自动安装、多 Agent 并行、MVP、教训循环与每周维护",
-      "reviewed": "2026-11-24",
-      "basis": "D-34：开发流程统一为 issue 驱动"
+      "reviewed": "2026-11-27",
+      "basis": "#71：增补 PR 审核前预装开发版流程、快捷方式策略与回执分支/提交字段"
     },
     {
       "path": "docs/dev-rules/git-workflow.md",
@@ -342,8 +342,8 @@
       "status": "active",
       "owner": "维护者",
       "scope": "两级质量门禁设计（check_docs.py / quick_gate.py / Stage Gate + IAT 与每周发布工作流审计）与测试前台静音规范",
-      "reviewed": "2026-11-26",
-      "basis": "#36：同步 CI repository-quality 的 installer/spawn.nsi 全身份 -WX 只编译检查"
+      "reviewed": "2026-11-27",
+      "basis": "#71：同步隔离快捷方式演练边界与 PR 审前开发版安装时机"
     },
     {
       "path": "docs/dev-rules/repo-map.md",
@@ -378,8 +378,8 @@
       "status": "active",
       "owner": "维护者",
       "scope": "SPAWN 全仓自有 Markdown 与受管 JSON 文档唯一权威注册表",
-      "reviewed": "2026-11-22",
-      "basis": "M3 v1.1：同步 M3-W10~W12 全部修改文档审查日期与基线说明"
+      "reviewed": "2026-11-27",
+      "basis": "#71：同步受影响治理与流程文档审查日期与基线说明"
     },
     {
       "path": "docs/governance/documentation-policy.md",

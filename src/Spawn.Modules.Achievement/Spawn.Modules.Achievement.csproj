@@ -12,6 +12,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
     <PackageReference Include="SkiaSharp" />
     <PackageReference Include="Google.Protobuf" />
     <PackageReference Include="System.IO.Hashing" />

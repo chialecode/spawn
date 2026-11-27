@@ -47,11 +47,15 @@ internal sealed class TrainerWorkerApplication
     private readonly Func<int> _integrityLevelProvider;
     private readonly IAntiCheatSystemProbe _antiCheatProbe;
     private readonly TimeProvider _timeProvider;
+    private readonly TimeSpan _autoHideWindowDuration;
+    private readonly TimeSpan _autoHidePollInterval;
 
     private readonly Lock _sessionGate = new();
+    private readonly Lock _windowVisibilityGate = new();
     private TrainerSandboxJob? _activeJob;
     private string? _activeSessionId;
     private int _activeHoldMs = TrainerSettingsDto.DefaultHotkeyHoldMs;
+    private CancellationTokenSource? _autoHideCts;
     private int _sessionEndedSent;
 
     public TrainerWorkerApplication(
@@ -63,7 +67,9 @@ internal sealed class TrainerWorkerApplication
         ITrainerPipePeerInspector? peerInspector = null,
         Func<int>? integrityLevelProvider = null,
         IAntiCheatSystemProbe? antiCheatProbe = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        TimeSpan? autoHideWindowDuration = null,
+        TimeSpan? autoHidePollInterval = null)
     {
         _cliOptions = cliOptions ?? throw new ArgumentNullException(nameof(cliOptions));
         _hotkeyProxy = hotkeyProxy ?? new TrainerHotkeyProxy();
@@ -74,6 +80,12 @@ internal sealed class TrainerWorkerApplication
         _integrityLevelProvider = integrityLevelProvider ?? WorkerIntegrityHelper.GetCurrentProcessIntegrityLevel;
         _antiCheatProbe = antiCheatProbe ?? DefaultAntiCheatSystemProbe.Instance;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _autoHideWindowDuration = autoHideWindowDuration is { } duration && duration > TimeSpan.Zero
+            ? duration
+            : TimeSpan.FromMilliseconds(2500);
+        _autoHidePollInterval = autoHidePollInterval is { } interval && interval > TimeSpan.Zero
+            ? interval
+            : TimeSpan.FromMilliseconds(100);
     }
 
     public static bool TryParseArguments(string[] args, out TrainerWorkerCliOptions? options)
@@ -384,12 +396,24 @@ internal sealed class TrainerWorkerApplication
         }
 
         string sessionId = request.SessionId;
+        bool autoHideOnLaunch = request.HideOriginalWindow;
         job.ProcessCreated += (pid, imagePath) =>
         {
             _ = Task.Run(async () =>
             {
                 try
                 {
+                    if (autoHideOnLaunch)
+                    {
+                        lock (_windowVisibilityGate)
+                        {
+                            if (IsAutoHideActiveFor(job) && !job.IsDisposed)
+                            {
+                                _ = job.SetWindowVisibility(visible: false, _windowInterop);
+                            }
+                        }
+                    }
+
                     if (client.IsConnected)
                     {
                         await client.NotifyAsync(
@@ -413,6 +437,7 @@ internal sealed class TrainerWorkerApplication
 
         job.ActiveProcessZero += exitCode =>
         {
+            CancelAutoHideSweep();
             if (Interlocked.Exchange(ref _sessionEndedSent, 1) != 0)
             {
                 return;
@@ -450,6 +475,7 @@ internal sealed class TrainerWorkerApplication
 
         if (!launchResult.Succeeded)
         {
+            CancelAutoHideSweep();
             lock (_sessionGate)
             {
                 _activeJob = null;
@@ -468,6 +494,11 @@ internal sealed class TrainerWorkerApplication
                         : "CREATE_PROCESS_FAILED",
                 ErrorMessage = launchResult.ErrorMessage,
             });
+        }
+
+        if (autoHideOnLaunch)
+        {
+            StartAutoHideSweep(job);
         }
 
         return Task.FromResult(new TrainerLaunchResponse
@@ -527,12 +558,20 @@ internal sealed class TrainerWorkerApplication
             };
         }
 
-        int affected = job.SetWindowVisibility(request.Visible, _windowInterop);
-        return new TrainerSetWindowVisibilityResponse
+        lock (_windowVisibilityGate)
         {
-            Succeeded = true,
-            AffectedWindowCount = affected,
-        };
+            if (request.Visible)
+            {
+                CancelAutoHideSweep();
+            }
+
+            int affected = job.SetWindowVisibility(request.Visible, _windowInterop);
+            return new TrainerSetWindowVisibilityResponse
+            {
+                Succeeded = true,
+                AffectedWindowCount = affected,
+            };
+        }
     }
 
     private Task<TrainerSetAudioFallbackResponse> HandleSetAudioFallbackAsync(
@@ -578,6 +617,7 @@ internal sealed class TrainerWorkerApplication
         TaskCompletionSource<int> exitCompletion,
         CancellationToken cancellationToken)
     {
+        CancelAutoHideSweep();
         TrainerSandboxJob? job;
         string? sessionId;
         lock (_sessionGate)
@@ -668,7 +708,7 @@ internal sealed class TrainerWorkerApplication
                     {
                         Succeeded = false,
                         ErrorCode = "GUARD_LOCKED",
-                        ErrorMessage = $"Worker 独立安全验票拒绝启动：反作弊守卫当前处于 {persisted.Phase} 锁定状态。",
+                        ErrorMessage = $"Worker 独立安全验票拒绝启动：反作弊守卫当前处于「{FormatGuardPhase(persisted.Phase)}」锁定状态。",
                     };
                 }
 
@@ -752,6 +792,7 @@ internal sealed class TrainerWorkerApplication
 
     private void TerminateActiveJobImmediate()
     {
+        CancelAutoHideSweep();
         TrainerSandboxJob? job;
         lock (_sessionGate)
         {
@@ -766,4 +807,101 @@ internal sealed class TrainerWorkerApplication
             job.Dispose();
         }
     }
+
+    private void StartAutoHideSweep(TrainerSandboxJob job)
+    {
+        CancelAutoHideSweep();
+        var cts = new CancellationTokenSource();
+        CancellationToken token = cts.Token;
+        lock (_sessionGate)
+        {
+            _autoHideCts = cts;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                DateTimeOffset deadline = _timeProvider.GetUtcNow() + _autoHideWindowDuration;
+                while (!token.IsCancellationRequested && !job.IsDisposed)
+                {
+                    lock (_windowVisibilityGate)
+                    {
+                        if (token.IsCancellationRequested || !IsAutoHideActiveFor(job) || job.IsDisposed)
+                        {
+                            break;
+                        }
+
+                        _ = job.SetWindowVisibility(visible: false, _windowInterop);
+                    }
+
+                    if (_timeProvider.GetUtcNow() >= deadline)
+                    {
+                        break;
+                    }
+
+                    await Task.Delay(_autoHidePollInterval, _timeProvider, token).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Stopped, exited, or user explicitly requested showing the original window.
+            }
+            catch
+            {
+                // Best-effort post-launch hide sweep must never destabilize the worker.
+            }
+            finally
+            {
+                lock (_sessionGate)
+                {
+                    if (ReferenceEquals(_autoHideCts, cts))
+                    {
+                        _autoHideCts = null;
+                    }
+                }
+
+                cts.Dispose();
+            }
+        }, CancellationToken.None);
+    }
+
+    private bool IsAutoHideActiveFor(TrainerSandboxJob job)
+    {
+        lock (_sessionGate)
+        {
+            return ReferenceEquals(_activeJob, job) && _autoHideCts is { IsCancellationRequested: false };
+        }
+    }
+
+    private void CancelAutoHideSweep()
+    {
+        CancellationTokenSource? cts;
+        lock (_sessionGate)
+        {
+            cts = _autoHideCts;
+            _autoHideCts = null;
+        }
+
+        if (cts is not null)
+        {
+            try
+            {
+                cts.Cancel();
+            }
+            catch
+            {
+                // Ignore cancel race.
+            }
+        }
+    }
+
+    private static string FormatGuardPhase(AntiCheatGuardPhase phase) => phase switch
+    {
+        AntiCheatGuardPhase.IdleSafe => "安全空闲",
+        AntiCheatGuardPhase.ProtectedRunning => "受保护游戏运行中",
+        AntiCheatGuardPhase.ResidualGuardWatch => "等待反作弊残影退出",
+        AntiCheatGuardPhase.CooldownLocked => "15 秒余温冷却锁定",
+        _ => "安全锁定",
+    };
 }

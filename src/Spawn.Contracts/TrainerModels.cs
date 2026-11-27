@@ -190,8 +190,21 @@ public sealed record TrainerAllowanceDecision
     public bool CanConfirmOfflineBypass { get; init; }
     public bool IsVanguardIdleWarning { get; init; }
     public bool UsedVerifiedOfflineBypass { get; init; }
+    public bool IsOfflineSinglePlayerVerificationPending { get; init; }
     public IReadOnlyList<string> DetectedAntiCheatProcesses { get; init; } = [];
     public IReadOnlyList<string> DetectedAntiCheatDrivers { get; init; } = [];
+}
+
+/// <summary>
+/// Consolidated single-pass safety evaluation snapshot combining static four-layer inspection,
+/// a single live read-only anti-cheat probe, controlled offline bypass state, and final allowance decision.
+/// </summary>
+public sealed record TrainerGameSafetySnapshot
+{
+    public required FourLayerAntiCheatReport FourLayerReport { get; init; }
+    public required LiveAntiCheatProbeReport LiveProbe { get; init; }
+    public required VerifiedOfflineBypass OfflineBypass { get; init; }
+    public required TrainerAllowanceDecision AllowanceDecision { get; init; }
 }
 
 /// <summary>
@@ -289,6 +302,52 @@ public sealed record TrainerExecutableChoice
     public long FileSize { get; init; }
     public string? PeMachine { get; init; }
     public bool RequiresAdmin { get; init; }
+
+    [JsonIgnore]
+    public string ArchitectureLabel => string.IsNullOrWhiteSpace(PeMachine) ? "未知架构" : PeMachine!;
+
+    [JsonIgnore]
+    public string ElevationBadgeText => RequiresAdmin ? "需管理员 (UAC)" : "普通权限";
+
+    [JsonIgnore]
+    public string FormattedFileSizeText => FormatChoiceByteSize(FileSize);
+
+    [JsonIgnore]
+    public string DisplaySummary => $"{RelativePath}（{FormattedFileSizeText} · {ArchitectureLabel} · {ElevationBadgeText}）";
+
+    private static string FormatChoiceByteSize(long bytes)
+    {
+        if (bytes <= 0)
+        {
+            return "0 B";
+        }
+
+        if (bytes < 1024)
+        {
+            return $"{bytes} B";
+        }
+
+        double kb = bytes / 1024.0;
+        if (kb < 1024.0)
+        {
+            return string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{kb:0.0} KB");
+        }
+
+        double mb = kb / 1024.0;
+        return string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{mb:0.00} MB");
+    }
+}
+
+/// <summary>
+/// Result of loading a candidate trainer's detail page on demand, preserving Cloudflare/403 challenge diagnostics.
+/// </summary>
+public sealed record TrainerCandidateDetailsResult
+{
+    public required TrainerCandidate Candidate { get; init; }
+    public bool Succeeded { get; init; } = true;
+    public bool ChallengeDetected { get; init; }
+    public string? FallbackBrowserUrl { get; init; }
+    public string? ErrorMessage { get; init; }
 }
 
 /// <summary>
@@ -384,6 +443,8 @@ public sealed record TrainerLaunchOutcome
     public PreTrainerSnapshotResult? PreSnapshot { get; init; }
     public TrainerIntegrityReport? IntegrityReport { get; init; }
     public int? Win32ErrorCode { get; init; }
+    public bool IsTargetGameLaunchedExternally { get; init; }
+    public string? ExternalLaunchNotice { get; init; }
 }
 
 /// <summary>

@@ -126,6 +126,16 @@ public sealed class ActivityTrackingPreTrainerSnapshotService(
         return await _inner.CreateAsync(gameId, trainerId, ct).ConfigureAwait(false);
     }
 
+    public async Task<PreTrainerSnapshotResult> CreateAsync(
+        string gameId,
+        string? trainerId,
+        bool isManual,
+        CancellationToken ct = default)
+    {
+        using IDisposable scope = _tracker.BeginSaveSnapshotOrRollback();
+        return await _inner.CreateAsync(gameId, trainerId, isManual, ct).ConfigureAwait(false);
+    }
+
     public Task<IReadOnlyList<PreTrainerSnapshotRecord>> ListAsync(
         string gameId,
         CancellationToken ct = default) =>

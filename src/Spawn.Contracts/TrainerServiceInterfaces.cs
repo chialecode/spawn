@@ -17,6 +17,19 @@ public interface ITrainerBackend : IAsyncDisposable
     Task SetWindowVisibilityAsync(string sessionId, bool visible, CancellationToken ct = default) =>
         Task.CompletedTask;
 
+    async Task<TrainerSetWindowVisibilityResponse> SetWindowVisibilityWithResultAsync(
+        string sessionId,
+        bool visible,
+        CancellationToken ct = default)
+    {
+        await SetWindowVisibilityAsync(sessionId, visible, ct).ConfigureAwait(false);
+        return new TrainerSetWindowVisibilityResponse
+        {
+            Succeeded = true,
+            AffectedWindowCount = 1,
+        };
+    }
+
     Task ApplyAudioFallbackAsync(string sessionId, IReadOnlyList<int> pids, bool mute, double volume, CancellationToken ct = default) =>
         Task.CompletedTask;
 
@@ -46,6 +59,20 @@ public interface ITrainerCatalogService
     Task<TrainerCandidate> LoadCandidateDetailsAsync(string gameId, TrainerCandidate candidate, CancellationToken ct = default) =>
         Task.FromResult(candidate);
 
+    async Task<TrainerCandidateDetailsResult> LoadCandidateDetailsWithDiagnosticsAsync(
+        string gameId,
+        TrainerCandidate candidate,
+        CancellationToken ct = default)
+    {
+        TrainerCandidate loaded = await LoadCandidateDetailsAsync(gameId, candidate, ct).ConfigureAwait(false);
+        return new TrainerCandidateDetailsResult
+        {
+            Candidate = loaded,
+            Succeeded = true,
+            ChallengeDetected = false,
+        };
+    }
+
     Task<TrainerImportResult> DownloadWithExecutableSelectionAsync(
         string gameId,
         TrainerCandidate candidate,
@@ -60,6 +87,17 @@ public interface ITrainerCatalogService
         string? selectedExecutableRelPath,
         CancellationToken ct = default) =>
         ImportLocalAsync(gameId, userSelectedPath, ct);
+
+    Task<TrainerImportResult> ImportLocalReplacingAsync(
+        string gameId,
+        string userSelectedPath,
+        string? replaceTrainerId,
+        bool inheritManualHotkeys = true,
+        string? selectedExecutableRelPath = null,
+        CancellationToken ct = default) =>
+        string.IsNullOrWhiteSpace(selectedExecutableRelPath)
+            ? ImportLocalAsync(gameId, userSelectedPath, ct)
+            : ImportLocalWithExecutableSelectionAsync(gameId, userSelectedPath, selectedExecutableRelPath, ct);
 
     Task SaveHotkeyBindingsAsync(string trainerId, IReadOnlyList<TrainerHotkeyBindingRecord> bindings, CancellationToken ct = default) =>
         Task.CompletedTask;
@@ -77,6 +115,20 @@ public interface ITrainerRuntimeService
     Task<TrainerLaunchOutcome> LaunchAsync(string trainerId, TrainerLaunchOptions options, CancellationToken ct = default);
     Task TriggerHotkeyAsync(string sessionId, string entryId, CancellationToken ct = default);
     Task SetOriginalWindowVisibleAsync(string sessionId, bool visible, CancellationToken ct = default);
+
+    async Task<TrainerSetWindowVisibilityResponse> SetOriginalWindowVisibleWithResultAsync(
+        string sessionId,
+        bool visible,
+        CancellationToken ct = default)
+    {
+        await SetOriginalWindowVisibleAsync(sessionId, visible, ct).ConfigureAwait(false);
+        return new TrainerSetWindowVisibilityResponse
+        {
+            Succeeded = true,
+            AffectedWindowCount = 1,
+        };
+    }
+
     Task StopAsync(string sessionId, CancellationToken ct = default);
 
     Task StopAllAsync(TrainerShutdownReason reason = TrainerShutdownReason.UserRequested, CancellationToken ct = default) =>
@@ -103,6 +155,14 @@ public interface ITrainerAudioController : IAsyncDisposable
 public interface IPreTrainerSaveSnapshotService
 {
     Task<PreTrainerSnapshotResult> CreateAsync(string gameId, string? trainerId, CancellationToken ct = default);
+
+    Task<PreTrainerSnapshotResult> CreateAsync(
+        string gameId,
+        string? trainerId,
+        bool isManual,
+        CancellationToken ct = default) =>
+        CreateAsync(gameId, trainerId, ct);
+
     Task<IReadOnlyList<PreTrainerSnapshotRecord>> ListAsync(string gameId, CancellationToken ct = default);
     Task<PreTrainerRestoreResult> RestoreAsync(string snapshotId, CancellationToken ct = default);
 }
@@ -137,6 +197,28 @@ public interface ITrainerSafetyGate
     Task<LiveAntiCheatProbeReport> ProbeLiveAntiCheatAsync(CancellationToken ct = default);
     Task<VerifiedOfflineBypass> EvaluateOfflineBypassAsync(GameRecord game, CancellationToken ct = default);
     Task<TrainerAllowanceDecision> EvaluateTrainerAllowanceAsync(GameRecord game, bool strictVanguardMode = false, CancellationToken ct = default);
+
+    async Task<TrainerGameSafetySnapshot> EvaluateGameSafetySnapshotAsync(
+        GameRecord game,
+        bool strictVanguardMode = false,
+        CancellationToken ct = default)
+    {
+        var allowance = await EvaluateTrainerAllowanceAsync(game, strictVanguardMode, ct).ConfigureAwait(false);
+        var live = await ProbeLiveAntiCheatAsync(ct).ConfigureAwait(false);
+        var bypass = await EvaluateOfflineBypassAsync(game, ct).ConfigureAwait(false);
+        return new TrainerGameSafetySnapshot
+        {
+            FourLayerReport = new FourLayerAntiCheatReport
+            {
+                EffectiveTier = allowance.StaticGameTier,
+                HasSinglePlayerCategory = bypass.HasSinglePlayerMode ? true : null,
+            },
+            LiveProbe = live,
+            OfflineBypass = bypass,
+            AllowanceDecision = allowance,
+        };
+    }
+
     void NotifyTrainerSessionStarted(string sessionId, string gameId);
     void NotifyTrainerSessionEnded(string sessionId);
 }

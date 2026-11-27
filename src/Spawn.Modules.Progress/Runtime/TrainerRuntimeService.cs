@@ -24,6 +24,9 @@ public sealed class TrainerRuntimeService : ITrainerRuntimeService, IDisposable,
     private readonly IGameLaunchService _gameLaunchService;
     private readonly ITrainerElevationAdvisor _elevationAdvisor;
     private readonly ILogger<TrainerRuntimeService> _logger;
+    private readonly ISaveTimeMachineService? _saveTimeMachineService;
+    private readonly Func<string, IReadOnlyList<SafeProcessEntry>> _directoryProcessFinder;
+    private readonly TimeSpan _preTrainerSnapshotTimeout;
 
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
     private readonly Lock _stateLock = new();
@@ -68,7 +71,10 @@ public sealed class TrainerRuntimeService : ITrainerRuntimeService, IDisposable,
         ITrainerBackend backend,
         IGameLaunchService gameLaunchService,
         ITrainerElevationAdvisor? elevationAdvisor = null,
-        ILogger<TrainerRuntimeService>? logger = null)
+        ILogger<TrainerRuntimeService>? logger = null,
+        ISaveTimeMachineService? saveTimeMachineService = null,
+        Func<string, IReadOnlyList<SafeProcessEntry>>? directoryProcessFinder = null,
+        TimeSpan? preTrainerSnapshotTimeout = null)
     {
         _database = database ?? throw new ArgumentNullException(nameof(database));
         _paths = paths ?? throw new ArgumentNullException(nameof(paths));
@@ -80,6 +86,12 @@ public sealed class TrainerRuntimeService : ITrainerRuntimeService, IDisposable,
         _gameLaunchService = gameLaunchService ?? throw new ArgumentNullException(nameof(gameLaunchService));
         _elevationAdvisor = elevationAdvisor ?? new TrainerElevationAdvisor();
         _logger = logger ?? NullLogger<TrainerRuntimeService>.Instance;
+        _saveTimeMachineService = saveTimeMachineService;
+        _directoryProcessFinder = directoryProcessFinder
+            ?? (static dir => SafeProcessInspector.FindProcessesUnderDirectory(dir, excludeAuxiliary: true));
+        _preTrainerSnapshotTimeout = preTrainerSnapshotTimeout is { } timeout && timeout > TimeSpan.Zero
+            ? timeout
+            : TimeSpan.FromSeconds(15);
 
         _safetyGate.EmergencyStopTriggered += OnEmergencyStopTriggered;
         _gameLaunchService.SessionChanged += OnGameSessionChanged;
@@ -105,13 +117,17 @@ public sealed class TrainerRuntimeService : ITrainerRuntimeService, IDisposable,
         CancellationTokenSource? launchCts = null;
         try
         {
-            if (ActiveSession is not null)
+            if (ActiveSession is { } existingSession)
             {
+                GameRecord? runningGame = await _database.GetGameByIdAsync(existingSession.GameId, ct).ConfigureAwait(false);
+                string runningTitle = !string.IsNullOrWhiteSpace(runningGame?.Title)
+                    ? runningGame.Title
+                    : existingSession.GameId;
                 return new TrainerLaunchOutcome
                 {
                     Succeeded = false,
                     FailureKind = TrainerLaunchFailureKind.AlreadyRunning,
-                    Message = "当前已有正在运行的修改器会话，请先停止后再启动其他修改器。",
+                    Message = $"当前游戏「{runningTitle}」的修改器正在运行中，请先停止后再启动其他修改器。",
                 };
             }
 
@@ -163,17 +179,26 @@ public sealed class TrainerRuntimeService : ITrainerRuntimeService, IDisposable,
                 };
             }
 
-            // 2. Pre-launch SHA-256 TOCTOU integrity verification.
+            // 2. Pre-launch SHA-256 TOCTOU integrity verification (silently deleted binaries classify as AntivirusQuarantined).
             TrainerIntegrityReport integrity = await _catalogService.VerifyAsync(trainer.TrainerId, launchToken).ConfigureAwait(false);
             if (!integrity.IsValid)
             {
-                TrainerLaunchFailureKind integrityFailure = integrity.Win32ErrorCode is 225 or 226
-                    ? TrainerLaunchFailureKind.AntivirusQuarantined
-                    : integrity.Win32ErrorCode == 4551
-                        ? TrainerLaunchFailureKind.SmartAppControlBlocked
-                        : TrainerLaunchFailureKind.IntegrityHashMismatch;
+                bool isSandboxBoundaryViolation = !integrity.IsInsideSandbox
+                    && !string.IsNullOrWhiteSpace(integrity.FailureMessage)
+                    && (integrity.FailureMessage.Contains("越界", StringComparison.Ordinal)
+                        || integrity.FailureMessage.Contains("重解析点", StringComparison.Ordinal)
+                        || integrity.FailureMessage.Contains("路径无效", StringComparison.Ordinal));
 
-                TrainerRuntimeState nextState = integrityFailure == TrainerLaunchFailureKind.AntivirusQuarantined
+                TrainerLaunchFailureKind integrityFailure =
+                    integrity.Win32ErrorCode is 225 or 226
+                    || (!integrity.FileExists && !isSandboxBoundaryViolation)
+                        ? TrainerLaunchFailureKind.AntivirusQuarantined
+                        : integrity.Win32ErrorCode == 4551
+                            ? TrainerLaunchFailureKind.SmartAppControlBlocked
+                            : TrainerLaunchFailureKind.IntegrityHashMismatch;
+
+                TrainerRuntimeState nextState = integrityFailure is TrainerLaunchFailureKind.AntivirusQuarantined
+                    or TrainerLaunchFailureKind.SmartAppControlBlocked
                     ? TrainerRuntimeState.Quarantined
                     : TrainerRuntimeState.Ready;
 
@@ -192,31 +217,12 @@ public sealed class TrainerRuntimeService : ITrainerRuntimeService, IDisposable,
             TrainerSettingsDto settings = await _database.GetTrainerSettingsAsync(launchToken).ConfigureAwait(false);
             string sandboxRoot = _paths.ResolveTrainerSandboxDirectory(settings.CustomSandboxRoot, requirePureAscii: false);
 
-            // 3. Non-blocking pre-trainer save snapshot (Skipped / Failed MUST NEVER block trainer launch).
+            // 3. Non-blocking pre-trainer save snapshot: prefer unified Save Time Machine, fallback to legacy engine.
             PreTrainerSnapshotResult? preSnapshot = null;
             if (options.CreatePreTrainerSnapshot)
             {
                 TransitionState(game.GameId, trainer.TrainerId, null, TrainerRuntimeState.Snapshotting, "正在创建启动前存档快照…");
-                try
-                {
-                    preSnapshot = await _snapshotService
-                        .CreateAsync(game.GameId, trainer.TrainerId, launchToken)
-                        .ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Pre-trainer snapshot failed for game {GameId}; continuing launch non-blockingly.", game.GameId);
-                    preSnapshot = new PreTrainerSnapshotResult
-                    {
-                        Succeeded = false,
-                        Status = PreTrainerSnapshotStatus.Failed,
-                        Message = $"启动前存档快照异常已跳过：{ex.Message}",
-                    };
-                }
+                preSnapshot = await CreatePreTrainerSnapshotNonBlockingAsync(game, trainer, settings, launchToken).ConfigureAwait(false);
             }
 
             // 4. Prepare zero-injection A0+A audio mute prior to spawning the external trainer.
@@ -235,8 +241,8 @@ public sealed class TrainerRuntimeService : ITrainerRuntimeService, IDisposable,
                 _logger.LogWarning(ex, "Trainer audio controller preparation failed; continuing launch.");
             }
 
-            // 5. Inspect target game process IL and PE manifest to determine Level 1 vs Level 2 elevation.
-            bool targetGameElevated = IsTargetGameElevated(game.GameId);
+            // 5. Inspect target game process IL (with pure 0x1000 fallback for externally launched games) & PE manifest.
+            (bool targetGameElevated, bool targetGameLaunchedExternally) = InspectTargetGameProcess(game);
             string resolvedExePath = !string.IsNullOrWhiteSpace(integrity.ResolvedExecutablePath)
                 ? integrity.ResolvedExecutablePath!
                 : Path.GetFullPath(Path.Combine(sandboxRoot, trainer.SandboxRelativePath));
@@ -265,7 +271,8 @@ public sealed class TrainerRuntimeService : ITrainerRuntimeService, IDisposable,
             }
             catch (TrainerWorkerLaunchException ex)
             {
-                TrainerRuntimeState nextState = ex.FailureKind == TrainerLaunchFailureKind.AntivirusQuarantined
+                TrainerRuntimeState nextState = ex.FailureKind is TrainerLaunchFailureKind.AntivirusQuarantined
+                    or TrainerLaunchFailureKind.SmartAppControlBlocked
                     ? TrainerRuntimeState.Quarantined
                     : TrainerRuntimeState.Ready;
                 TransitionState(game.GameId, trainer.TrainerId, null, nextState, ex.Message);
@@ -296,6 +303,10 @@ public sealed class TrainerRuntimeService : ITrainerRuntimeService, IDisposable,
             _safetyGate.NotifyTrainerSessionStarted(session.SessionId, game.GameId);
             TransitionState(game.GameId, trainer.TrainerId, session.SessionId, TrainerRuntimeState.Running, "修改器已在安全沙箱中运行。");
 
+            string? externalLaunchNotice = targetGameLaunchedExternally
+                ? "检测到游戏非通过 SPAWN 启动，退出游戏后请手动停止修改器。"
+                : null;
+
             return new TrainerLaunchOutcome
             {
                 Succeeded = true,
@@ -303,6 +314,8 @@ public sealed class TrainerRuntimeService : ITrainerRuntimeService, IDisposable,
                 AllowanceDecision = allowance,
                 PreSnapshot = preSnapshot,
                 IntegrityReport = integrity,
+                IsTargetGameLaunchedExternally = targetGameLaunchedExternally,
+                ExternalLaunchNotice = externalLaunchNotice,
                 Message = "修改器已启动。",
             };
         }
@@ -392,7 +405,10 @@ public sealed class TrainerRuntimeService : ITrainerRuntimeService, IDisposable,
         }
     }
 
-    public async Task SetOriginalWindowVisibleAsync(string sessionId, bool visible, CancellationToken ct = default)
+    public async Task<TrainerSetWindowVisibilityResponse> SetOriginalWindowVisibleWithResultAsync(
+        string sessionId,
+        bool visible,
+        CancellationToken ct = default)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
@@ -400,10 +416,20 @@ public sealed class TrainerRuntimeService : ITrainerRuntimeService, IDisposable,
         TrainerSessionHandle? session = ActiveSession;
         if (session is null || !string.Equals(session.SessionId, sessionId, StringComparison.Ordinal))
         {
-            return;
+            return new TrainerSetWindowVisibilityResponse
+            {
+                Succeeded = false,
+                AffectedWindowCount = 0,
+                ErrorMessage = $"修改器会话 '{sessionId}' 未运行。",
+            };
         }
 
-        await _backend.SetWindowVisibilityAsync(sessionId, visible, ct).ConfigureAwait(false);
+        return await _backend.SetWindowVisibilityWithResultAsync(sessionId, visible, ct).ConfigureAwait(false);
+    }
+
+    public async Task SetOriginalWindowVisibleAsync(string sessionId, bool visible, CancellationToken ct = default)
+    {
+        _ = await SetOriginalWindowVisibleWithResultAsync(sessionId, visible, ct).ConfigureAwait(false);
     }
 
     public Task StopAsync(string sessionId, CancellationToken ct = default) =>
@@ -483,6 +509,7 @@ public sealed class TrainerRuntimeService : ITrainerRuntimeService, IDisposable,
                     }
                 }
 
+                await ResetHotkeyProxyStatesSafeAsync(session.TrainerId).ConfigureAwait(false);
                 _safetyGate.NotifyTrainerSessionEnded(session.SessionId);
                 TransitionState(session.GameId, session.TrainerId, null, TrainerRuntimeState.Ready, detail ?? "修改器已停止。");
             }
@@ -493,28 +520,243 @@ public sealed class TrainerRuntimeService : ITrainerRuntimeService, IDisposable,
         }
     }
 
-    private bool IsTargetGameElevated(string gameId)
+    private async Task<PreTrainerSnapshotResult> CreatePreTrainerSnapshotNonBlockingAsync(
+        GameRecord game,
+        TrainerCatalogRecord trainer,
+        TrainerSettingsDto settings,
+        CancellationToken launchToken)
     {
-        ActiveGameSession? activeGame = _gameLaunchService.GetActiveSession(gameId);
-        if (activeGame is null)
+        if (!settings.CreatePreTrainerSnapshot)
         {
-            return false;
-        }
-
-        if (activeGame.RootProcessId > 4 && _elevationAdvisor.IsProcessElevated(activeGame.RootProcessId))
-        {
-            return true;
-        }
-
-        foreach (int pid in activeGame.TrackedProcessIds)
-        {
-            if (pid > 4 && pid != activeGame.RootProcessId && _elevationAdvisor.IsProcessElevated(pid))
+            return new PreTrainerSnapshotResult
             {
-                return true;
+                Succeeded = false,
+                Status = PreTrainerSnapshotStatus.Skipped,
+                SkipReason = PreTrainerSnapshotSkipReason.DisabledBySettings,
+                Message = "已在设置中关闭修改器启动前自动存档快照。",
+            };
+        }
+
+        if (_saveTimeMachineService is not null)
+        {
+            try
+            {
+                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(launchToken);
+                timeoutCts.CancelAfter(_preTrainerSnapshotTimeout);
+
+                CreateSaveSnapshotResult tmResult = await _saveTimeMachineService.CreateSnapshotAsync(
+                    new CreateSaveSnapshotRequest
+                    {
+                        GameId = game.GameId,
+                        TriggerKind = SaveSnapshotTriggerKind.PreTrainerImport,
+                        Note = $"修改器启动前自动快照（{trainer.DisplayName ?? trainer.TrainerId}）",
+                        IncludeConfigFiles = false,
+                        SkipIfUnchangedFromHead = false,
+                    },
+                    timeoutCts.Token).ConfigureAwait(false);
+
+                if (tmResult.Succeeded && tmResult.Snapshot is not null)
+                {
+                    string tmMessage = string.IsNullOrWhiteSpace(tmResult.Message)
+                        ? $"已通过存档时光机创建启动前快照（{tmResult.Snapshot.FileCount} 个文件）。"
+                        : (tmResult.Message.Contains("时光机", StringComparison.Ordinal)
+                            ? tmResult.Message
+                            : $"已通过存档时光机创建启动前快照：{tmResult.Message}");
+
+                    return new PreTrainerSnapshotResult
+                    {
+                        Succeeded = true,
+                        Status = PreTrainerSnapshotStatus.Completed,
+                        Message = tmMessage,
+                        Snapshot = new PreTrainerSnapshotRecord
+                        {
+                            SnapshotId = tmResult.Snapshot.SnapshotId,
+                            GameId = game.GameId,
+                            TrainerId = trainer.TrainerId,
+                            TriggerKind = PreTrainerSnapshotTriggerKind.PreTrainer,
+                            Status = PreTrainerSnapshotStatus.Completed,
+                            FileCount = tmResult.Snapshot.FileCount,
+                            TotalBytes = tmResult.Snapshot.TotalRawBytes,
+                            CreatedAtUtc = tmResult.Snapshot.CreatedAtUtc,
+                        },
+                    };
+                }
+
+                if (tmResult.Skipped)
+                {
+                    PreTrainerSnapshotSkipReason mappedReason = MapTimeMachineSkipReason(tmResult.SkipReason);
+                    return new PreTrainerSnapshotResult
+                    {
+                        Succeeded = false,
+                        Status = PreTrainerSnapshotStatus.Skipped,
+                        SkipReason = mappedReason,
+                        Message = string.IsNullOrWhiteSpace(tmResult.Message)
+                            ? "启动前统一存档快照已跳过（不阻断修改器启动）。"
+                            : tmResult.Message,
+                    };
+                }
+
+                _logger.LogWarning(
+                    "Save Time Machine pre-trainer snapshot returned non-skipped failure for game {GameId}: {Message}; falling back to legacy snapshot engine.",
+                    game.GameId,
+                    tmResult.Message);
+            }
+            catch (OperationCanceledException) when (launchToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogWarning(
+                    "Save Time Machine pre-trainer snapshot timed out after {TimeoutSeconds}s for game {GameId}; skipping non-blockingly.",
+                    _preTrainerSnapshotTimeout.TotalSeconds,
+                    game.GameId);
+                return new PreTrainerSnapshotResult
+                {
+                    Succeeded = false,
+                    Status = PreTrainerSnapshotStatus.Skipped,
+                    SkipReason = PreTrainerSnapshotSkipReason.Timeout,
+                    Message = "启动前统一存档快照超时已跳过（不阻断修改器启动）。",
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Save Time Machine pre-trainer snapshot threw for game {GameId}; falling back to legacy snapshot engine.",
+                    game.GameId);
             }
         }
 
-        return false;
+        try
+        {
+            return await _snapshotService
+                .CreateAsync(game.GameId, trainer.TrainerId, isManual: false, launchToken)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Pre-trainer snapshot failed for game {GameId}; continuing launch non-blockingly.", game.GameId);
+            return new PreTrainerSnapshotResult
+            {
+                Succeeded = false,
+                Status = PreTrainerSnapshotStatus.Failed,
+                Message = $"启动前存档快照异常已跳过：{ex.Message}",
+            };
+        }
+    }
+
+    private static PreTrainerSnapshotSkipReason MapTimeMachineSkipReason(SaveSnapshotSkipReason reason) => reason switch
+    {
+        SaveSnapshotSkipReason.DisabledBySettings => PreTrainerSnapshotSkipReason.DisabledBySettings,
+        SaveSnapshotSkipReason.NoSaveLocationsFound => PreTrainerSnapshotSkipReason.NoSaveLocationsFound,
+        SaveSnapshotSkipReason.SizeThresholdExceeded => PreTrainerSnapshotSkipReason.SizeThresholdExceeded,
+        SaveSnapshotSkipReason.FileLockedSharingViolation => PreTrainerSnapshotSkipReason.FileLockedSharingViolation,
+        SaveSnapshotSkipReason.ConcurrentModificationDetected => PreTrainerSnapshotSkipReason.ConcurrentModificationDetected,
+        _ => PreTrainerSnapshotSkipReason.None,
+    };
+
+    private (bool IsElevated, bool LaunchedExternally) InspectTargetGameProcess(GameRecord game)
+    {
+        ActiveGameSession? activeGame = _gameLaunchService.GetActiveSession(game.GameId);
+        if (activeGame is not null)
+        {
+            if (activeGame.RootProcessId > 4 && _elevationAdvisor.IsProcessElevated(activeGame.RootProcessId))
+            {
+                return (true, false);
+            }
+
+            foreach (int pid in activeGame.TrackedProcessIds)
+            {
+                if (pid > 4 && pid != activeGame.RootProcessId && _elevationAdvisor.IsProcessElevated(pid))
+                {
+                    return (true, false);
+                }
+            }
+
+            return (false, false);
+        }
+
+        if (string.IsNullOrWhiteSpace(game.InstallDir))
+        {
+            return (false, false);
+        }
+
+        IReadOnlyList<SafeProcessEntry> externalProcesses;
+        try
+        {
+            externalProcesses = _directoryProcessFinder(game.InstallDir);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "External game process fallback inspection failed for {InstallDir}.", game.InstallDir);
+            }
+
+            return (false, false);
+        }
+
+        if (externalProcesses.Count == 0)
+        {
+            return (false, false);
+        }
+
+        foreach (SafeProcessEntry proc in externalProcesses)
+        {
+            if (proc.ProcessId > 4 && _elevationAdvisor.IsProcessElevated(proc.ProcessId))
+            {
+                return (true, true);
+            }
+        }
+
+        return (false, true);
+    }
+
+    private async Task ResetHotkeyProxyStatesSafeAsync(string trainerId)
+    {
+        if (string.IsNullOrWhiteSpace(trainerId))
+        {
+            return;
+        }
+
+        try
+        {
+            await _database.ResetTrainerHotkeyProxyStatesAsync(trainerId, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to reset hotkey proxy states for trainer {TrainerId}.", trainerId);
+            }
+        }
+    }
+
+    private void ResetHotkeyProxyStatesBlockingSafe(string trainerId)
+    {
+        if (string.IsNullOrWhiteSpace(trainerId))
+        {
+            return;
+        }
+
+        try
+        {
+            Task.Run(() => ResetHotkeyProxyStatesSafeAsync(trainerId), CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to reset hotkey proxy states on natural exit for trainer {TrainerId}.", trainerId);
+            }
+        }
     }
 
     private void OnEmergencyStopTriggered(object? sender, TrainerEmergencyStopEvent e)
@@ -642,6 +884,7 @@ public sealed class TrainerRuntimeService : ITrainerRuntimeService, IDisposable,
 
         if (cleared is not null)
         {
+            ResetHotkeyProxyStatesBlockingSafe(cleared.TrainerId);
             _safetyGate.NotifyTrainerSessionEnded(cleared.SessionId);
             TransitionState(
                 cleared.GameId,

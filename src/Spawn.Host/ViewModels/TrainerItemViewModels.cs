@@ -18,21 +18,32 @@ public sealed partial class TrainerHotkeyRowViewModel : ObservableObject
 {
     private readonly Func<TrainerHotkeyRowViewModel, Task> _onTrigger;
     private readonly Func<TrainerHotkeyRowViewModel, Task>? _onRemove;
+    private readonly Func<TrainerHotkeyRowViewModel, string?, Task>? _onSaveMappedChord;
 
     public string TrainerId { get; }
     public string EntryId { get; }
     public string Label { get; }
     public string? Tooltip { get; }
     public string OriginalChord { get; }
-    public string? MappedChord { get; }
     public TrainerHotkeyEntryKind EntryKind { get; }
     public int SortOrder { get; }
     public bool IsManualEntry { get; }
 
     [ObservableProperty]
+    private string? _mappedChord;
+
+    [ObservableProperty]
+    private bool _isEditingMappedChord;
+
+    [ObservableProperty]
+    private string _editingMappedChordText = string.Empty;
+
+    [ObservableProperty]
     private bool _proxyState;
 
     public string EffectiveChord => string.IsNullOrWhiteSpace(MappedChord) ? OriginalChord : MappedChord!;
+    public bool HasCustomMapping => !string.IsNullOrWhiteSpace(MappedChord);
+    public bool CanEditMappedChord => _onSaveMappedChord is not null;
     public bool HasTooltip => !string.IsNullOrWhiteSpace(Tooltip);
     public bool IsToggle => EntryKind == TrainerHotkeyEntryKind.Toggle;
     public string ActionButtonLabel => IsToggle
@@ -44,23 +55,29 @@ public sealed partial class TrainerHotkeyRowViewModel : ObservableObject
 
     public IAsyncRelayCommand TriggerCommand { get; }
     public IAsyncRelayCommand RemoveCommand { get; }
+    public IRelayCommand BeginEditMappedChordCommand { get; }
+    public IRelayCommand CancelEditMappedChordCommand { get; }
+    public IAsyncRelayCommand SaveMappedChordCommand { get; }
+    public IAsyncRelayCommand ClearMappedChordCommand { get; }
 
     public TrainerHotkeyRowViewModel(
         TrainerHotkeyBindingRecord record,
         Func<TrainerHotkeyRowViewModel, Task> onTrigger,
         Func<TrainerHotkeyRowViewModel, Task>? onRemove = null,
-        bool isManualEntry = false)
+        bool isManualEntry = false,
+        Func<TrainerHotkeyRowViewModel, string?, Task>? onSaveMappedChord = null)
     {
         ArgumentNullException.ThrowIfNull(record);
         _onTrigger = onTrigger ?? throw new ArgumentNullException(nameof(onTrigger));
         _onRemove = onRemove;
+        _onSaveMappedChord = onSaveMappedChord;
 
         TrainerId = record.TrainerId;
         EntryId = record.EntryId;
         Label = record.Label;
         Tooltip = record.Tooltip;
         OriginalChord = record.OriginalChord;
-        MappedChord = record.MappedChord;
+        _mappedChord = record.MappedChord;
         EntryKind = record.EntryKind;
         SortOrder = record.SortOrder;
         _proxyState = record.ProxyState;
@@ -68,6 +85,30 @@ public sealed partial class TrainerHotkeyRowViewModel : ObservableObject
 
         TriggerCommand = new AsyncRelayCommand(() => _onTrigger(this));
         RemoveCommand = new AsyncRelayCommand(() => _onRemove is not null ? _onRemove(this) : Task.CompletedTask);
+        BeginEditMappedChordCommand = new RelayCommand(BeginEditMappedChord);
+        CancelEditMappedChordCommand = new RelayCommand(CancelEditMappedChord);
+        SaveMappedChordCommand = new AsyncRelayCommand(
+            () => _onSaveMappedChord is not null ? _onSaveMappedChord(this, EditingMappedChordText) : Task.CompletedTask);
+        ClearMappedChordCommand = new AsyncRelayCommand(
+            () => _onSaveMappedChord is not null ? _onSaveMappedChord(this, null) : Task.CompletedTask);
+    }
+
+    private void BeginEditMappedChord()
+    {
+        EditingMappedChordText = EffectiveChord;
+        IsEditingMappedChord = true;
+    }
+
+    private void CancelEditMappedChord()
+    {
+        IsEditingMappedChord = false;
+        EditingMappedChordText = string.Empty;
+    }
+
+    partial void OnMappedChordChanged(string? value)
+    {
+        OnPropertyChanged(nameof(EffectiveChord));
+        OnPropertyChanged(nameof(HasCustomMapping));
     }
 
     partial void OnProxyStateChanged(bool value)
@@ -124,12 +165,19 @@ public sealed partial class TrainerCandidateItemViewModel : ObservableObject
     public string VersionSummaryText => string.IsNullOrWhiteSpace(Candidate.VersionLabel)
         ? (Candidate.UpdatedDateText ?? "点击加载附件版本列表")
         : $"{Candidate.VersionLabel}{(string.IsNullOrWhiteSpace(Candidate.UpdatedDateText) ? string.Empty : $" · {Candidate.UpdatedDateText}")}";
-    public string ConfidenceBadgeText => UiFormatters.FormatTrainerVersionConfidenceLabel(Candidate.VersionConfidence);
-    public string ConfidenceReasonText => Candidate.ConfidenceReason ?? string.Empty;
-    public bool HasConfidenceReason => !string.IsNullOrWhiteSpace(Candidate.ConfidenceReason);
+    public string ConfidenceBadgeText => UiFormatters.FormatTrainerVersionConfidenceLabel(
+        SelectedAttachment?.VersionConfidence ?? Candidate.VersionConfidence);
+    public string ConfidenceReasonText => SelectedAttachment?.ConfidenceReason ?? Candidate.ConfidenceReason ?? string.Empty;
+    public bool HasConfidenceReason => !string.IsNullOrWhiteSpace(ConfidenceReasonText);
     public bool HasAttachments => Candidate.Attachments.Count > 0;
     public IReadOnlyList<TrainerAttachmentCandidate> Attachments => Candidate.Attachments;
-    public string DownloadButtonLabel => HasAttachments ? "下载所选版本" : "获取附件并下载";
+    public IReadOnlyList<TrainerHotkeyBindingRecord> PreviewHotkeys => Candidate.PreviewHotkeys;
+    public int PreviewHotkeyCount => Candidate.PreviewHotkeys.Count;
+    public bool HasPreviewHotkeys => Candidate.PreviewHotkeys.Count > 0;
+    public string PreviewHotkeysSummaryText => HasPreviewHotkeys
+        ? $"预览热键（{PreviewHotkeyCount} 项）：{string.Join(" · ", Candidate.PreviewHotkeys.Take(4).Select(h => $"{h.OriginalChord} {h.Label}"))}"
+        : string.Empty;
+    public string DownloadButtonLabel => HasAttachments ? "下载所选版本" : "查看版本与热键";
 
     public IAsyncRelayCommand LoadDetailsCommand { get; }
     public IAsyncRelayCommand DownloadCommand { get; }
@@ -151,9 +199,16 @@ public sealed partial class TrainerCandidateItemViewModel : ObservableObject
         _onCopyText = onCopyText ?? CopyToSystemClipboardSafe;
 
         LoadDetailsCommand = new AsyncRelayCommand(() => _onLoadDetails(this));
-        DownloadCommand = new AsyncRelayCommand(() => _onDownload(this));
+        DownloadCommand = new AsyncRelayCommand(() => HasAttachments ? _onDownload(this) : _onLoadDetails(this));
         OpenInBrowserCommand = new RelayCommand(OpenValidatedPageInBrowser);
         CopyPageUrlCommand = new RelayCommand(CopyValidatedPageUrl);
+    }
+
+    partial void OnSelectedAttachmentChanged(TrainerAttachmentCandidate? value)
+    {
+        OnPropertyChanged(nameof(ConfidenceBadgeText));
+        OnPropertyChanged(nameof(ConfidenceReasonText));
+        OnPropertyChanged(nameof(HasConfidenceReason));
     }
 
     public void UpdateCandidate(TrainerCandidate updated)
@@ -175,6 +230,10 @@ public sealed partial class TrainerCandidateItemViewModel : ObservableObject
         OnPropertyChanged(nameof(HasConfidenceReason));
         OnPropertyChanged(nameof(HasAttachments));
         OnPropertyChanged(nameof(Attachments));
+        OnPropertyChanged(nameof(PreviewHotkeys));
+        OnPropertyChanged(nameof(PreviewHotkeyCount));
+        OnPropertyChanged(nameof(HasPreviewHotkeys));
+        OnPropertyChanged(nameof(PreviewHotkeysSummaryText));
         OnPropertyChanged(nameof(DownloadButtonLabel));
     }
 
@@ -220,21 +279,24 @@ public sealed partial class PreTrainerSnapshotItemViewModel : ObservableObject
     private readonly Func<PreTrainerSnapshotItemViewModel, Task> _onRestore;
 
     public PreTrainerSnapshotRecord Record { get; }
+    public bool IsTimeMachineSnapshot { get; }
 
     [ObservableProperty]
     private bool _isGameRunning;
 
     public string SnapshotId => Record.SnapshotId;
-    public string TriggerBadgeText => Record.TriggerKind == PreTrainerSnapshotTriggerKind.PreRestoreSafety
-        ? "回滚前安全点"
-        : "修改器启动前";
+    public string TriggerBadgeText => IsTimeMachineSnapshot
+        ? "修改器启动前 · 时光机"
+        : (Record.TriggerKind == PreTrainerSnapshotTriggerKind.PreRestoreSafety
+            ? "回滚前安全点"
+            : "修改器启动前");
     public string StatusText => UiFormatters.FormatPreTrainerSnapshotStatus(Record.Status, Record.SkipReason);
     public bool IsCompleted => Record.Status == PreTrainerSnapshotStatus.Completed;
     public bool IsSkipped => Record.Status == PreTrainerSnapshotStatus.Skipped;
     public string CreatedAtText => Record.CreatedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
     public string MetricsText => IsCompleted
         ? $"{Record.FileCount} 个文件 · {UiFormatters.FormatByteSize(Record.TotalBytes)}"
-        : (Record.SkipReason ?? "未写入文件");
+        : "未写入文件";
     public string RestoredNoteText => Record.RestoredAtUtc.HasValue
         ? $"已于 {Record.RestoredAtUtc.Value.ToLocalTime():MM-dd HH:mm} 回滚"
         : string.Empty;
@@ -246,9 +308,11 @@ public sealed partial class PreTrainerSnapshotItemViewModel : ObservableObject
     public PreTrainerSnapshotItemViewModel(
         PreTrainerSnapshotRecord record,
         bool isGameRunning,
-        Func<PreTrainerSnapshotItemViewModel, Task> onRestore)
+        Func<PreTrainerSnapshotItemViewModel, Task> onRestore,
+        bool isTimeMachineSnapshot = false)
     {
         Record = record ?? throw new ArgumentNullException(nameof(record));
+        IsTimeMachineSnapshot = isTimeMachineSnapshot;
         _isGameRunning = isGameRunning;
         _onRestore = onRestore ?? throw new ArgumentNullException(nameof(onRestore));
         RestoreCommand = new AsyncRelayCommand(() => _onRestore(this));

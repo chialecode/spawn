@@ -8,8 +8,8 @@
       "status": "active",
       "owner": "维护者",
       "scope": "Pull Request 阶段变更、门禁证据、未测边界与 DCO 签名模板",
-      "reviewed": "2026-11-24",
-      "basis": "D-34：开发流程统一为 issue 驱动"
+      "reviewed": "2026-11-27",
+      "basis": "#73：优化 PR 模板验证与风险项格式，移除互斥风险复选框并明确 not-run 使用普通列表"
     },
     {
       "path": ".github/actions-policy.json",

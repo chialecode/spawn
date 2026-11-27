@@ -66,6 +66,13 @@ public interface IGameLaunchService
 
     ActiveGameSession? GetActiveSession(string gameId);
     Task<GameLaunchResult> LaunchGameAsync(string gameId, CancellationToken cancellationToken = default);
+
+    Task<GameLaunchResult> LaunchGameAsync(
+        string gameId,
+        GameLaunchExecutionOptions options,
+        CancellationToken cancellationToken = default) =>
+        LaunchGameAsync(gameId, cancellationToken);
+
     Task<bool> StopGameAsync(string gameId, CancellationToken cancellationToken = default);
 
     async Task<GameStopResult> StopGameAsync(

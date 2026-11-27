@@ -267,7 +267,9 @@ public partial class App : Application
             _mainWindow = new MainWindow(
                 _mainViewModel,
                 _trayService,
-                () => _ = Dispatcher.InvokeAsync(() => _ = ShutdownGracefullyAsync()));
+                () => _ = Dispatcher.InvokeAsync(() => _ = ShutdownGracefullyAsync()),
+                _serviceProvider.GetRequiredService<ISteamClientLocator>(),
+                _serviceProvider.GetRequiredService<ISteamShortcutService>());
             _mainWindow.HiddenToTray += () =>
             {
                 var updateSvc = _serviceProvider?.GetService<IUpdateService>();

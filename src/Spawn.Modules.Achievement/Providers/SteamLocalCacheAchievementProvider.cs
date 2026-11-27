@@ -1,6 +1,6 @@
 using System.Globalization;
-using Microsoft.Win32;
 using Spawn.Contracts;
+using Spawn.Core;
 
 namespace Spawn.Modules.Achievement;
 
@@ -11,6 +11,13 @@ namespace Spawn.Modules.Achievement;
 public sealed class SteamLocalCacheAchievementProvider : IAchievementSourceProvider
 {
     public const string Id = "steam.local_cache";
+
+    private readonly ISteamClientLocator? _steamLocator;
+
+    public SteamLocalCacheAchievementProvider(ISteamClientLocator? steamLocator = null)
+    {
+        _steamLocator = steamLocator;
+    }
 
     public string ProviderId => Id;
     public int Priority => 40;
@@ -25,7 +32,10 @@ public sealed class SteamLocalCacheAchievementProvider : IAchievementSourceProvi
             return [];
         }
 
-        string? steamRoot = ResolveSteamInstallPath(context.EnvironmentOverrides);
+        string? steamRoot = ResolveSteamInstallPath(
+            context.EnvironmentOverrides,
+            context.SteamInstallDirectoryOverride,
+            _steamLocator);
         if (string.IsNullOrWhiteSpace(steamRoot))
         {
             return [];
@@ -101,44 +111,64 @@ public sealed class SteamLocalCacheAchievementProvider : IAchievementSourceProvi
         return SteamBinaryVdfParser.ParseUserStatsBin(rawStats, bitMappings);
     }
 
-    public static string? ResolveSteamInstallPath(AchievementEnvironmentOverrides? overrides)
+    public static string? ResolveSteamInstallPath(
+        AchievementEnvironmentOverrides? overrides,
+        string? globalSteamInstallDirOverride = null,
+        ISteamClientLocator? steamLocator = null)
     {
         if (overrides is not null)
         {
-            // In isolated test mode, strictly respect overrides and never leak into host Steam directories.
-            return !string.IsNullOrWhiteSpace(overrides.SteamInstallPath) && Directory.Exists(overrides.SteamInstallPath)
-                ? Path.GetFullPath(overrides.SteamInstallPath)
-                : null;
+            // In isolated test mode, strictly respect overrides (and explicit DB override when set) and never leak into host Steam directories.
+            string? explicitOverride = !string.IsNullOrWhiteSpace(overrides.SteamInstallPath)
+                ? overrides.SteamInstallPath
+                : globalSteamInstallDirOverride;
+            return TryNormalizeExistingSteamDirectory(explicitOverride);
+        }
+
+        if (!string.IsNullOrWhiteSpace(globalSteamInstallDirOverride))
+        {
+            return TryNormalizeExistingSteamDirectory(globalSteamInstallDirOverride);
+        }
+
+        ISteamClientLocator locator = steamLocator ?? SteamClientLocator.Default;
+        if (locator is SteamClientLocator concreteLocator)
+        {
+            IReadOnlyList<(string Directory, SteamPathDiscoverySource Source)> candidates =
+                concreteLocator.EnumerateCandidateInstallDirectories(explicitInstallDirOverride: null);
+            return candidates.Count > 0 ? candidates[0].Directory : null;
+        }
+
+        SteamClientDiscoveryResult discovery = locator.Discover(explicitInstallDirOverride: null);
+        return TryNormalizeExistingSteamDirectory(discovery.InstallDirectory);
+    }
+
+    private static string? TryNormalizeExistingSteamDirectory(string? rawPath)
+    {
+        if (string.IsNullOrWhiteSpace(rawPath))
+        {
+            return null;
         }
 
         try
         {
-            using var key = Registry.CurrentUser.OpenSubKey(@"Software\Valve\Steam", writable: false);
-            string? regPath = key?.GetValue("SteamPath") as string;
-            if (!string.IsNullOrWhiteSpace(regPath))
+            string trimmed = rawPath.Trim().Trim('"').Replace('/', Path.DirectorySeparatorChar);
+            if (string.IsNullOrWhiteSpace(trimmed))
             {
-                string normalized = regPath.Replace('/', Path.DirectorySeparatorChar);
-                if (Directory.Exists(normalized))
-                {
-                    return Path.GetFullPath(normalized);
-                }
+                return null;
             }
+
+            string full = Path.GetFullPath(trimmed);
+            if (string.Equals(Path.GetFileName(full), SteamClientLocator.SteamExecutableFileName, StringComparison.OrdinalIgnoreCase))
+            {
+                full = Path.GetDirectoryName(full) ?? full;
+            }
+
+            string normalized = Path.TrimEndingDirectorySeparator(full);
+            return Directory.Exists(normalized) ? normalized : null;
         }
         catch
         {
-            // Ignore registry lookup errors.
+            return null;
         }
-
-        string pf86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
-        if (!string.IsNullOrWhiteSpace(pf86))
-        {
-            string candidate = Path.Combine(pf86, "Steam");
-            if (Directory.Exists(candidate))
-            {
-                return candidate;
-            }
-        }
-
-        return null;
     }
 }

@@ -20,6 +20,18 @@ public sealed class GameLaunchOptions
     public TimeSpan ShellBreakTriggerThreshold { get; set; } = TimeSpan.FromSeconds(15);
     public TimeSpan ShellBreakObservationWindow { get; set; } = TimeSpan.FromSeconds(35);
     public TimeSpan ShellBreakPollInterval { get; set; } = TimeSpan.FromMilliseconds(750);
+
+    /// <summary>
+    /// Extended observation window for Steam-delegated launches when Steam cold-starts or was restarted
+    /// (accommodating Steam client login, updates, and shader pre-caching).
+    /// </summary>
+    public TimeSpan SteamLaunchObservationWindow { get; set; } = TimeSpan.FromSeconds(120);
+
+    /// <summary>
+    /// Observation window for Steam-delegated launches when the Steam client is already running.
+    /// </summary>
+    public TimeSpan SteamRunningLaunchObservationWindow { get; set; } = TimeSpan.FromSeconds(75);
+
     public double DefaultAfkTimeoutSeconds { get; set; } = PlaytimeTracker.DefaultAfkTimeoutSeconds;
 
     /// <summary>
@@ -72,6 +84,10 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
     private readonly ITrainerSafetyGate? _trainerSafetyGate;
     private readonly SpawnPaths? _paths;
     private readonly Func<string, IReadOnlyList<string>>? _sandboxOrphanProbe;
+    private readonly ISteamShortcutService _steamShortcutService;
+    private readonly ISteamClientLocator? _steamClientLocator;
+    private readonly Func<string, IReadOnlyList<int>>? _directoryProcessProbe;
+    private readonly Func<int, bool>? _processAliveProbe;
 
     private readonly ConcurrentDictionary<string, ActiveGameSession> _activeSessions = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, RunningSessionContext> _runningContexts = new(StringComparer.OrdinalIgnoreCase);
@@ -94,7 +110,11 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
         IEnumerable<ISensitiveWorkerShutdownHook>? sensitiveWorkerShutdownHooks = null,
         ITrainerSafetyGate? trainerSafetyGate = null,
         SpawnPaths? paths = null,
-        Func<string, IReadOnlyList<string>>? sandboxOrphanProbe = null)
+        Func<string, IReadOnlyList<string>>? sandboxOrphanProbe = null,
+        ISteamShortcutService? steamShortcutService = null,
+        ISteamClientLocator? steamClientLocator = null,
+        Func<string, IReadOnlyList<int>>? directoryProcessProbe = null,
+        Func<int, bool>? processAliveProbe = null)
     {
         ArgumentNullException.ThrowIfNull(database);
         ArgumentNullException.ThrowIfNull(antiCheatGuard);
@@ -114,6 +134,11 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
         _trainerSafetyGate = trainerSafetyGate ?? antiCheatGuard as ITrainerSafetyGate;
         _paths = paths;
         _sandboxOrphanProbe = sandboxOrphanProbe;
+        _steamClientLocator = steamClientLocator ?? (steamShortcutService is null ? SteamClientLocator.Default : null);
+        _steamShortcutService = steamShortcutService
+            ?? new SteamShortcutService(_steamClientLocator ?? SteamClientLocator.Default, timeProvider: _timeProvider);
+        _directoryProcessProbe = directoryProcessProbe;
+        _processAliveProbe = processAliveProbe;
     }
 
     public ActiveGameSession? GetActiveSession(string gameId) =>
@@ -153,11 +178,19 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
         }
     }
 
+    public Task<GameLaunchResult> LaunchGameAsync(
+        string gameId,
+        CancellationToken cancellationToken = default) =>
+        LaunchGameAsync(gameId, new GameLaunchExecutionOptions(), cancellationToken);
+
     public async Task<GameLaunchResult> LaunchGameAsync(
         string gameId,
+        GameLaunchExecutionOptions options,
         CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        options ??= new GameLaunchExecutionOptions();
+
         if (string.IsNullOrWhiteSpace(gameId))
         {
             return GameLaunchResult.Failure("INVALID_GAME_ID", "游戏标识不能为空。");
@@ -185,10 +218,29 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
             return GameLaunchResult.Failure("EXECUTABLE_NOT_FOUND", $"找不到游戏可执行文件：{exeFullPath}");
         }
 
+        GameSteamLaunchSettings savedSteamSettings = await _database
+            .GetGameSteamLaunchSettingsAsync(game.GameId, cancellationToken)
+            .ConfigureAwait(false);
+        GameLaunchMode effectiveLaunchMode = options.LaunchModeOverride ?? savedSteamSettings.LaunchMode;
+        bool launchedViaSteam = effectiveLaunchMode == GameLaunchMode.Steam;
+
         // 1. Four-layer static anti-cheat determination (fixes Layer-1-only Math.Max stacking)
         //    plus independent VerifiedOfflineBypass evaluation without altering static anti_cheat_tier.
-        var (staticTier, resolvedSignature, isProtectedLaunch) = await ResolveLaunchProtectionAsync(game, cancellationToken)
+        //    D-03 / D-27 red line: official Steam launches MUST force isProtectedLaunch = true for Tier 2/3,
+        //    explicitly ignoring game.VerifiedOfflineBypass because Steam launches the official AC bootstrapper.
+        var (staticTier, resolvedSignature, isProtectedLaunch) = await ResolveLaunchProtectionAsync(
+                game,
+                launchedViaSteam,
+                cancellationToken)
             .ConfigureAwait(false);
+
+        // Hard-block non-Steam Tier 2/3 games from launching through a Steam non-Steam shortcut.
+        if (launchedViaSteam && game.PlatformSource != PlatformSource.SteamLocal && staticTier >= AntiCheatTier.Tier2)
+        {
+            return GameLaunchResult.Failure(
+                "STEAM_LAUNCH_BLOCKED_ANTICHEAT",
+                $"当前游戏为非 Steam 来源且静态反作弊等级为 {staticTier}，为防止 Steam 覆盖层与内核反作弊冲突，已禁止通过 Steam 启动（仅正版 Steam 库游戏支持通过 Steam 启动）。");
+        }
 
         var guardSnap = _antiCheatGuard.CurrentSnapshot;
         if (guardSnap.Phase is AntiCheatGuardPhase.ResidualGuardWatch or AntiCheatGuardPhase.CooldownLocked)
@@ -204,6 +256,28 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
             return GameLaunchResult.Failure(
                 "PROTECTED_GAME_ACTIVE",
                 "当前已有受反作弊保护的网游正在运行，为保障账号安全已阻止并发启动。");
+        }
+
+        GameRecord effectiveGame = game with { AntiCheatTier = staticTier, AntiCheatSignature = resolvedSignature };
+
+        // 1b. Resolve Steam launch URI before purging workers or inserting a session ledger row.
+        string? steamLaunchUri = null;
+        bool steamWasRunning = false;
+        if (launchedViaSteam)
+        {
+            var (steamOk, resolvedUri, resolvedSteamRunning, steamErrorCode, steamErrorMessage) =
+                await ResolveSteamLaunchTargetAsync(effectiveGame, savedSteamSettings, options, cancellationToken)
+                    .ConfigureAwait(false);
+
+            if (!steamOk || string.IsNullOrWhiteSpace(resolvedUri))
+            {
+                return GameLaunchResult.Failure(
+                    steamErrorCode ?? "STEAM_LAUNCH_BLOCKED",
+                    steamErrorMessage ?? "无法通过 Steam 启动该游戏。");
+            }
+
+            steamLaunchUri = resolvedUri;
+            steamWasRunning = resolvedSteamRunning;
         }
 
         // 2. LOOP-06: Tier 2/3 pre-launch automatic sensitive Worker purge (2s budget) + secondary clean-field re-check
@@ -244,18 +318,30 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
             }
         }
 
+        bool suppressAchievementToast = launchedViaSteam
+            && game.PlatformSource == PlatformSource.SteamLocal
+            && (options.SuppressDuplicateAchievementToast
+                || await _database.GetSteamSuppressDuplicateAchievementToastAsync(cancellationToken).ConfigureAwait(false));
+
+        TimeSpan initialObservationWindow = launchedViaSteam
+            ? (steamWasRunning ? _options.SteamRunningLaunchObservationWindow : _options.SteamLaunchObservationWindow)
+            : _options.ShellBreakObservationWindow;
+
         double afkTimeoutSec = await ResolveAfkTimeoutSecondsAsync(cancellationToken).ConfigureAwait(false);
         DateTimeOffset startedUtc = _timeProvider.GetUtcNow();
         string sessionId = SpawnId.NewUlid(startedUtc);
 
         var sessionCtx = new RunningSessionContext(
             sessionId,
-            game with { AntiCheatTier = staticTier, AntiCheatSignature = resolvedSignature },
+            effectiveGame,
             startedUtc,
             afkTimeoutSec,
             new PlaytimeTracker(_activityProbe))
         {
             IsProtectedLaunch = isProtectedLaunch,
+            LaunchedViaSteam = launchedViaSteam,
+            SuppressAchievementToast = suppressAchievementToast,
+            InitialObservationWindow = initialObservationWindow,
         };
 
         if (!_runningContexts.TryAdd(game.GameId, sessionCtx))
@@ -265,12 +351,19 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
         }
 
         string workingDir = Path.GetDirectoryName(exeFullPath) ?? game.InstallDir;
-        var startRequest = new GameProcessStartRequest(
-            ExecutableFullPath: exeFullPath,
-            WorkingDirectory: workingDir,
-            Arguments: game.LaunchArguments,
-            CreateNoWindow: _options.ForceCreateNoWindow);
+        GameProcessStartRequest startRequest = launchedViaSteam
+            ? new GameProcessStartRequest(
+                ExecutableFullPath: steamLaunchUri!,
+                WorkingDirectory: string.Empty,
+                Arguments: null,
+                CreateNoWindow: false)
+            : new GameProcessStartRequest(
+                ExecutableFullPath: exeFullPath,
+                WorkingDirectory: workingDir,
+                Arguments: game.LaunchArguments,
+                CreateNoWindow: _options.ForceCreateNoWindow);
 
+        bool protectedGuardNotified = false;
         try
         {
             await _database.InsertPlaySessionAsync(
@@ -283,14 +376,22 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
                 cancellationToken).ConfigureAwait(false);
 
             ActiveGameSession initialSession;
+            bool useDecoupledLauncher = isProtectedLaunch || launchedViaSteam;
 
-            if (isProtectedLaunch)
+            if (useDecoupledLauncher)
             {
-                // Tier 2 / Tier 3: Explorer Shell COM PPID-decoupled launch + 0x1000 directory tracking.
-                _antiCheatGuard.NotifyProtectedGameStarted(game.GameId, staticTier);
+                // Tier 2 / Tier 3 and Steam-delegated launches ALWAYS use Explorer Shell COM decoupling
+                // + 0x1000 InstallDir directory tracking (NEVER attach steam.exe to JobObjectProcessTracker).
+                if (isProtectedLaunch)
+                {
+                    _antiCheatGuard.NotifyProtectedGameStarted(game.GameId, staticTier);
+                    protectedGuardNotified = true;
+                }
+
                 await _processStarter.StartExplorerDecoupledAsync(startRequest, cancellationToken).ConfigureAwait(false);
 
                 sessionCtx.IsExplorerDecoupled = true;
+                sessionCtx.UseDirectoryTrackingOnly = true;
                 sessionCtx.Playtime.TransitionExplicitState(PlaySessionActivityState.ShellBreakingWatch);
 
                 initialSession = new ActiveGameSession
@@ -304,6 +405,8 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
                     RootProcessId = 0,
                     TrackedProcessIds = [],
                     StartedUtc = startedUtc,
+                    LaunchedViaSteam = launchedViaSteam,
+                    SuppressAchievementToast = suppressAchievementToast,
                 };
             }
             else
@@ -334,6 +437,8 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
                     RootProcessId = rootPid,
                     TrackedProcessIds = initialPids,
                     StartedUtc = startedUtc,
+                    LaunchedViaSteam = false,
+                    SuppressAchievementToast = false,
                 };
             }
 
@@ -345,7 +450,9 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
                     Session: initialSession,
                     CurrentState: initialSession.State,
                     CompletedSession: null,
-                    OccurredUtc: startedUtc),
+                    OccurredUtc: startedUtc,
+                    LaunchedViaSteam: launchedViaSteam,
+                    SuppressAchievementToast: suppressAchievementToast),
                 publishToBus: true).ConfigureAwait(false);
 
             // Start asynchronous lifecycle & 1Hz playtime monitor.
@@ -363,7 +470,7 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
             _runningContexts.TryRemove(game.GameId, out _);
             _activeSessions.TryRemove(game.GameId, out _);
 
-            if (isProtectedLaunch)
+            if (isProtectedLaunch && protectedGuardNotified)
             {
                 _ = _antiCheatGuard.NotifyProtectedGameExitedAsync(game.GameId, staticTier, CancellationToken.None);
             }
@@ -420,11 +527,28 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
                     GameId: gameId,
                     Session: stoppingSession,
                     CurrentState: PlaySessionActivityState.Stopping,
-                    OccurredUtc: _timeProvider.GetUtcNow()),
+                    OccurredUtc: _timeProvider.GetUtcNow(),
+                    LaunchedViaSteam: ctx.LaunchedViaSteam,
+                    SuppressAchievementToast: ctx.SuppressAchievementToast),
                 publishToBus: true).ConfigureAwait(false);
         }
 
         var pidsToStop = CollectLiveSessionPids(ctx);
+
+        // If the session is currently waiting in ShellBreakingWatch (e.g. waiting for Steam or a decoupled launcher
+        // to spawn the game) and no game process has started yet, cancel the watch loop immediately so StopGameAsync
+        // cleanly tears down the session with zero leaked tasks or handles.
+        if (currentState == PlaySessionActivityState.ShellBreakingWatch
+            && pidsToStop.Count == 0
+            && FindDirectoryGamePids(ctx.Game.InstallDir).Count == 0)
+        {
+            ctx.CancelMonitor();
+            TimeSpan watchFlushWait = _options.ForceKillWaitTimeout > TimeSpan.Zero
+                ? _options.ForceKillWaitTimeout
+                : TimeSpan.FromSeconds(3);
+            _ = await WaitForSessionCompletionAsync(ctx, watchFlushWait, cancellationToken).ConfigureAwait(false);
+            return forceKill ? GameStopResult.ForceKilled() : GameStopResult.StoppedGracefully();
+        }
 
         if (!forceKill)
         {
@@ -548,7 +672,9 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
                     GameId: gameId,
                     Session: restoredSession,
                     CurrentState: stateToRestore,
-                    OccurredUtc: _timeProvider.GetUtcNow()),
+                    OccurredUtc: _timeProvider.GetUtcNow(),
+                    LaunchedViaSteam: ctx.LaunchedViaSteam,
+                    SuppressAchievementToast: ctx.SuppressAchievementToast),
                 publishToBus: true).ConfigureAwait(false);
         }
     }
@@ -612,10 +738,10 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
 
         try
         {
-            // If Explorer-decoupled (Tier 2/3), first discover initial game process via 0x1000 directory scan.
+            // If Explorer-decoupled (Tier 2/3 or Steam launch), first discover initial game process via 0x1000 directory scan.
             if (ctx.IsExplorerDecoupled)
             {
-                var adopted = await WaitInShellBreakingWindowAsync(ctx, token).ConfigureAwait(false);
+                var adopted = await WaitInShellBreakingWindowAsync(ctx, ctx.InitialObservationWindow, token).ConfigureAwait(false);
                 if (adopted.Count == 0)
                 {
                     return;
@@ -646,7 +772,7 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
                         if (withinTrigger && canShellBreak && !ctx.StopRequested)
                         {
                             await TransitionToShellBreakingStateAsync(ctx).ConfigureAwait(false);
-                            var adopted = await WaitInShellBreakingWindowAsync(ctx, token).ConfigureAwait(false);
+                            var adopted = await WaitInShellBreakingWindowAsync(ctx, _options.ShellBreakObservationWindow, token).ConfigureAwait(false);
                             if (adopted.Count > 0 && !ctx.StopRequested)
                             {
                                 ctx.SwitchToDirectoryTracking(adopted);
@@ -713,6 +839,8 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
                     SessionActiveSec = tick.ActiveSec,
                     SessionBackgroundSec = tick.BackgroundSec,
                     SessionAfkSec = tick.AfkSec,
+                    LaunchedViaSteam = ctx.LaunchedViaSteam,
+                    SuppressAchievementToast = ctx.SuppressAchievementToast,
                 };
 
                 _activeSessions[ctx.Game.GameId] = updatedSession;
@@ -724,7 +852,9 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
                         Session: updatedSession,
                         CurrentState: effectiveState,
                         CompletedSession: null,
-                        OccurredUtc: _timeProvider.GetUtcNow()),
+                        OccurredUtc: _timeProvider.GetUtcNow(),
+                        LaunchedViaSteam: ctx.LaunchedViaSteam,
+                        SuppressAchievementToast: ctx.SuppressAchievementToast),
                     publishToBus: publishToBus).ConfigureAwait(false);
 
                 tickCounter++;
@@ -793,7 +923,9 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
                     Session: null,
                     CurrentState: PlaySessionActivityState.Stopped,
                     CompletedSession: completedRecord,
-                    OccurredUtc: endedUtc),
+                    OccurredUtc: endedUtc,
+                    LaunchedViaSteam: ctx.LaunchedViaSteam,
+                    SuppressAchievementToast: ctx.SuppressAchievementToast),
                 publishToBus: true).ConfigureAwait(false);
 
             ctx.CompletionTcs.TrySetResult();
@@ -820,7 +952,9 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
                         GameId: ctx.Game.GameId,
                         Session: watchSession,
                         CurrentState: PlaySessionActivityState.ShellBreakingWatch,
-                        OccurredUtc: _timeProvider.GetUtcNow()),
+                        OccurredUtc: _timeProvider.GetUtcNow(),
+                        LaunchedViaSteam: ctx.LaunchedViaSteam,
+                        SuppressAchievementToast: ctx.SuppressAchievementToast),
                     publishToBus: true).ConfigureAwait(false);
             }
         }
@@ -828,15 +962,15 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
 
     private async Task<IReadOnlyList<int>> WaitInShellBreakingWindowAsync(
         RunningSessionContext ctx,
+        TimeSpan observationWindow,
         CancellationToken cancellationToken)
     {
-        TimeSpan window = _options.ShellBreakObservationWindow;
-        if (window <= TimeSpan.Zero)
+        if (observationWindow <= TimeSpan.Zero)
         {
             return FindDirectoryGamePids(ctx.Game.InstallDir);
         }
 
-        DateTimeOffset deadline = _timeProvider.GetUtcNow() + window;
+        DateTimeOffset deadline = _timeProvider.GetUtcNow() + observationWindow;
         TimeSpan pollStep = _options.ShellBreakPollInterval > TimeSpan.Zero
             ? _options.ShellBreakPollInterval
             : TimeSpan.FromMilliseconds(250);
@@ -893,7 +1027,7 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
         return false;
     }
 
-    private static List<int> CollectLiveSessionPids(RunningSessionContext ctx)
+    private List<int> CollectLiveSessionPids(RunningSessionContext ctx)
     {
         var live = new HashSet<int>();
 
@@ -901,7 +1035,7 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
         {
             foreach (int pid in ctx.JobTracker.GetTrackedProcessIds())
             {
-                if (pid > 4 && SafeProcessInspector.IsProcessAlive(pid))
+                if (pid > 4 && IsProcessAliveCore(pid))
                 {
                     string? path = SafeProcessInspector.TryGetProcessExecutablePath(pid);
                     if (path is null || !SafeProcessInspector.IsAuxiliaryOrCrashProcessName(path))
@@ -912,7 +1046,7 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
             }
         }
 
-        if (ctx.RootProcessId > 4 && SafeProcessInspector.IsProcessAlive(ctx.RootProcessId))
+        if (ctx.RootProcessId > 4 && IsProcessAliveCore(ctx.RootProcessId))
         {
             live.Add(ctx.RootProcessId);
         }
@@ -921,7 +1055,7 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
         {
             foreach (int pid in ctx.GetDirectoryTrackedPids())
             {
-                if (pid > 4 && SafeProcessInspector.IsProcessAlive(pid))
+                if (pid > 4 && IsProcessAliveCore(pid))
                 {
                     live.Add(pid);
                 }
@@ -939,8 +1073,32 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
         return [.. live];
     }
 
-    private static List<int> FindDirectoryGamePids(string installDir)
+    private bool IsProcessAliveCore(int pid) =>
+        _processAliveProbe is not null ? _processAliveProbe(pid) : SafeProcessInspector.IsProcessAlive(pid);
+
+    private List<int> FindDirectoryGamePids(string installDir)
     {
+        if (_directoryProcessProbe is not null)
+        {
+            IReadOnlyList<int> probed = _directoryProcessProbe(installDir);
+            if (probed.Count == 0)
+            {
+                return [];
+            }
+
+            var customPids = new List<int>(probed.Count);
+            for (int i = 0; i < probed.Count; i++)
+            {
+                int pid = probed[i];
+                if (pid > 4 && pid != Environment.ProcessId)
+                {
+                    customPids.Add(pid);
+                }
+            }
+
+            return customPids;
+        }
+
         var entries = SafeProcessInspector.FindProcessesUnderDirectory(installDir, excludeAuxiliary: true);
         if (entries.Count == 0)
         {
@@ -951,7 +1109,9 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
         var pids = new List<int>(entries.Count);
         foreach (var entry in entries)
         {
-            if (entry.ProcessId != selfPid && entry.ProcessId > 4)
+            if (entry.ProcessId != selfPid
+                && entry.ProcessId > 4
+                && !IsSteamClientHelperProcessName(entry.ExeFileName))
             {
                 pids.Add(entry.ProcessId);
             }
@@ -959,6 +1119,12 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
 
         return pids;
     }
+
+    private static bool IsSteamClientHelperProcessName(string? exeFileName) =>
+        !string.IsNullOrWhiteSpace(exeFileName)
+        && (string.Equals(exeFileName, SteamClientLocator.SteamExecutableFileName, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(exeFileName, "steamwebhelper.exe", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(exeFileName, "gameoverlayui.exe", StringComparison.OrdinalIgnoreCase));
 
     private static bool HasPotentialShellBreakTargets(string installDir)
     {
@@ -1003,8 +1169,152 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
         return false;
     }
 
+    private async Task<(bool Succeeded, string? LaunchUri, bool SteamWasRunning, string? ErrorCode, string? ErrorMessage)>
+        ResolveSteamLaunchTargetAsync(
+            GameRecord effectiveGame,
+            GameSteamLaunchSettings savedSettings,
+            GameLaunchExecutionOptions options,
+            CancellationToken cancellationToken)
+    {
+        string? steamInstallDirOverride = await _database
+            .GetSteamInstallDirectoryOverrideAsync(cancellationToken)
+            .ConfigureAwait(false);
+        uint? targetAccountId = await _database
+            .GetSteamTargetAccountIdAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!string.IsNullOrWhiteSpace(options.SteamLaunchUri))
+        {
+            string explicitUri = options.SteamLaunchUri.Trim();
+            if (!DefaultGameProcessStarter.IsProtocolUriTarget(explicitUri)
+                || !explicitUri.StartsWith("steam://", StringComparison.OrdinalIgnoreCase))
+            {
+                return (false, null, false, "INVALID_STEAM_LAUNCH_URI", $"无效的 Steam 启动协议地址：{explicitUri}");
+            }
+
+            bool wasRunning = options.SteamWasRunningBeforeLaunch
+                ?? (_steamClientLocator?.Discover(steamInstallDirOverride, targetAccountId).IsSteamRunning ?? false);
+            return (true, explicitUri, wasRunning, null, null);
+        }
+
+        SteamLaunchPreparationResult prep = await _steamShortcutService
+            .PrepareLaunchAsync(
+                effectiveGame,
+                savedSettings,
+                steamInstallDirOverride,
+                targetAccountId,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        switch (prep.Status)
+        {
+            case SteamLaunchPreparationStatus.ReadyOfficialSteam:
+            case SteamLaunchPreparationStatus.ReadyNonSteamShortcut:
+            {
+                if (string.IsNullOrWhiteSpace(prep.LaunchUri))
+                {
+                    return (false, null, false, "STEAM_LAUNCH_URI_MISSING", "未能解析有效的 Steam 启动协议地址（steam://rungameid/...）。");
+                }
+
+                if (prep.ShortcutAppId is { } readyShortcutId && readyShortcutId != savedSettings.RegisteredShortcutAppId)
+                {
+                    await _database
+                        .UpdateGameRegisteredShortcutAppIdAsync(effectiveGame.GameId, readyShortcutId, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+
+                bool wasRunning = options.SteamWasRunningBeforeLaunch
+                    ?? (_steamClientLocator?.Discover(steamInstallDirOverride, targetAccountId).IsSteamRunning ?? false);
+                return (true, prep.LaunchUri, wasRunning, null, null);
+            }
+
+            case SteamLaunchPreparationStatus.NeedsShortcutWriteSteamClosed:
+            {
+                SteamShortcutSyncResult sync = await _steamShortcutService
+                    .ApplyShortcutAndRestartIfNeededAsync(
+                        effectiveGame,
+                        savedSettings,
+                        allowGracefulSteamRestart: false,
+                        steamInstallDirOverride,
+                        targetAccountId,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (!sync.Succeeded || string.IsNullOrWhiteSpace(sync.LaunchUri))
+                {
+                    return (
+                        false,
+                        null,
+                        false,
+                        "STEAM_SHORTCUT_SYNC_FAILED",
+                        sync.ErrorMessage ?? "写入 Steam shortcuts.vdf 非 Steam 快捷方式失败。");
+                }
+
+                if (sync.ShortcutAppId is { } syncedAppId)
+                {
+                    await _database
+                        .UpdateGameRegisteredShortcutAppIdAsync(effectiveGame.GameId, syncedAppId, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+
+                bool wasRunning = options.SteamWasRunningBeforeLaunch ?? false;
+                return (true, sync.LaunchUri, wasRunning, null, null);
+            }
+
+            case SteamLaunchPreparationStatus.NeedsSteamRestartToSync:
+                return (
+                    false,
+                    null,
+                    true,
+                    "STEAM_RESTART_REQUIRED",
+                    prep.ErrorMessage
+                    ?? "Steam 客户端当前正在运行，首次登记或更新非 Steam 快捷方式需经由用户确认后优雅重启 Steam；SPAWN 不会静默强杀 Steam。");
+
+            case SteamLaunchPreparationStatus.BlockedTierAntiCheat:
+                return (
+                    false,
+                    null,
+                    false,
+                    "STEAM_LAUNCH_BLOCKED_ANTICHEAT",
+                    prep.ErrorMessage ?? "当前非 Steam 反作弊受保护游戏禁止通过 Steam 快捷方式启动。");
+
+            case SteamLaunchPreparationStatus.BlockedSteamNotFound:
+                return (
+                    false,
+                    null,
+                    false,
+                    "STEAM_NOT_FOUND",
+                    prep.ErrorMessage ?? "未检测到本机 Steam 客户端，请在「设置 → 常规与游戏库」中手动指定 Steam 路径。");
+
+            case SteamLaunchPreparationStatus.BlockedNoSteamAccount:
+                return (
+                    false,
+                    null,
+                    false,
+                    "STEAM_ACCOUNT_NOT_FOUND",
+                    prep.ErrorMessage ?? "已检测到 Steam 客户端，但未发现可用的 Steam 账号数据目录（userdata）。");
+
+            case SteamLaunchPreparationStatus.BlockedInvalidExecutable:
+                return (
+                    false,
+                    null,
+                    false,
+                    "EXECUTABLE_NOT_FOUND",
+                    prep.ErrorMessage ?? $"找不到有效的游戏可执行文件：{effectiveGame.ExecutableFullPath}");
+
+            default:
+                return (
+                    false,
+                    null,
+                    false,
+                    "STEAM_LAUNCH_BLOCKED",
+                    prep.ErrorMessage ?? "当前游戏无法通过 Steam 启动。");
+        }
+    }
+
     private async Task<(AntiCheatTier StaticTier, string? Signature, bool IsProtectedLaunch)> ResolveLaunchProtectionAsync(
         GameRecord game,
+        bool launchedViaSteam,
         CancellationToken cancellationToken)
     {
         AntiCheatTier staticTier;
@@ -1035,8 +1345,11 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
             hasSinglePlayer = awacy?.HasSinglePlayerHint;
         }
 
+        // CRITICAL RED LINE (D-03 / D-27): Launching an official SteamLocal Tier 2/3 game via Steam
+        // MUST explicitly ignore VerifiedOfflineBypass and enforce full protected launch isolation + 15s cooldown.
         bool verifiedOfflineBypassActive = false;
-        if (staticTier == AntiCheatTier.Tier2
+        if (!launchedViaSteam
+            && staticTier == AntiCheatTier.Tier2
             && game.VerifiedOfflineBypass
             && hasSinglePlayer == true
             && !AntiCheatFeatureCatalog.IsAntiCheatLauncherExecutable(game.ExecutableRelPath))
@@ -1471,6 +1784,9 @@ public sealed class GameLaunchService : IGameLaunchService, IDisposable, IAsyncD
         public int RootProcessId { get; set; }
         public bool IsExplorerDecoupled { get; set; }
         public bool IsProtectedLaunch { get; set; }
+        public bool LaunchedViaSteam { get; set; }
+        public bool SuppressAchievementToast { get; set; }
+        public TimeSpan InitialObservationWindow { get; set; }
         public volatile bool UseDirectoryTrackingOnly;
         public IReadOnlyList<int> LastPublishedPids { get; set; } = [];
 

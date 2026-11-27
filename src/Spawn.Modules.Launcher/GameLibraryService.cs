@@ -70,8 +70,23 @@ public sealed class GameLibraryService : IGameLibraryService
     private static string GetUserPinnedTitleSettingKey(string gameId) =>
         $"launcher.user_pinned_title.{gameId}";
 
-    public IReadOnlyList<DiscoveredLibraryDirectory> DiscoverLocalPlatformLibraries() =>
-        GameDirectoryScanner.DiscoverLocalPlatformLibraryDirectories();
+    public IReadOnlyList<DiscoveredLibraryDirectory> DiscoverLocalPlatformLibraries()
+    {
+        string? steamOverride = null;
+        try
+        {
+            steamOverride = _database.GetSteamInstallDirectoryOverrideAsync().ConfigureAwait(false).GetAwaiter().GetResult();
+        }
+        catch
+        {
+            // Ignore when database has not yet been initialized or setting is unavailable.
+        }
+
+        return GameDirectoryScanner.DiscoverLocalPlatformLibraryDirectories(
+            steamInstallDirHints: string.IsNullOrWhiteSpace(steamOverride) ? null : [steamOverride],
+            gogRootDirHints: null,
+            probeSystemDefaults: true);
+    }
 
     public async Task<GameRecord?> ImportGameAsync(
         string directoryOrExePath,

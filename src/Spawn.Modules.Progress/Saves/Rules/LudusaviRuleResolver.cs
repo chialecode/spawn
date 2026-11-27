@@ -72,7 +72,18 @@ public sealed partial class LudusaviRuleResolver : ILudusaviRuleResolver
 
         _database = database;
         _gameDataService = gameDataService;
-        _knownFolderProvider = knownFolderProvider ?? WindowsKnownFolderResolver.Instance;
+        _knownFolderProvider = knownFolderProvider ?? new WindowsKnownFolderResolver(
+            steamInstallDirOverrideProvider: () =>
+            {
+                try
+                {
+                    return _database.GetSteamInstallDirectoryOverrideAsync().ConfigureAwait(false).GetAwaiter().GetResult();
+                }
+                catch
+                {
+                    return null;
+                }
+            });
         _expander = new LudusaviPlaceholderExpander(_knownFolderProvider);
         _timeProvider = timeProvider ?? TimeProvider.System;
         _registryKeyExistsProbe = registryKeyExistsProbe;

@@ -34,6 +34,7 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
     private readonly List<IDisposable> _eventSubscriptions = [];
     private readonly ConcurrentDictionary<string, GameWatchRegistration> _watchedGames = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, ActiveGameSession> _activeSessions = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, bool> _suppressedOverlayToastGameIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _gameScanLocks = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _monitorLifecycleLock = new(1, 1);
 
@@ -431,6 +432,7 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
             iconPath = demoIcon;
         }
 
+        string? steamInstallDirOverride = await TryGetGlobalSteamInstallDirOverrideAsync(cancellationToken).ConfigureAwait(false);
         var toast = new OverlayToastRequest
         {
             GameId = gameId,
@@ -452,6 +454,7 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
             DurationMs = 4500,
             ReplaceActivePreview = true,
             EnhanceRareAndPlatinumSound = settings.EnhanceRareAndPlatinumSound,
+            SteamInstallDirectoryOverride = steamInstallDirOverride,
         };
 
         bool delivered = await _overlayIpcClient.SendToastAsync(toast, cancellationToken).ConfigureAwait(false);
@@ -635,8 +638,23 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
             {
                 _activeSessions.TryRemove(evt.GameId, out _);
 
-                // Final post-exit sweep so unlocks written during shutdown are never missed
-                await ScanLocalUnlocksRealtimeAsync(evt.GameId, ct).ConfigureAwait(false);
+                // Keep Steam-session duplicate toast suppression active through the session's final post-exit sweep
+                // (so achievements flushed by Steam on game exit still persist to spawn.db without double-popping),
+                // then always clear suppression on Stopped.
+                if (evt.SuppressAchievementToast)
+                {
+                    _suppressedOverlayToastGameIds[evt.GameId] = true;
+                }
+
+                try
+                {
+                    // Final post-exit sweep so unlocks written during shutdown are never missed
+                    await ScanLocalUnlocksRealtimeAsync(evt.GameId, ct).ConfigureAwait(false);
+                }
+                finally
+                {
+                    _suppressedOverlayToastGameIds.TryRemove(evt.GameId, out _);
+                }
 
                 if (_activeSessions.IsEmpty && _cometDaemon.IsListening)
                 {
@@ -644,6 +662,16 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
                 }
 
                 return;
+            }
+
+            bool suppressOverlayToast = evt.SuppressAchievementToast || evt.Session.SuppressAchievementToast;
+            if (suppressOverlayToast)
+            {
+                _suppressedOverlayToastGameIds[evt.GameId] = true;
+            }
+            else
+            {
+                _suppressedOverlayToastGameIds.TryRemove(evt.GameId, out _);
             }
 
             bool isFirstTransition = !_activeSessions.ContainsKey(evt.GameId);
@@ -677,6 +705,7 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
     private Task OnGameRemovedAsync(GameRemovedEvent evt, CancellationToken ct)
     {
         _activeSessions.TryRemove(evt.GameId, out _);
+        _suppressedOverlayToastGameIds.TryRemove(evt.GameId, out _);
         if (_watchedGames.TryRemove(evt.GameId, out var reg))
         {
             reg.Dispose();
@@ -684,6 +713,11 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
 
         return Task.CompletedTask;
     }
+
+    private bool IsOverlayToastSuppressedForGame(string gameId) =>
+        !string.IsNullOrWhiteSpace(gameId)
+        && (_suppressedOverlayToastGameIds.ContainsKey(gameId)
+            || (_activeSessions.TryGetValue(gameId, out var active) && active.SuppressAchievementToast));
 
     private async Task OnCometAchievementCapturedAsync(GogCometAchievementCapturedEventArgs args, CancellationToken ct)
     {
@@ -701,6 +735,7 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
             return;
         }
 
+        bool suppressOverlayToast = IsOverlayToastSuppressedForGame(matchedGame.GameId);
         var unlockDto = new AchievementUnlockDto
         {
             GameId = matchedGame.GameId,
@@ -709,13 +744,13 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
             UnlockedUtc = args.Entry.UnlockedUtc ?? DateTimeOffset.UtcNow,
             SourceProvider = nameof(EmulatorFlavor.GogCometLocal),
             RawSourcePath = args.PersistedStateFilePath,
-            NotifiedPopup = false,
+            NotifiedPopup = suppressOverlayToast,
         };
 
         var newly = await _database.UpsertAchievementUnlocksBatchAsync(matchedGame.GameId, [unlockDto], ct).ConfigureAwait(false);
         if (newly.Count > 0)
         {
-            await DispatchNewlyUnlockedNotificationsAsync(matchedGame, newly, silentSeed: false, ct).ConfigureAwait(false);
+            await DispatchNewlyUnlockedNotificationsAsync(matchedGame, newly, suppressOverlayToast, ct).ConfigureAwait(false);
         }
     }
 
@@ -1003,8 +1038,11 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
             return (0, 0);
         }
 
-        // Prevent toast bombardment when a manual rescan runs outside active real-time monitoring.
-        bool suppressOverlayPopups = silentSeed || (!isRealtimeMonitor && !_isMonitoring);
+        // Prevent toast bombardment when a manual rescan runs outside active real-time monitoring,
+        // and suppress duplicate SPAWN overlay toasts/sounds while a Steam-launched official Steam session is active
+        // (continuing to poll and persist all unlocked achievements into spawn.db).
+        bool suppressForActiveSteamSession = IsOverlayToastSuppressedForGame(gameId);
+        bool suppressOverlayPopups = silentSeed || (!isRealtimeMonitor && !_isMonitoring) || suppressForActiveSteamSession;
 
         var providerMap = _providers.ToDictionary(p => p.ProviderId, StringComparer.OrdinalIgnoreCase);
         var batchToUpsert = new Dictionary<string, AchievementUnlockDto>(StringComparer.OrdinalIgnoreCase);
@@ -1094,6 +1132,9 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
         var overlaySettings = silentSeed
             ? null
             : await _database.GetOverlaySettingsAsync(ct).ConfigureAwait(false);
+        string? steamInstallDirOverride = silentSeed
+            ? null
+            : await TryGetGlobalSteamInstallDirOverrideAsync(ct).ConfigureAwait(false);
 
         var toastBatch = new List<OverlayToastRequest>(newlyUnlocked.Count);
 
@@ -1151,6 +1192,7 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
                     SoundVolume = overlaySettings.SoundVolume,
                     MuteSound = overlaySettings.MuteSound,
                     EnhanceRareAndPlatinumSound = overlaySettings.EnhanceRareAndPlatinumSound,
+                    SteamInstallDirectoryOverride = steamInstallDirOverride,
                 });
             }
         }
@@ -1261,6 +1303,7 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
             GogClientId = gogClientId,
         };
 
+        string? globalSteamOverride = await TryGetGlobalSteamInstallDirOverrideAsync(ct).ConfigureAwait(false);
         var ctx = new AchievementSourceContext
         {
             Game = probeGame,
@@ -1270,6 +1313,7 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
             SchemaDefinitions = definitions,
             Crc32ToApiName = AchievementSourceContext.BuildCrc32Lookup(definitions.Select(d => d.ApiName)),
             EnvironmentOverrides = _options.EnvironmentOverrides,
+            SteamInstallDirectoryOverride = globalSteamOverride,
         };
 
         var targets = DiscoverAllTargets(ctx);
@@ -1333,6 +1377,8 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
                           ?? rule?.MappedSteamAppId
                           ?? SteamEmulatorFormatParsers.TryDetectSteamAppIdFromDirectory(game.InstallDir);
 
+        string? globalSteamOverride = await TryGetGlobalSteamInstallDirOverrideAsync(ct).ConfigureAwait(false);
+
         return new AchievementSourceContext
         {
             Game = game,
@@ -1342,7 +1388,29 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
             SchemaDefinitions = defs,
             Crc32ToApiName = AchievementSourceContext.BuildCrc32Lookup(defs.Select(d => d.ApiName)),
             EnvironmentOverrides = _options.EnvironmentOverrides,
+            SteamInstallDirectoryOverride = globalSteamOverride,
         };
+    }
+
+    private async Task<string?> TryGetGlobalSteamInstallDirOverrideAsync(CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(_options.EnvironmentOverrides?.SteamInstallPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            return await _database.GetSteamInstallDirectoryOverrideAsync(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private List<AchievementWatchTarget> DiscoverAllTargets(AchievementSourceContext context)
@@ -1494,6 +1562,8 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
             reg.Dispose();
         }
         _watchedGames.Clear();
+        _activeSessions.Clear();
+        _suppressedOverlayToastGameIds.Clear();
 
         try { _monitorCts?.Cancel(); } catch { }
         _monitorCts?.Dispose();
@@ -1516,6 +1586,8 @@ public sealed class AchievementService : IAchievementService, IAsyncDisposable, 
             sub.Dispose();
         }
         _eventSubscriptions.Clear();
+        _activeSessions.Clear();
+        _suppressedOverlayToastGameIds.Clear();
 
         await StopMonitoringAsync().ConfigureAwait(false);
         await _cometDaemon.DisposeAsync().ConfigureAwait(false);

@@ -4109,6 +4109,21 @@
                                                FontWeight="SemiBold"
                                                Foreground="{DynamicResource Tier0BadgeForegroundBrush}" />
                                 </Border>
+
+                                <Border CornerRadius="5"
+                                        Background="{DynamicResource SelectedPillBrush}"
+                                        BorderBrush="{DynamicResource InfoBannerBorderBrush}"
+                                        BorderThickness="1"
+                                        Padding="7,2"
+                                        Margin="6,0,0,0"
+                                        VerticalAlignment="Center"
+                                        ToolTip="{Binding LaunchModeBadgeToolTip}"
+                                        Visibility="{Binding IsSteamLaunchConfigured, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="{Binding LaunchModeBadgeText}"
+                                               FontSize="11.5"
+                                               FontWeight="SemiBold"
+                                               Foreground="{DynamicResource AccentBrush}" />
+                                </Border>
                             </WrapPanel>
 
                             <!-- Achievement Capture Channel Status Dot -->
@@ -4180,6 +4195,13 @@
                                                         </MultiDataTrigger.Conditions>
                                                         <Setter Property="Text" Value="停止游戏" />
                                                     </MultiDataTrigger>
+                                                    <MultiDataTrigger>
+                                                        <MultiDataTrigger.Conditions>
+                                                            <Condition Binding="{Binding Tag, RelativeSource={RelativeSource AncestorType=Button}}" Value="WaitingSteam" />
+                                                            <Condition Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=Button}}" Value="True" />
+                                                        </MultiDataTrigger.Conditions>
+                                                        <Setter Property="Text" Value="取消等待" />
+                                                    </MultiDataTrigger>
                                                 </Style.Triggers>
                                             </Style>
                                         </TextBlock.Style>
@@ -4218,6 +4240,16 @@
                                             <DropShadowEffect BlurRadius="18" ShadowDepth="4" Opacity="0.16" Color="#000000" />
                                         </Border.Effect>
                                         <StackPanel>
+                                            <Button Style="{StaticResource FloatingMenuItemButtonStyle}"
+                                                    Content="{Binding AlternateLaunchMenuItemText}"
+                                                    IsEnabled="{Binding CanExecuteAlternateLaunchForSelected}"
+                                                    ToolTipService.ShowOnDisabled="True"
+                                                    ToolTip="{Binding AlternateLaunchMenuItemToolTip}"
+                                                    Click="OnAnyPopupMenuItemClick"
+                                                    Command="{Binding LaunchSelectedGameAlternateModeCommand}" />
+                                            <Border Height="1"
+                                                    Background="{DynamicResource DividerBrush}"
+                                                    Margin="6,5" />
                                             <Button Style="{StaticResource FloatingMenuItemButtonStyle}"
                                                     Content="游戏属性与启动设置…"
                                                     Click="OnAnyPopupMenuItemClick"
@@ -5795,6 +5827,251 @@
                                                     Command="{Binding OpenLastImportedGameCommand}" />
                                         </Grid>
                                     </Border>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Steam Client & Steam Input Launch Settings -->
+                            <Border BorderBrush="{DynamicResource DividerBrush}"
+                                    BorderThickness="0,0,0,1"
+                                    Padding="0,16,0,18">
+                                <StackPanel>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0" Margin="0,0,16,0" VerticalAlignment="Center">
+                                            <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                <TextBlock Text="Steam 客户端与手柄映射启动"
+                                                           FontSize="14"
+                                                           FontWeight="SemiBold"
+                                                           VerticalAlignment="Center" />
+                                                <Border CornerRadius="5"
+                                                        Padding="7,2"
+                                                        Margin="8,0,0,0"
+                                                        VerticalAlignment="Center">
+                                                    <Border.Style>
+                                                        <Style TargetType="Border">
+                                                            <Setter Property="Background" Value="{DynamicResource WarningSoftBannerBackgroundBrush}" />
+                                                            <Setter Property="BorderBrush" Value="{DynamicResource WarningSoftBannerBorderBrush}" />
+                                                            <Setter Property="BorderThickness" Value="1" />
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding SteamDetectionStatusKind}" Value="Auto">
+                                                                    <Setter Property="Background" Value="{DynamicResource Tier0BadgeBackgroundBrush}" />
+                                                                    <Setter Property="BorderBrush" Value="Transparent" />
+                                                                </DataTrigger>
+                                                                <DataTrigger Binding="{Binding SteamDetectionStatusKind}" Value="Manual">
+                                                                    <Setter Property="Background" Value="{DynamicResource InfoBannerBackgroundBrush}" />
+                                                                    <Setter Property="BorderBrush" Value="{DynamicResource InfoBannerBorderBrush}" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Border.Style>
+                                                    <TextBlock Text="{Binding SteamDetectionStatusBadgeText}"
+                                                               FontSize="11.5"
+                                                               FontWeight="SemiBold">
+                                                        <TextBlock.Style>
+                                                            <Style TargetType="TextBlock">
+                                                                <Setter Property="Foreground" Value="{DynamicResource WarningAmberBrush}" />
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding SteamDetectionStatusKind}" Value="Auto">
+                                                                        <Setter Property="Foreground" Value="{DynamicResource Tier0BadgeForegroundBrush}" />
+                                                                    </DataTrigger>
+                                                                    <DataTrigger Binding="{Binding SteamDetectionStatusKind}" Value="Manual">
+                                                                        <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </TextBlock.Style>
+                                                    </TextBlock>
+                                                </Border>
+                                                <Border CornerRadius="5"
+                                                        Background="{DynamicResource SubtleSurfaceBrush}"
+                                                        BorderBrush="{DynamicResource DividerBrush}"
+                                                        BorderThickness="1"
+                                                        Padding="7,2"
+                                                        Margin="6,0,0,0"
+                                                        VerticalAlignment="Center"
+                                                        ToolTip="{Binding SteamRunningStatusToolTip}">
+                                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                        <Ellipse Width="7"
+                                                                 Height="7"
+                                                                 Margin="0,0,5,0"
+                                                                 VerticalAlignment="Center">
+                                                            <Ellipse.Style>
+                                                                <Style TargetType="Ellipse">
+                                                                    <Setter Property="Fill" Value="{DynamicResource MutedTextBrush}" />
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding IsSteamClientRunning}" Value="True">
+                                                                            <Setter Property="Fill" Value="{DynamicResource RunningGreenBrush}" />
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </Ellipse.Style>
+                                                        </Ellipse>
+                                                        <TextBlock Text="{Binding SteamRunningStatusText}"
+                                                                   FontSize="11.5"
+                                                                   Foreground="{DynamicResource SecondaryTextBrush}" />
+                                                    </StackPanel>
+                                                </Border>
+                                            </WrapPanel>
+                                            <TextBlock Text="自动检测本机 Steam 客户端与本地账号，支持通过 Steam Input 为单机或非手柄游戏启用手柄映射与社区布局"
+                                                       FontSize="12.5"
+                                                       Foreground="{DynamicResource SecondaryTextBrush}"
+                                                       TextWrapping="Wrap"
+                                                       Margin="0,4,0,0" />
+                                        </StackPanel>
+
+                                        <WrapPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                            <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                                                    Height="32"
+                                                    Padding="12,0"
+                                                    FontSize="12.5"
+                                                    Content="重新检测"
+                                                    Command="{Binding RedetectSteamClientCommand}"
+                                                    Margin="0,2,6,2" />
+                                            <Grid Margin="0,2,6,2">
+                                                <Button x:Name="SteamBrowseButton"
+                                                        Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                                                        Tag="{Binding}"
+                                                        IsHitTestVisible="{Binding IsOpen, ElementName=SteamBrowsePopup, Converter={StaticResource EqToBool}, ConverterParameter=False}"
+                                                        Height="32"
+                                                        Padding="12,0"
+                                                        FontSize="12.5"
+                                                        Content="浏览指定…"
+                                                        Click="OnSteamBrowseMenuButtonClick" />
+                                                <Popup x:Name="SteamBrowsePopup"
+                                                       PlacementTarget="{Binding ElementName=SteamBrowseButton}"
+                                                       DataContext="{Binding PlacementTarget.Tag, RelativeSource={RelativeSource Self}}"
+                                                       Placement="Bottom"
+                                                       VerticalOffset="6"
+                                                       StaysOpen="False"
+                                                       AllowsTransparency="True"
+                                                       PopupAnimation="Fade"
+                                                       Opened="OnManagedPopupOpened"
+                                                       Closed="OnManagedPopupClosed">
+                                                    <Border Width="212"
+                                                            Margin="8"
+                                                            Padding="5"
+                                                            CornerRadius="10"
+                                                            Background="{DynamicResource FloatingMenuBackgroundBrush}"
+                                                            BorderBrush="{DynamicResource DividerBrush}"
+                                                            BorderThickness="1">
+                                                        <Border.Effect>
+                                                            <DropShadowEffect BlurRadius="14" ShadowDepth="3" Opacity="0.16" Color="#000000" />
+                                                        </Border.Effect>
+                                                        <StackPanel>
+                                                            <Button Style="{StaticResource FloatingMenuItemButtonStyle}"
+                                                                    Content="选择 Steam 安装文件夹…"
+                                                                    Click="OnAnyPopupMenuItemClick"
+                                                                    Command="{Binding BrowseSteamInstallFolderCommand}" />
+                                                            <Button Style="{StaticResource FloatingMenuItemButtonStyle}"
+                                                                    Content="选择 steam.exe 文件…"
+                                                                    Click="OnAnyPopupMenuItemClick"
+                                                                    Command="{Binding BrowseSteamExecutableCommand}" />
+                                                        </StackPanel>
+                                                    </Border>
+                                                </Popup>
+                                            </Grid>
+                                            <Button Style="{StaticResource SecondaryCapsuleButtonStyle}"
+                                                    Height="32"
+                                                    Padding="12,0"
+                                                    FontSize="12.5"
+                                                    Content="恢复自动"
+                                                    Command="{Binding ResetSteamInstallDirectoryOverrideCommand}"
+                                                    IsEnabled="{Binding HasSteamInstallDirectoryOverride}"
+                                                    Margin="0,2,0,2" />
+                                        </WrapPanel>
+                                    </Grid>
+
+                                    <!-- Resolved Steam Executable / Directory Card -->
+                                    <Border Background="{DynamicResource SubtleSurfaceBrush}"
+                                            CornerRadius="8"
+                                            Padding="12,9"
+                                            Margin="0,12,0,0">
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding SteamResolvedPathText}"
+                                                       FontFamily="{StaticResource SpawnMonoFont}"
+                                                       FontSize="12.5"
+                                                       Foreground="{DynamicResource PrimaryTextBrush}"
+                                                       TextWrapping="Wrap" />
+                                            <TextBlock Text="{Binding SteamDetectionDetailText}"
+                                                       FontSize="11.5"
+                                                       Foreground="{DynamicResource MutedTextBrush}"
+                                                       TextWrapping="Wrap"
+                                                       Margin="0,3,0,0"
+                                                       Visibility="{Binding SteamDetectionDetailText, Converter={StaticResource StrNotEmptyToVis}}" />
+                                        </StackPanel>
+                                    </Border>
+
+                                    <!-- Inline Validation Error for Manual Override -->
+                                    <Border CornerRadius="8"
+                                            Background="{DynamicResource DangerSoftBannerBackgroundBrush}"
+                                            BorderBrush="{DynamicResource DangerSoftBannerBorderBrush}"
+                                            BorderThickness="1"
+                                            Padding="11,8"
+                                            Margin="0,8,0,0"
+                                            Visibility="{Binding HasSteamPathValidationError, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="{Binding SteamPathValidationErrorText}"
+                                                   FontSize="12"
+                                                   Foreground="{DynamicResource DangerTextBrush}"
+                                                   TextWrapping="Wrap" />
+                                    </Border>
+
+                                    <!-- Target Steam Account Selector -->
+                                    <Grid Margin="0,14,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                                            <TextBlock Text="目标 Steam 账号"
+                                                       FontSize="13.5"
+                                                       TextWrapping="Wrap" />
+                                            <TextBlock Text="写入非 Steam 快捷方式（shortcuts.vdf）时使用的本地 Steam 账号，默认优先当前活跃或最近登录账号"
+                                                       FontSize="12"
+                                                       Foreground="{DynamicResource SecondaryTextBrush}"
+                                                       TextWrapping="Wrap"
+                                                       Margin="0,2,0,0" />
+                                            <TextBlock Text="{Binding SteamAccountsEmptyHintText}"
+                                                       FontSize="11.5"
+                                                       Foreground="{DynamicResource MutedTextBrush}"
+                                                       TextWrapping="Wrap"
+                                                       Margin="0,3,0,0"
+                                                       Visibility="{Binding HasSteamAccounts, Converter={StaticResource InvBoolToVis}}" />
+                                        </StackPanel>
+                                        <ComboBox Grid.Column="1"
+                                                  Width="256"
+                                                  Height="32"
+                                                  VerticalAlignment="Center"
+                                                  VerticalContentAlignment="Center"
+                                                  ItemsSource="{Binding SteamAccounts}"
+                                                  DisplayMemberPath="DisplayLabel"
+                                                  SelectedItem="{Binding SelectedSteamAccount, Mode=TwoWay}"
+                                                  IsEnabled="{Binding HasSteamAccounts}" />
+                                    </Grid>
+
+                                    <!-- Suppress Duplicate Achievement Toast Toggle -->
+                                    <Grid Margin="0,14,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                                            <TextBlock Text="通过 Steam 启动正版 Steam 游戏时静默 SPAWN 成就弹窗（避免与 Steam 弹窗双响）"
+                                                       FontSize="13.5"
+                                                       TextWrapping="Wrap" />
+                                            <TextBlock Text="开启后后台仍完整记录成就与解锁时间，仅静默 OverlayHost 弹窗提示；非 Steam 单机与 GOG 游戏不受影响"
+                                                       FontSize="12"
+                                                       Foreground="{DynamicResource SecondaryTextBrush}"
+                                                       TextWrapping="Wrap"
+                                                       Margin="0,2,0,0" />
+                                        </StackPanel>
+                                        <CheckBox Grid.Column="1"
+                                                  Style="{StaticResource ModernSwitchCheckBoxStyle}"
+                                                  IsChecked="{Binding SteamSuppressDuplicateAchievementToast, Mode=TwoWay}"
+                                                  VerticalAlignment="Center" />
+                                    </Grid>
                                 </StackPanel>
                             </Border>
 

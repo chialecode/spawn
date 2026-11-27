@@ -78,7 +78,8 @@ public static class LauncherServiceCollectionExtensions
                 httpClient,
                 sp.GetRequiredService<GameDataManagementOptions>(),
                 sp.GetService<TimeProvider>(),
-                sp.GetService<Microsoft.Extensions.Logging.ILogger<GameDataManagementService>>());
+                sp.GetService<Microsoft.Extensions.Logging.ILogger<GameDataManagementService>>(),
+                sp.GetService<ISteamClientLocator>());
         });
         services.TryAddSingleton<IGameDataManagementService>(sp => sp.GetRequiredService<GameDataManagementService>());
 

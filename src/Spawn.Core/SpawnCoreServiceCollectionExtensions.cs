@@ -25,6 +25,17 @@ public static class SpawnCoreServiceCollectionExtensions
         services.TryAddSingleton<ISpawnEventBus, InMemorySpawnEventBus>();
         services.TryAddSingleton<DpapiSecretStore>();
         services.TryAddSingleton<ISteamApiKeyProvider, SteamApiKeyProvider>();
+        services.TryAddSingleton<ISteamEnvironmentProbe>(DefaultSteamEnvironmentProbe.Instance);
+        services.TryAddSingleton<ISteamClientLocator>(sp => new SteamClientLocator(
+            probe: sp.GetRequiredService<ISteamEnvironmentProbe>()));
+        services.TryAddSingleton<ISteamProcessController>(DefaultSteamProcessController.Instance);
+        services.TryAddSingleton(_ => new SteamShortcutServiceOptions());
+        services.TryAddSingleton<ISteamShortcutService>(sp => new SteamShortcutService(
+            steamLocator: sp.GetRequiredService<ISteamClientLocator>(),
+            processController: sp.GetRequiredService<ISteamProcessController>(),
+            timeProvider: sp.GetRequiredService<TimeProvider>(),
+            options: sp.GetRequiredService<SteamShortcutServiceOptions>(),
+            logger: sp.GetService<ILogger<SteamShortcutService>>()));
         services.TryAddSingleton<SpawnDatabase>();
         services.TryAddSingleton<CasChunkStore>(sp => new CasChunkStore(
             paths: sp.GetRequiredService<SpawnPaths>(),

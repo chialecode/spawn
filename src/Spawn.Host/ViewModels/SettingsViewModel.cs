@@ -60,6 +60,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     private readonly SpawnBuildMetadataSnapshot _buildSnapshot;
     private readonly SpawnDatabase _db;
     private readonly ISteamApiKeyProvider _steamApiKeyProvider;
+    private readonly ISteamClientLocator _steamClientLocator;
     private readonly IOverlayIpcClient _overlayIpcClient;
     private readonly IAntiCheatGuardService _antiCheatGuard;
     private readonly ThemeManagerService _themeManager;
@@ -74,6 +75,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     private readonly Action<bool> _applyAutoStart;
     private readonly int _volumeDebounceMs;
     private bool _suppressAutoSave;
+    private bool _isInitialized;
     private CancellationTokenSource? _overlayVolumeDebounceCts;
     private CancellationTokenSource? _trainerCueVolumeDebounceCts;
     private int _disposed;
@@ -86,6 +88,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     public event Action<string>? OpenLastImportedGameRequested;
     public event Action<bool>? GlobalSpoilerPreferenceChanged;
     public event Action? TrainerSafetySettingsChanged;
+    public event Action? SteamSettingsChanged;
 
     [ObservableProperty]
     private SettingsCategory _selectedCategory = SettingsCategory.GeneralAndLibrary;
@@ -101,6 +104,50 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     [ObservableProperty]
     private int _selectedAfkTimeoutSec = 300;
+
+    // Global Steam Client & Steam Input Launch Settings (SettingsCategory.GeneralAndLibrary)
+    [ObservableProperty]
+    private string? _appliedSteamInstallDirectoryOverride;
+
+    [ObservableProperty]
+    private bool _isSteamClientDetected;
+
+    [ObservableProperty]
+    private bool _isSteamClientManualOverride;
+
+    [ObservableProperty]
+    private bool _isSteamClientRunning;
+
+    [ObservableProperty]
+    private string _steamDetectionStatusBadgeText = "未检测到 Steam";
+
+    [ObservableProperty]
+    private string _steamRunningStatusText = "Steam 未运行";
+
+    [ObservableProperty]
+    private string _steamRunningStatusToolTip = "当前未检测到正在运行的 steam.exe 进程";
+
+    [ObservableProperty]
+    private string _steamResolvedPathText = "未检测到 steam.exe 路径";
+
+    [ObservableProperty]
+    private string _steamDetectionDetailText = string.Empty;
+
+    [ObservableProperty]
+    private string _steamPathValidationErrorText = string.Empty;
+
+    [ObservableProperty]
+    private SteamAccountInfo? _selectedSteamAccount;
+
+    [ObservableProperty]
+    private uint? _selectedSteamTargetAccountId;
+
+    [ObservableProperty]
+    private bool _steamSuppressDuplicateAchievementToast = true;
+
+    public SteamClientDiscoveryResult? LastSteamDiscovery { get; private set; }
+
+    public ObservableCollection<SteamAccountInfo> SteamAccounts { get; } = [];
 
     [ObservableProperty]
     private bool _closeWindowToTray = true;
@@ -381,6 +428,16 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     public bool IsAntiCheatGuardWarning => AntiCheatGuardPhase is AntiCheatGuardPhase.ResidualGuardWatch or AntiCheatGuardPhase.CooldownLocked;
     public bool IsAntiCheatGuardLocked => AntiCheatGuardPhase == AntiCheatGuardPhase.ProtectedRunning;
 
+    public bool HasSteamInstallDirectoryOverride => !string.IsNullOrWhiteSpace(AppliedSteamInstallDirectoryOverride);
+    public bool HasSteamPathValidationError => !string.IsNullOrWhiteSpace(SteamPathValidationErrorText);
+    public bool HasSteamAccounts => SteamAccounts.Count > 0;
+    public string SteamDetectionStatusKind => IsSteamClientDetected
+        ? (IsSteamClientManualOverride ? "Manual" : "Auto")
+        : "NotFound";
+    public string SteamAccountsEmptyHintText => IsSteamClientDetected
+        ? "未发现本地 Steam 账号目录（请先在 Steam 客户端登录一次后点击「重新检测」）"
+        : "检测到有效 Steam 客户端后将自动列出本地账号";
+
     public string ScanDirectoriesSubtitleText => IsDevOrSourceBuild
         ? "管理持久化多目录扫描源（含开发工作区自动发现目录），自动识别 GOG 离线版与本地单机游戏"
         : "管理持久化多目录扫描源，自动识别 GOG 离线版、Steam 本地与免安装单机游戏";
@@ -505,12 +562,14 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         ILudusaviRuleResolver? ruleResolver = null,
         Func<SpawnUiThemeKind>? detectSystemTheme = null,
         Action<bool>? applyAutoStart = null,
-        int volumeDebounceMs = 250)
+        int volumeDebounceMs = 250,
+        ISteamClientLocator? steamClientLocator = null)
     {
         _paths = paths;
         _buildSnapshot = SpawnBuildInfo.GetSnapshot(paths.Identity);
         _db = db;
         _steamApiKeyProvider = steamApiKeyProvider;
+        _steamClientLocator = steamClientLocator ?? SteamClientLocator.Default;
         _overlayIpcClient = overlayIpcClient;
         _antiCheatGuard = antiCheatGuard;
         _themeManager = themeManager;
@@ -647,6 +706,11 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
                 SelectedAfkTimeoutSec = parsedAfk;
             }
 
+            AppliedSteamInstallDirectoryOverride = await _db.GetSteamInstallDirectoryOverrideAsync(cancellationToken).ConfigureAwait(true);
+            SelectedSteamTargetAccountId = await _db.GetSteamTargetAccountIdAsync(cancellationToken).ConfigureAwait(true);
+            SteamSuppressDuplicateAchievementToast = await _db.GetSteamSuppressDuplicateAchievementToastAsync(cancellationToken).ConfigureAwait(true);
+            RefreshSteamClientDiscovery(emitFeedback: false);
+
             string? rawSpoilers = await _db.GetSettingAsync(AppSettingKeys.AchievementRevealSpoilers, cancellationToken).ConfigureAwait(true);
             GlobalRevealSpoilers = bool.TryParse(rawSpoilers, out bool spoilers) && spoilers;
 
@@ -703,6 +767,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             await RefreshSteamApiKeyStatusAsync(cancellationToken).ConfigureAwait(true);
             await RefreshSaveAndCloudSettingsAsync(cancellationToken).ConfigureAwait(true);
             await Update.InitializeAsync(cancellationToken).ConfigureAwait(true);
+            _isInitialized = true;
         }
         finally
         {
@@ -784,6 +849,11 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     partial void OnSelectedCategoryChanged(SettingsCategory value)
     {
         OnPropertyChanged(nameof(CurrentCategoryTitle));
+        if (value == SettingsCategory.GeneralAndLibrary && _isInitialized)
+        {
+            RefreshSteamClientDiscovery(emitFeedback: false);
+        }
+
         if (value == SettingsCategory.TrainerAndSandbox
             && _defenderAssistant is not null
             && DefenderStatusReport is null
@@ -841,6 +911,98 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         }
 
         _ = _db.SetSettingAsync(AppSettingKeys.LauncherAfkTimeoutSec, value.ToString(CultureInfo.InvariantCulture));
+    }
+
+    partial void OnAppliedSteamInstallDirectoryOverrideChanged(string? value)
+    {
+        OnPropertyChanged(nameof(HasSteamInstallDirectoryOverride));
+    }
+
+    partial void OnIsSteamClientDetectedChanged(bool value)
+    {
+        OnPropertyChanged(nameof(SteamDetectionStatusKind));
+        OnPropertyChanged(nameof(SteamAccountsEmptyHintText));
+    }
+
+    partial void OnIsSteamClientManualOverrideChanged(bool value)
+    {
+        OnPropertyChanged(nameof(SteamDetectionStatusKind));
+    }
+
+    partial void OnSteamPathValidationErrorTextChanged(string value)
+    {
+        OnPropertyChanged(nameof(HasSteamPathValidationError));
+    }
+
+    partial void OnSelectedSteamAccountChanged(SteamAccountInfo? value)
+    {
+        if (_suppressAutoSave)
+        {
+            return;
+        }
+
+        uint? nextId = value?.AccountId;
+        bool prevSuppress = _suppressAutoSave;
+        _suppressAutoSave = true;
+        try
+        {
+            SelectedSteamTargetAccountId = nextId;
+        }
+        finally
+        {
+            _suppressAutoSave = prevSuppress;
+        }
+
+        _ = _db.SetSteamTargetAccountIdAsync(nextId);
+        SteamSettingsChanged?.Invoke();
+        if (value is not null)
+        {
+            EmitStatusFeedback($"已切换目标 Steam 账号：{value.DisplayLabel}", isError: false);
+        }
+    }
+
+    partial void OnSelectedSteamTargetAccountIdChanged(uint? value)
+    {
+        if (_suppressAutoSave)
+        {
+            return;
+        }
+
+        SteamAccountInfo? matched = value is > 0
+            ? SteamAccounts.FirstOrDefault(a => a.AccountId == value.Value)
+            : null;
+        if (!Equals(SelectedSteamAccount, matched))
+        {
+            bool prevSuppress = _suppressAutoSave;
+            _suppressAutoSave = true;
+            try
+            {
+                SelectedSteamAccount = matched;
+            }
+            finally
+            {
+                _suppressAutoSave = prevSuppress;
+            }
+        }
+
+        _ = _db.SetSteamTargetAccountIdAsync(value);
+        SteamSettingsChanged?.Invoke();
+    }
+
+    partial void OnSteamSuppressDuplicateAchievementToastChanged(bool value)
+    {
+        if (_suppressAutoSave)
+        {
+            return;
+        }
+
+        _ = _db.SetSteamSuppressDuplicateAchievementToastAsync(value);
+        SteamSettingsChanged?.Invoke();
+        EmitStatusFeedback(
+            value
+                ? "已开启：通过 Steam 启动正版 Steam 游戏时静默 SPAWN 成就弹窗"
+                : "已关闭：通过 Steam 启动正版 Steam 游戏时保留 SPAWN 成就弹窗",
+            isError: false);
     }
 
     partial void OnSelectedAchievementLanguageChanged(string value)
@@ -2210,9 +2372,203 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     public void RefreshSteamClientSoundStatus()
     {
-        SteamClientSoundProbeResult probe = SteamClientSoundLocator.Probe();
+        SteamClientSoundProbeResult probe = SteamClientSoundLocator.Probe(AppliedSteamInstallDirectoryOverride);
         IsSteamSoundDetected = !string.IsNullOrWhiteSpace(probe.EffectiveSoundPath);
         SteamSoundStatusText = probe.StatusMessage;
+    }
+
+    [RelayCommand]
+    public void RedetectSteamClient()
+    {
+        SteamPathValidationErrorText = string.Empty;
+        RefreshSteamClientDiscovery(emitFeedback: true);
+        RefreshSteamClientSoundStatus();
+        SteamSettingsChanged?.Invoke();
+    }
+
+    [RelayCommand]
+    private async Task BrowseSteamInstallFolderAsync()
+    {
+        var dialog = new OpenFolderDialog
+        {
+            Title = "选择 Steam 客户端安装目录（包含 steam.exe）",
+            Multiselect = false,
+        };
+
+        string? initialDir = LastSteamDiscovery?.InstallDirectory ?? AppliedSteamInstallDirectoryOverride;
+        if (!string.IsNullOrWhiteSpace(initialDir) && Directory.Exists(initialDir))
+        {
+            dialog.InitialDirectory = initialDir;
+        }
+
+        if (dialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(dialog.FolderName))
+        {
+            await ApplySteamInstallDirectoryOverrideAsync(dialog.FolderName).ConfigureAwait(true);
+        }
+    }
+
+    [RelayCommand]
+    private async Task BrowseSteamExecutableAsync()
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "选择 Steam 客户端主程序（steam.exe）",
+            Filter = "Steam 客户端 (steam.exe)|steam.exe|可执行文件 (*.exe)|*.exe|所有文件 (*.*)|*.*",
+            CheckFileExists = true,
+            Multiselect = false,
+        };
+
+        string? initialDir = LastSteamDiscovery?.InstallDirectory ?? AppliedSteamInstallDirectoryOverride;
+        if (!string.IsNullOrWhiteSpace(initialDir) && Directory.Exists(initialDir))
+        {
+            dialog.InitialDirectory = initialDir;
+        }
+
+        if (dialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(dialog.FileName))
+        {
+            await ApplySteamInstallDirectoryOverrideAsync(dialog.FileName).ConfigureAwait(true);
+        }
+    }
+
+    public async Task<bool> ApplySteamInstallDirectoryOverrideAsync(
+        string? rawPathOrExe,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_steamClientLocator.TryNormalizeInstallDirectory(
+                rawPathOrExe,
+                out string? normalizedDir,
+                out string? steamExePath,
+                out string? errorMessage)
+            || string.IsNullOrWhiteSpace(normalizedDir))
+        {
+            SteamPathValidationErrorText = errorMessage ?? "所选路径无效，请选择包含 steam.exe 的目录或 steam.exe 文件。";
+            EmitStatusFeedback(SteamPathValidationErrorText, isError: true);
+            return false;
+        }
+
+        SteamPathValidationErrorText = string.Empty;
+        await _db.SetSteamInstallDirectoryOverrideAsync(normalizedDir, cancellationToken).ConfigureAwait(true);
+        AppliedSteamInstallDirectoryOverride = normalizedDir;
+        RefreshSteamClientDiscovery(emitFeedback: false);
+        RefreshSteamClientSoundStatus();
+        SteamSettingsChanged?.Invoke();
+
+        string displayPath = !string.IsNullOrWhiteSpace(steamExePath) ? steamExePath! : normalizedDir;
+        EmitStatusFeedback($"已手动指定 Steam 客户端：{displayPath}", isError: false);
+        return true;
+    }
+
+    [RelayCommand]
+    public async Task ResetSteamInstallDirectoryOverrideAsync()
+    {
+        SteamPathValidationErrorText = string.Empty;
+        await _db.SetSteamInstallDirectoryOverrideAsync(null).ConfigureAwait(true);
+        AppliedSteamInstallDirectoryOverride = null;
+        RefreshSteamClientDiscovery(emitFeedback: false);
+        RefreshSteamClientSoundStatus();
+        SteamSettingsChanged?.Invoke();
+        EmitStatusFeedback("已恢复自动检测本机 Steam 客户端位置", isError: false);
+    }
+
+    public void RefreshSteamClientDiscovery(bool emitFeedback)
+    {
+        SteamClientDiscoveryResult result;
+        try
+        {
+            result = _steamClientLocator.Discover(
+                explicitInstallDirOverride: AppliedSteamInstallDirectoryOverride,
+                preferredAccountId: SelectedSteamTargetAccountId);
+        }
+        catch (Exception ex)
+        {
+            result = new SteamClientDiscoveryResult
+            {
+                IsDetected = false,
+                IsUserOverride = HasSteamInstallDirectoryOverride,
+                Source = HasSteamInstallDirectoryOverride ? SteamPathDiscoverySource.UserOverride : SteamPathDiscoverySource.NotFound,
+                WarningMessage = $"检测 Steam 客户端时发生异常：{ex.Message}",
+            };
+        }
+
+        LastSteamDiscovery = result;
+        IsSteamClientDetected = result.IsDetected;
+        IsSteamClientManualOverride = result.IsUserOverride;
+        IsSteamClientRunning = result.IsSteamRunning;
+
+        SteamDetectionStatusBadgeText = result.IsDetected
+            ? (result.IsUserOverride ? "已手动指定" : "已自动检测")
+            : "未检测到 Steam";
+
+        SteamRunningStatusText = result.IsSteamRunning ? "Steam 运行中" : "Steam 未运行";
+        SteamRunningStatusToolTip = result.IsSteamRunning && result.SteamProcessId is > 0
+            ? string.Create(CultureInfo.InvariantCulture, $"检测到正在运行的 steam.exe（PID {result.SteamProcessId.Value}）")
+            : (result.IsSteamRunning
+                ? "检测到正在运行的 steam.exe 进程"
+                : "当前未检测到正在运行的 steam.exe 进程");
+
+        SteamResolvedPathText = result.IsDetected && !string.IsNullOrWhiteSpace(result.SteamExecutablePath)
+            ? result.SteamExecutablePath!
+            : (!string.IsNullOrWhiteSpace(result.InstallDirectory)
+                ? result.InstallDirectory!
+                : "未检测到本机 Steam 客户端（便携版或自定义位置请点击「浏览指定…」）");
+
+        string sourceLabel = result.Source switch
+        {
+            SteamPathDiscoverySource.UserOverride => "路径来源：用户手动指定",
+            SteamPathDiscoverySource.RegistryCurrentUser => "路径来源：Windows 当前用户注册表 (HKCU)",
+            SteamPathDiscoverySource.RegistryLocalMachine => "路径来源：Windows 系统注册表 (HKLM)",
+            SteamPathDiscoverySource.DefaultDirectory => "路径来源：系统默认安装目录",
+            _ => "路径来源：未定位到 Steam 安装目录",
+        };
+
+        SteamDetectionDetailText = !string.IsNullOrWhiteSpace(result.WarningMessage)
+            ? result.WarningMessage!
+            : (result.IsDetected && !string.IsNullOrWhiteSpace(result.InstallDirectory)
+                ? $"{sourceLabel} · 安装目录：{result.InstallDirectory}"
+                : sourceLabel);
+
+        bool prevSuppress = _suppressAutoSave;
+        _suppressAutoSave = true;
+        try
+        {
+            SteamAccounts.Clear();
+            foreach (SteamAccountInfo account in result.Accounts)
+            {
+                SteamAccounts.Add(account);
+            }
+
+            SteamAccountInfo? resolvedAccount = null;
+            if (SelectedSteamTargetAccountId is > 0)
+            {
+                resolvedAccount = SteamAccounts.FirstOrDefault(a => a.AccountId == SelectedSteamTargetAccountId.Value);
+            }
+
+            if (resolvedAccount is null && result.ActiveAccountId is > 0)
+            {
+                resolvedAccount = SteamAccounts.FirstOrDefault(a => a.AccountId == result.ActiveAccountId.Value);
+            }
+
+            resolvedAccount ??= SteamAccounts.FirstOrDefault(static a => a.IsActiveProcessUser)
+                ?? SteamAccounts.FirstOrDefault(static a => a.IsMostRecent)
+                ?? SteamAccounts.FirstOrDefault();
+
+            SelectedSteamAccount = resolvedAccount;
+        }
+        finally
+        {
+            _suppressAutoSave = prevSuppress;
+        }
+
+        OnPropertyChanged(nameof(HasSteamAccounts));
+        OnPropertyChanged(nameof(SteamAccountsEmptyHintText));
+
+        if (emitFeedback)
+        {
+            string msg = result.IsDetected
+                ? $"已检测到 Steam 客户端（{SteamDetectionStatusBadgeText} · {SteamRunningStatusText}，发现 {SteamAccounts.Count} 个本地账号）"
+                : (result.WarningMessage ?? "未检测到本机 Steam 客户端，可点击「浏览指定…」手动选择目录或 steam.exe");
+            EmitStatusFeedback(msg, isError: !result.IsDetected);
+        }
     }
 
     public void RefreshAntiCheatSummary(AntiCheatGuardSnapshot snap)

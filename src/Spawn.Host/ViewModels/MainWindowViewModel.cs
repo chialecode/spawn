@@ -22,6 +22,11 @@ public sealed record ShellConfirmPrompt(
     string CancelLabel = "取消",
     bool IsDanger = false);
 
+public sealed record ShellSteamBlockedPrompt(
+    string Title,
+    string Message,
+    bool CanOpenSteamSettings = false);
+
 public sealed record GamePropertiesEditRequest(
     string GameId,
     string Title,
@@ -32,7 +37,12 @@ public sealed record GamePropertiesEditRequest(
     int? SteamAppId,
     string? GogGameId,
     string? CoverImagePath,
-    string? IconPath);
+    string? IconPath,
+    PlatformSource PlatformSource = PlatformSource.Standalone,
+    AntiCheatTier AntiCheatTier = AntiCheatTier.Tier0,
+    AchievementCaptureMode AchievementCaptureMode = AchievementCaptureMode.None,
+    GameSteamLaunchSettings? SteamLaunchSettings = null,
+    Func<GameRecord, GameSteamLaunchSettings, CancellationToken, Task<SteamLaunchPreparationResult>>? PreviewSteamLaunchAsync = null);
 
 public sealed record GamePropertiesEditResult(
     string Title,
@@ -41,7 +51,9 @@ public sealed record GamePropertiesEditResult(
     int? SteamAppId,
     string? GogGameId,
     string? CoverImagePath,
-    string? IconPath);
+    string? IconPath,
+    GameLaunchMode? LaunchMode = null,
+    bool? UseSteamAppIdAsShortcutName = null);
 
 public enum LibrarySortMode
 {
@@ -153,6 +165,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private readonly ISaveTimeMachineService? _saveTimeMachineService;
     private readonly ICloudSaveSyncService? _cloudSaveSyncService;
     private readonly ISaveWatcherService? _saveWatcherService;
+    private readonly ISteamClientLocator _steamClientLocator;
+    private readonly ISteamShortcutService _steamShortcutService;
     private readonly Action<string> _openExternalUrl;
     private readonly Action<string> _copyToClipboard;
     private readonly Dispatcher? _uiDispatcher;
@@ -161,6 +175,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private readonly Lock _reloadSync = new();
     private readonly int _achievementSearchDebounceMs;
     private readonly HashSet<string> _launchingGameIds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _steamSyncingGameIds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _shownSteamWarningGameIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _stoppingGameIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, AchievementRowViewModel> _achievementRowCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<AchievementSidebarItemViewModel> _allAchievementSidebarGames = [];
@@ -196,6 +212,15 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     /// Host window native Game Properties editor dialog delegate.
     /// </summary>
     public Func<GamePropertiesEditRequest, GamePropertiesEditResult?>? EditGamePropertiesHandler { get; set; }
+
+    /// <summary>
+    /// Host window themed notice dialog shown when a Steam launch is blocked (returns <see langword="true"/>
+    /// if the user chooses to jump directly to Steam settings).
+    /// </summary>
+    public Func<ShellSteamBlockedPrompt, bool>? SteamBlockedPromptHandler { get; set; }
+
+    public ISteamClientLocator SteamClientLocator => _steamClientLocator;
+    public ISteamShortcutService SteamShortcutService => _steamShortcutService;
 
     public SettingsViewModel Settings { get; }
     public TrainerWorkbenchViewModel Trainer { get; }
@@ -582,6 +607,12 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             ? "Level 2 UAC 管理员"
             : "Level 1 普通权限";
 
+    public bool IsSyncingSteamShortcutForSelected =>
+        SelectedGame is not null && _steamSyncingGameIds.Contains(SelectedGame.GameId);
+
+    public bool IsWaitingForSteamLaunch =>
+        SelectedGame is { ActiveSession.State: PlaySessionActivityState.ShellBreakingWatch, ActiveSession.LaunchedViaSteam: true };
+
     public GameLaunchButtonPhase PrimaryLaunchButtonPhase
     {
         get
@@ -599,6 +630,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             }
 
             if (_launchingGameIds.Contains(game.GameId)
+                || _steamSyncingGameIds.Contains(game.GameId)
                 || game.ActiveSession?.State == PlaySessionActivityState.Launching)
             {
                 return GameLaunchButtonPhase.Launching;
@@ -626,19 +658,21 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     public string PrimaryLaunchButtonTag => PrimaryLaunchButtonPhase switch
     {
         GameLaunchButtonPhase.Running => "Running",
-        GameLaunchButtonPhase.Launching or GameLaunchButtonPhase.WaitingForWindow => "Launching",
+        GameLaunchButtonPhase.WaitingForWindow => IsWaitingForSteamLaunch ? "WaitingSteam" : "Launching",
+        GameLaunchButtonPhase.Launching => "Launching",
         GameLaunchButtonPhase.Stopping => "Stopping",
         GameLaunchButtonPhase.GuardCooldownLocked => "CooldownLocked",
         _ => "Idle",
     };
 
     public bool IsPrimaryLaunchButtonEnabled => SelectedGame is not null
-        && PrimaryLaunchButtonPhase is GameLaunchButtonPhase.Idle or GameLaunchButtonPhase.Running;
+        && (PrimaryLaunchButtonPhase is GameLaunchButtonPhase.Idle or GameLaunchButtonPhase.Running
+            || IsWaitingForSteamLaunch);
 
     public string PrimaryLaunchButtonText => PrimaryLaunchButtonPhase switch
     {
-        GameLaunchButtonPhase.Launching => "启动中…",
-        GameLaunchButtonPhase.WaitingForWindow => "等待窗口…",
+        GameLaunchButtonPhase.Launching => IsSyncingSteamShortcutForSelected ? "同步 Steam 中…" : "启动中…",
+        GameLaunchButtonPhase.WaitingForWindow => IsWaitingForSteamLaunch ? "等待 Steam 启动…" : "等待窗口…",
         GameLaunchButtonPhase.Running => "运行中",
         GameLaunchButtonPhase.Stopping => "正在停止…",
         GameLaunchButtonPhase.GuardCooldownLocked => string.Create(
@@ -649,17 +683,81 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     public string PrimaryLaunchButtonToolTip => PrimaryLaunchButtonPhase switch
     {
-        GameLaunchButtonPhase.Launching => "正在拉起游戏主程序，请稍候…",
-        GameLaunchButtonPhase.WaitingForWindow => "正在等待启动器交接游戏主窗口…",
-        GameLaunchButtonPhase.Running => "游戏正在运行；点击将二次确认后停止游戏",
+        GameLaunchButtonPhase.Launching => IsSyncingSteamShortcutForSelected
+            ? "正在优雅重启 Steam 并同步非 Steam 快捷方式，请稍候…"
+            : "正在拉起游戏主程序，请稍候…",
+        GameLaunchButtonPhase.WaitingForWindow => IsWaitingForSteamLaunch
+            ? "已向 Steam 发送启动请求，正在等待游戏进程拉起；点击可取消等待"
+            : "正在等待启动器交接游戏主窗口…",
+        GameLaunchButtonPhase.Running => SelectedGame?.ActiveSession?.LaunchedViaSteam == true
+            ? "游戏正在运行（通过 Steam 启动）；点击将二次确认后停止游戏"
+            : "游戏正在运行；点击将二次确认后停止游戏",
         GameLaunchButtonPhase.Stopping => "正在安全结束游戏进程…",
         GameLaunchButtonPhase.GuardCooldownLocked => string.Create(
             CultureInfo.InvariantCulture,
             $"反作弊余温冷却中（剩余 {GuardCooldownRemainingSeconds:0.0} 秒），冷却结束后即可启动游戏"),
-        _ => "启动当前游戏并自动追踪游玩时长与成就进度",
+        _ => SelectedGame?.IsSteamLaunchConfigured == true
+            ? "默认通过 Steam 启动当前游戏（启用 Steam Input 手柄映射），并自动追踪游玩时长与成就进度"
+            : "启动当前游戏并自动追踪游玩时长与成就进度",
     };
 
     public bool ShowPrimaryLaunchPlayGlyph => PrimaryLaunchButtonPhase == GameLaunchButtonPhase.Idle;
+
+    public string AlternateLaunchMenuItemText =>
+        SelectedGame?.IsSteamLaunchConfigured == true ? "直接启动" : "通过 Steam 启动";
+
+    public bool CanExecuteAlternateLaunchForSelected
+    {
+        get
+        {
+            var game = SelectedGame;
+            if (game is null
+                || game.IsRunning
+                || _launchingGameIds.Contains(game.GameId)
+                || _steamSyncingGameIds.Contains(game.GameId)
+                || _stoppingGameIds.Contains(game.GameId)
+                || GuardPhase == AntiCheatGuardPhase.CooldownLocked)
+            {
+                return false;
+            }
+
+            return game.IsSteamLaunchConfigured || !game.IsSteamLaunchBlockedByAntiCheat;
+        }
+    }
+
+    public string AlternateLaunchMenuItemToolTip
+    {
+        get
+        {
+            var game = SelectedGame;
+            if (game is null)
+            {
+                return string.Empty;
+            }
+
+            if (game.IsRunning)
+            {
+                return "游戏正在运行中";
+            }
+
+            if (GuardPhase == AntiCheatGuardPhase.CooldownLocked)
+            {
+                return "反作弊余温冷却锁定中，请等待冷却结束";
+            }
+
+            if (game.IsSteamLaunchConfigured)
+            {
+                return "本次临时跳过 Steam，直接由 SPAWN 启动该游戏主程序";
+            }
+
+            if (game.IsSteamLaunchBlockedByAntiCheat)
+            {
+                return $"非 Steam 来源的 {game.Record.AntiCheatTier} 反作弊游戏禁止通过非 Steam 快捷方式启动，以防止 Steam 覆盖层与内核反作弊冲突";
+            }
+
+            return "本次临时通过 Steam 启动该游戏（启用 Steam Input 手柄映射），不修改默认启动方式";
+        }
+    }
 
     public bool CanActivateGbeForkOnSelected =>
         !CanRestoreDllOnSelected
@@ -766,7 +864,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         Func<ShellConfirmPrompt, bool>? confirmPromptHandler = null,
         Func<GamePropertiesEditRequest, GamePropertiesEditResult?>? editGamePropertiesHandler = null,
         Action<string>? copyToClipboard = null,
-        int achievementSearchDebounceMs = 150)
+        int achievementSearchDebounceMs = 150,
+        ISteamClientLocator? steamClientLocator = null,
+        ISteamShortcutService? steamShortcutService = null,
+        Func<ShellSteamBlockedPrompt, bool>? steamBlockedPromptHandler = null)
     {
         _paths = paths;
         _db = db;
@@ -783,12 +884,15 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         _saveTimeMachineService = saveTimeMachineService;
         _cloudSaveSyncService = cloudSaveSyncService;
         _saveWatcherService = saveWatcherService;
+        _steamClientLocator = steamClientLocator ?? Spawn.Core.SteamClientLocator.Default;
+        _steamShortcutService = steamShortcutService ?? new SteamShortcutService(_steamClientLocator);
         _openExternalUrl = openExternalUrl ?? OpenUrlWithShell;
         _copyToClipboard = copyToClipboard ?? Clipboard.SetText;
         _uiDispatcher = uiDispatcher;
         _achievementSearchDebounceMs = Math.Clamp(achievementSearchDebounceMs, 0, 1000);
         ConfirmPromptHandler = confirmPromptHandler;
         EditGamePropertiesHandler = editGamePropertiesHandler;
+        SteamBlockedPromptHandler = steamBlockedPromptHandler;
         Settings = settingsViewModel;
         Trainer = trainerWorkbench;
         Saves = saveWorkbench ?? new SaveWorkbenchViewModel(
@@ -834,6 +938,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         Settings.OpenLastImportedGameRequested += JumpToGameInLibrary;
         Settings.GlobalSpoilerPreferenceChanged += reveal => RevealHiddenSpoilers = reveal;
         Settings.TrainerSafetySettingsChanged += () => _ = HandleTrainerSafetySettingsChangedAsync();
+        Settings.SteamSettingsChanged += NotifyPrimaryLaunchButtonProperties;
 
         Trainer.PropertyChanged += (_, args) =>
         {
@@ -1269,12 +1374,17 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     private void NotifyPrimaryLaunchButtonProperties()
     {
+        OnPropertyChanged(nameof(IsSyncingSteamShortcutForSelected));
+        OnPropertyChanged(nameof(IsWaitingForSteamLaunch));
         OnPropertyChanged(nameof(PrimaryLaunchButtonPhase));
         OnPropertyChanged(nameof(PrimaryLaunchButtonTag));
         OnPropertyChanged(nameof(PrimaryLaunchButtonText));
         OnPropertyChanged(nameof(IsPrimaryLaunchButtonEnabled));
         OnPropertyChanged(nameof(PrimaryLaunchButtonToolTip));
         OnPropertyChanged(nameof(ShowPrimaryLaunchPlayGlyph));
+        OnPropertyChanged(nameof(AlternateLaunchMenuItemText));
+        OnPropertyChanged(nameof(CanExecuteAlternateLaunchForSelected));
+        OnPropertyChanged(nameof(AlternateLaunchMenuItemToolTip));
     }
 
     private void NotifyGbeForkWorkbenchFlags()
@@ -2012,6 +2122,21 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private Task PrimaryLaunchOrStopAsync() => LaunchOrStopSpecificGameAsync(SelectedGame);
 
     [RelayCommand]
+    private Task LaunchSelectedGameAlternateModeAsync()
+    {
+        var game = SelectedGame;
+        if (game is null)
+        {
+            return Task.CompletedTask;
+        }
+
+        GameLaunchMode targetMode = game.IsSteamLaunchConfigured
+            ? GameLaunchMode.Direct
+            : GameLaunchMode.Steam;
+        return LaunchGameWithModeAsync(game, targetMode);
+    }
+
+    [RelayCommand]
     private async Task LaunchOrStopSpecificGameAsync(GameListItemViewModel? game)
     {
         if (game is null)
@@ -2020,27 +2145,36 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         }
 
         string targetGameId = game.GameId;
-        if (_launchingGameIds.Contains(targetGameId) || _stoppingGameIds.Contains(targetGameId))
+        if (_launchingGameIds.Contains(targetGameId)
+            || _steamSyncingGameIds.Contains(targetGameId)
+            || _stoppingGameIds.Contains(targetGameId))
         {
             return;
         }
 
         if (game.IsRunning)
         {
-            if (game.ActiveSession?.State is PlaySessionActivityState.Launching or PlaySessionActivityState.ShellBreakingWatch or PlaySessionActivityState.Stopping)
+            bool isWaitingForSteam = game.ActiveSession?.State == PlaySessionActivityState.ShellBreakingWatch
+                                     && game.ActiveSession.LaunchedViaSteam;
+
+            if (!isWaitingForSteam
+                && game.ActiveSession?.State is PlaySessionActivityState.Launching or PlaySessionActivityState.ShellBreakingWatch or PlaySessionActivityState.Stopping)
             {
                 return;
             }
 
-            bool confirmed = ConfirmAction(new ShellConfirmPrompt(
-                Title: $"停止《{game.Title}》？",
-                Message: $"确定要结束正在运行的《{game.Title}》吗？\n\n未保存的游戏进度可能会丢失，建议先在游戏内保存后再停止。",
-                ConfirmLabel: "停止游戏",
-                CancelLabel: "继续游玩",
-                IsDanger: true));
-            if (!confirmed)
+            if (!isWaitingForSteam)
             {
-                return;
+                bool confirmed = ConfirmAction(new ShellConfirmPrompt(
+                    Title: $"停止《{game.Title}》？",
+                    Message: $"确定要结束正在运行的《{game.Title}》吗？\n\n未保存的游戏进度可能会丢失，建议先在游戏内保存后再停止。",
+                    ConfirmLabel: "停止游戏",
+                    CancelLabel: "继续游玩",
+                    IsDanger: true));
+                if (!confirmed)
+                {
+                    return;
+                }
             }
 
             _stoppingGameIds.Add(targetGameId);
@@ -2049,8 +2183,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             {
                 bool stopped = await _launchService.StopGameAsync(targetGameId).ConfigureAwait(true);
                 ShowStatusBanner(
-                    stopped ? $"已请求停止《{game.Title}》" : $"未能停止《{game.Title}》，可能已自行退出",
-                    isError: !stopped);
+                    isWaitingForSteam
+                        ? (stopped ? $"已取消等待 Steam 启动《{game.Title}》" : $"《{game.Title}》等待状态已结束")
+                        : (stopped ? $"已请求停止《{game.Title}》" : $"未能停止《{game.Title}》，可能已自行退出"),
+                    isError: !isWaitingForSteam && !stopped);
             }
             finally
             {
@@ -2058,6 +2194,25 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
                 NotifyPrimaryLaunchButtonProperties();
             }
 
+            return;
+        }
+
+        await LaunchGameWithModeAsync(game, explicitModeOverride: null).ConfigureAwait(true);
+    }
+
+    public async Task LaunchGameWithModeAsync(
+        GameListItemViewModel game,
+        GameLaunchMode? explicitModeOverride,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(game);
+
+        string targetGameId = game.GameId;
+        if (game.IsRunning
+            || _launchingGameIds.Contains(targetGameId)
+            || _steamSyncingGameIds.Contains(targetGameId)
+            || _stoppingGameIds.Contains(targetGameId))
+        {
             return;
         }
 
@@ -2071,11 +2226,52 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             return;
         }
 
-        _launchingGameIds.Add(targetGameId);
+        if (!_launchingGameIds.Add(targetGameId))
+        {
+            return;
+        }
+
         NotifyPrimaryLaunchButtonProperties();
         try
         {
-            GameLaunchResult result = await _launchService.LaunchGameAsync(targetGameId).ConfigureAwait(true);
+            GameSteamLaunchSettings savedSettings = await _db
+                .GetGameSteamLaunchSettingsAsync(targetGameId, cancellationToken)
+                .ConfigureAwait(true);
+            game.UpdateSteamLaunchSettings(savedSettings);
+
+            GameLaunchMode effectiveMode = explicitModeOverride ?? savedSettings.LaunchMode;
+            if (effectiveMode == GameLaunchMode.Direct)
+            {
+                await ExecuteDirectLaunchAsync(game, explicitModeOverride == GameLaunchMode.Direct, cancellationToken)
+                    .ConfigureAwait(true);
+                return;
+            }
+
+            await ExecuteSteamLaunchAsync(game, savedSettings, cancellationToken).ConfigureAwait(true);
+        }
+        finally
+        {
+            _launchingGameIds.Remove(targetGameId);
+            _steamSyncingGameIds.Remove(targetGameId);
+            NotifyPrimaryLaunchButtonProperties();
+        }
+    }
+
+    private async Task ExecuteDirectLaunchAsync(
+        GameListItemViewModel game,
+        bool isExplicitOverride,
+        CancellationToken cancellationToken)
+    {
+        string targetGameId = game.GameId;
+        try
+        {
+            GameLaunchResult result = isExplicitOverride
+                ? await _launchService.LaunchGameAsync(
+                    targetGameId,
+                    new GameLaunchExecutionOptions { LaunchModeOverride = GameLaunchMode.Direct },
+                    cancellationToken).ConfigureAwait(true)
+                : await _launchService.LaunchGameAsync(targetGameId, cancellationToken).ConfigureAwait(true);
+
             if (!result.Succeeded)
             {
                 ShowStatusBanner(result.ErrorMessage ?? "启动游戏失败", isError: true);
@@ -2097,9 +2293,245 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         {
             ShowStatusBanner($"启动《{game.Title}》失败：{ex.Message}", isError: true);
         }
+    }
+
+    private async Task ExecuteSteamLaunchAsync(
+        GameListItemViewModel game,
+        GameSteamLaunchSettings savedSettings,
+        CancellationToken cancellationToken)
+    {
+        string targetGameId = game.GameId;
+        string? steamOverride = await _db.GetSteamInstallDirectoryOverrideAsync(cancellationToken).ConfigureAwait(true);
+        uint? preferredAccountId = await _db.GetSteamTargetAccountIdAsync(cancellationToken).ConfigureAwait(true);
+        bool suppressToastSetting = await _db.GetSteamSuppressDuplicateAchievementToastAsync(cancellationToken).ConfigureAwait(true);
+        bool suppressToast = game.Record.PlatformSource == PlatformSource.SteamLocal && suppressToastSetting;
+
+        SteamLaunchPreparationResult prep;
+        try
+        {
+            prep = await _steamShortcutService.PrepareLaunchAsync(
+                game.Record,
+                savedSettings,
+                steamOverride,
+                preferredAccountId,
+                cancellationToken).ConfigureAwait(true);
+        }
+        catch (Exception ex)
+        {
+            ShowStatusBanner($"准备通过 Steam 启动《{game.Title}》失败：{ex.Message}", isError: true);
+            return;
+        }
+
+        if (prep.IsBlocked)
+        {
+            string baseError = prep.ErrorMessage ?? "当前游戏无法通过 Steam 启动。";
+            bool isSteamMissing = prep.Status == SteamLaunchPreparationStatus.BlockedSteamNotFound;
+            string detailMessage = isSteamMissing && !baseError.Contains("设置 → 常规与游戏库", StringComparison.Ordinal)
+                ? $"{baseError}\n\n提示：请前往「设置 → 常规与游戏库 → Steam 客户端与手柄映射启动」重新检测或手动指定 Steam 安装目录 / steam.exe。"
+                : baseError;
+
+            ShowStatusBanner(baseError, isError: true);
+
+            if (SteamBlockedPromptHandler is not null)
+            {
+                bool openSettings = SteamBlockedPromptHandler(new ShellSteamBlockedPrompt(
+                    Title: $"无法通过 Steam 启动《{game.Title}》",
+                    Message: detailMessage,
+                    CanOpenSteamSettings: isSteamMissing));
+                if (openSettings && isSteamMissing)
+                {
+                    OpenLibrarySettings();
+                }
+            }
+
+            return;
+        }
+
+        string? launchUri = prep.LaunchUri;
+        bool steamWasRunningBeforeLaunch = false;
+
+        if (prep.Status == SteamLaunchPreparationStatus.NeedsSteamRestartToSync)
+        {
+            string warningBlock = prep.Warnings.Count > 0
+                ? "\n\n兼容性提示：\n" + string.Join("\n", prep.Warnings.Select(w => $"• {w.Message}"))
+                : string.Empty;
+
+            string confirmBody =
+                $"通过 Steam 启动《{game.Title}》需要将快捷方式写入 Steam 的 shortcuts.vdf。\n\n"
+                + "为什么需要优雅重启一次 Steam？\n"
+                + "• Steam 仅在启动时读取 shortcuts.vdf，退出时会覆写该文件；若在 Steam 运行期间直接修改，更改不会生效且会被覆盖。\n\n"
+                + "点击「优雅重启 Steam 并启动」后，SPAWN 将：\n"
+                + "1. 向 Steam 发送温和退出指令（steam.exe -shutdown，绝不强制结束进程）并等待其安全退出；\n"
+                + "2. 自动备份原 shortcuts.vdf（.spawn.bak）并原子写入本游戏快捷方式；\n"
+                + "3. 重新启动 Steam 等待账号就绪，再自动通过 Steam 启动本游戏。\n\n"
+                + "提醒：请确认当前 Steam 中没有正在游玩的联机游戏、未保存的云存档同步或正在进行的重要下载。"
+                + warningBlock;
+
+            bool confirmed = ConfirmAction(new ShellConfirmPrompt(
+                Title: $"优雅重启 Steam 并启动《{game.Title}》？",
+                Message: confirmBody,
+                ConfirmLabel: "优雅重启 Steam 并启动",
+                CancelLabel: "取消",
+                IsDanger: false));
+
+            if (!confirmed)
+            {
+                ShowStatusBanner("已取消 Steam 重启与同步（未改动 Steam 或 shortcuts.vdf）", isError: false);
+                return;
+            }
+        }
+
+        try
+        {
+            if (prep.Status == SteamLaunchPreparationStatus.NeedsSteamRestartToSync)
+            {
+                _steamSyncingGameIds.Add(targetGameId);
+                NotifyPrimaryLaunchButtonProperties();
+                ShowStatusBanner("正在优雅重启 Steam 并同步快捷方式…", isError: false, autoDismiss: false);
+
+                try
+                {
+                    SteamShortcutSyncResult sync = await _steamShortcutService.ApplyShortcutAndRestartIfNeededAsync(
+                        game.Record,
+                        savedSettings,
+                        allowGracefulSteamRestart: true,
+                        steamOverride,
+                        preferredAccountId,
+                        cancellationToken).ConfigureAwait(true);
+
+                    if (sync.ShortcutAppId is { } syncedAppId && syncedAppId != 0)
+                    {
+                        await _db.UpdateGameRegisteredShortcutAppIdAsync(targetGameId, syncedAppId, cancellationToken).ConfigureAwait(true);
+                        savedSettings = savedSettings with { RegisteredShortcutAppId = syncedAppId };
+                        game.UpdateSteamLaunchSettings(savedSettings);
+                    }
+
+                    Settings.RefreshSteamClientDiscovery(emitFeedback: false);
+
+                    if (!sync.Succeeded)
+                    {
+                        ShowStatusBanner(sync.ErrorMessage ?? "同步 Steam 快捷方式失败", isError: true);
+                        return;
+                    }
+
+                    launchUri = sync.LaunchUri ?? launchUri;
+                    steamWasRunningBeforeLaunch = false;
+                }
+                catch (Exception ex)
+                {
+                    ShowStatusBanner($"优雅重启 Steam 并同步快捷方式失败：{ex.Message}", isError: true);
+                    return;
+                }
+                finally
+                {
+                    _steamSyncingGameIds.Remove(targetGameId);
+                    NotifyPrimaryLaunchButtonProperties();
+                }
+            }
+            else if (prep.Status == SteamLaunchPreparationStatus.NeedsShortcutWriteSteamClosed)
+            {
+                _steamSyncingGameIds.Add(targetGameId);
+                NotifyPrimaryLaunchButtonProperties();
+                ShowStatusBanner("正在写入 Steam 快捷方式并准备启动…", isError: false, autoDismiss: false);
+
+                try
+                {
+                    SteamShortcutSyncResult sync = await _steamShortcutService.ApplyShortcutAndRestartIfNeededAsync(
+                        game.Record,
+                        savedSettings,
+                        allowGracefulSteamRestart: false,
+                        steamOverride,
+                        preferredAccountId,
+                        cancellationToken).ConfigureAwait(true);
+
+                    if (sync.ShortcutAppId is { } syncedAppId && syncedAppId != 0)
+                    {
+                        await _db.UpdateGameRegisteredShortcutAppIdAsync(targetGameId, syncedAppId, cancellationToken).ConfigureAwait(true);
+                        savedSettings = savedSettings with { RegisteredShortcutAppId = syncedAppId };
+                        game.UpdateSteamLaunchSettings(savedSettings);
+                    }
+
+                    if (!sync.Succeeded)
+                    {
+                        ShowStatusBanner(sync.ErrorMessage ?? "写入 Steam 快捷方式失败", isError: true);
+                        return;
+                    }
+
+                    launchUri = sync.LaunchUri ?? launchUri;
+                    steamWasRunningBeforeLaunch = false;
+                }
+                catch (Exception ex)
+                {
+                    ShowStatusBanner($"写入 Steam 快捷方式失败：{ex.Message}", isError: true);
+                    return;
+                }
+                finally
+                {
+                    _steamSyncingGameIds.Remove(targetGameId);
+                    NotifyPrimaryLaunchButtonProperties();
+                }
+            }
+            else
+            {
+                // ReadyOfficialSteam or ReadyNonSteamShortcut
+                SteamClientDiscoveryResult discovery = _steamClientLocator.Discover(steamOverride, preferredAccountId);
+                steamWasRunningBeforeLaunch = discovery.IsSteamRunning;
+
+                if (prep.Status == SteamLaunchPreparationStatus.ReadyNonSteamShortcut
+                    && prep.ShortcutAppId is { } existingAppId
+                    && existingAppId != 0
+                    && savedSettings.RegisteredShortcutAppId != existingAppId)
+                {
+                    await _db.UpdateGameRegisteredShortcutAppIdAsync(targetGameId, existingAppId, cancellationToken).ConfigureAwait(true);
+                    savedSettings = savedSettings with { RegisteredShortcutAppId = existingAppId };
+                    game.UpdateSteamLaunchSettings(savedSettings);
+                }
+
+                NotifyPrimaryLaunchButtonProperties();
+            }
+
+            var execOptions = new GameLaunchExecutionOptions
+            {
+                LaunchModeOverride = GameLaunchMode.Steam,
+                SteamLaunchUri = launchUri,
+                SuppressDuplicateAchievementToast = suppressToast,
+                SteamWasRunningBeforeLaunch = steamWasRunningBeforeLaunch,
+            };
+
+            GameLaunchResult result = await _launchService
+                .LaunchGameAsync(targetGameId, execOptions, cancellationToken)
+                .ConfigureAwait(true);
+
+            if (!result.Succeeded)
+            {
+                ShowStatusBanner(result.ErrorMessage ?? "通过 Steam 启动游戏失败", isError: true);
+                return;
+            }
+
+            if (result.Session is not null)
+            {
+                game.UpdateSession(result.Session);
+                RebuildGroupsPreservingSelection();
+                OnPropertyChanged(nameof(HasAnyRunningGame));
+                OnPropertyChanged(nameof(CanSyncAllCloudSaves));
+                OnPropertyChanged(nameof(LibraryRailToolTip));
+            }
+
+            string statusMsg = $"已通过 Steam 请求启动《{game.Title}》，正在等待游戏进程拉起…";
+            if (prep.Warnings.Count > 0 && _shownSteamWarningGameIds.Add(targetGameId))
+            {
+                statusMsg = $"{statusMsg}（提示：{prep.Warnings[0].Message}）";
+            }
+
+            ShowStatusBanner(statusMsg, isError: false);
+        }
+        catch (Exception ex)
+        {
+            ShowStatusBanner($"通过 Steam 启动《{game.Title}》失败：{ex.Message}", isError: true);
+        }
         finally
         {
-            _launchingGameIds.Remove(targetGameId);
+            _steamSyncingGameIds.Remove(targetGameId);
             NotifyPrimaryLaunchButtonProperties();
         }
     }
@@ -2150,6 +2582,22 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             game.Record.InstallDir,
             game.Record.ExecutableRelPath);
 
+        GameSteamLaunchSettings currentSteamSettings = await _db
+            .GetGameSteamLaunchSettingsAsync(game.GameId)
+            .ConfigureAwait(true);
+
+        async Task<SteamLaunchPreparationResult> PreviewSteamLaunchAsync(
+            GameRecord draftGame,
+            GameSteamLaunchSettings draftSettings,
+            CancellationToken ct)
+        {
+            string? steamOverride = await _db.GetSteamInstallDirectoryOverrideAsync(ct).ConfigureAwait(false);
+            uint? preferredAccountId = await _db.GetSteamTargetAccountIdAsync(ct).ConfigureAwait(false);
+            return await _steamShortcutService
+                .PrepareLaunchAsync(draftGame, draftSettings, steamOverride, preferredAccountId, ct)
+                .ConfigureAwait(false);
+        }
+
         var request = new GamePropertiesEditRequest(
             GameId: game.GameId,
             Title: game.Record.Title,
@@ -2160,7 +2608,12 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             SteamAppId: game.Record.SteamAppId,
             GogGameId: game.Record.GogGameId,
             CoverImagePath: game.Record.CoverImagePath,
-            IconPath: game.Record.IconPath);
+            IconPath: game.Record.IconPath,
+            PlatformSource: game.Record.PlatformSource,
+            AntiCheatTier: game.Record.AntiCheatTier,
+            AchievementCaptureMode: game.Record.AchievementCaptureMode,
+            SteamLaunchSettings: currentSteamSettings,
+            PreviewSteamLaunchAsync: PreviewSteamLaunchAsync);
 
         GamePropertiesEditResult? edited = EditGamePropertiesHandler(request);
         if (edited is null)
@@ -2179,6 +2632,18 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         if (string.IsNullOrWhiteSpace(trimmedExe))
         {
             ShowStatusBanner("游戏主程序路径不能为空", isError: true);
+            return;
+        }
+
+        GameLaunchMode requestedLaunchMode = edited.LaunchMode ?? currentSteamSettings.LaunchMode;
+        bool isOfficialSteamAfterEdit = game.Record.PlatformSource == PlatformSource.SteamLocal && edited.SteamAppId is > 0;
+        if (requestedLaunchMode == GameLaunchMode.Steam
+            && !isOfficialSteamAfterEdit
+            && game.Record.AntiCheatTier >= AntiCheatTier.Tier2)
+        {
+            ShowStatusBanner(
+                $"非 Steam 来源的 {game.Record.AntiCheatTier} 游戏禁止启用通过 Steam 启动（防反作弊与覆盖层冲突）",
+                isError: true);
             return;
         }
 
@@ -2210,6 +2675,21 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
                 return;
             }
 
+            if (edited.LaunchMode.HasValue || edited.UseSteamAppIdAsShortcutName.HasValue)
+            {
+                bool useAppIdName = (edited.UseSteamAppIdAsShortcutName ?? currentSteamSettings.UseSteamAppIdAsShortcutName)
+                                    && edited.SteamAppId is > 0
+                                    && !isOfficialSteamAfterEdit;
+                GameSteamLaunchSettings updatedSteamSettings = currentSteamSettings with
+                {
+                    LaunchMode = requestedLaunchMode,
+                    UseSteamAppIdAsShortcutName = useAppIdName,
+                };
+                await _db.SaveGameSteamLaunchSettingsAsync(game.GameId, updatedSteamSettings).ConfigureAwait(true);
+                game.UpdateSteamLaunchSettings(updatedSteamSettings);
+                _shownSteamWarningGameIds.Remove(game.GameId);
+            }
+
             if (idChanged)
             {
                 try
@@ -2224,6 +2704,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
             await EnqueueLibraryReloadAsync(
                 LibraryReloadRequest.PreserveCurrent(dirtyAchievementGameId: game.GameId)).ConfigureAwait(true);
+            NotifyPrimaryLaunchButtonProperties();
             ShowStatusBanner($"已更新《{updated.Title}》的游戏属性与启动设置", isError: false);
         }
         catch (Exception ex)
@@ -3156,10 +3637,14 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
         var records = await _libraryService.GetAllGamesAsync().ConfigureAwait(true);
         var summariesByGameId = new Dictionary<string, GameAchievementSummaryDto>(records.Count, StringComparer.OrdinalIgnoreCase);
+        var steamSettingsByGameId = new Dictionary<string, GameSteamLaunchSettings>(records.Count, StringComparer.OrdinalIgnoreCase);
         foreach (var record in records)
         {
             summariesByGameId[record.GameId] = await _achievementService
                 .GetGameAchievementsAsync(record.GameId)
+                .ConfigureAwait(true);
+            steamSettingsByGameId[record.GameId] = await _db
+                .GetGameSteamLaunchSettingsAsync(record.GameId)
                 .ConfigureAwait(true);
         }
 
@@ -3204,10 +3689,12 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         foreach (var record in records)
         {
             summariesByGameId.TryGetValue(record.GameId, out var summary);
+            steamSettingsByGameId.TryGetValue(record.GameId, out var steamSettings);
 
             if (existingById.TryGetValue(record.GameId, out var existingVm))
             {
                 existingVm.UpdateRecord(record);
+                existingVm.UpdateSteamLaunchSettings(steamSettings);
                 existingVm.UpdateSession(_launchService.GetActiveSession(record.GameId));
                 if (summary is not null)
                 {
@@ -3219,6 +3706,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             else
             {
                 var vm = new GameListItemViewModel(record);
+                vm.UpdateSteamLaunchSettings(steamSettings);
                 vm.UpdateSession(_launchService.GetActiveSession(record.GameId));
                 if (summary is not null)
                 {
@@ -3632,6 +4120,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             if (ev.CurrentState == PlaySessionActivityState.Stopped)
             {
                 _launchingGameIds.Remove(ev.GameId);
+                _steamSyncingGameIds.Remove(ev.GameId);
                 _stoppingGameIds.Remove(ev.GameId);
                 gameVm.UpdateSession(null);
                 var refreshedRecord = await _libraryService.GetGameByIdAsync(ev.GameId).ConfigureAwait(true);
@@ -4043,7 +4532,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         NotifyPrimaryLaunchButtonProperties();
     }
 
-    private void ShowStatusBanner(string message, bool isError)
+    private void ShowStatusBanner(string message, bool isError) =>
+        ShowStatusBanner(message, isError, autoDismiss: true);
+
+    private void ShowStatusBanner(string message, bool isError, bool autoDismiss)
     {
         _bannerAutoHideCts?.Cancel();
         _bannerAutoHideCts?.Dispose();
@@ -4052,8 +4544,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         StatusBannerMessage = message;
         IsStatusBannerError = isError;
 
-        // Only auto-dismiss non-error info banners; error banners remain visible until dismissed or superseded.
-        if (!string.IsNullOrWhiteSpace(message) && !isError)
+        // Only auto-dismiss non-error info banners when autoDismiss is enabled;
+        // error banners and active sync progress banners remain visible until dismissed or superseded.
+        if (autoDismiss && !string.IsNullOrWhiteSpace(message) && !isError)
         {
             var cts = new CancellationTokenSource();
             _bannerAutoHideCts = cts;

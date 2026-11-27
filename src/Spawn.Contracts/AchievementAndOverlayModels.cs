@@ -142,6 +142,7 @@ public sealed record OverlayToastRequest
     public bool ReplaceActivePreview { get; init; }
     public int? DisplayDurationMs { get; init; }
     public bool EnhanceRareAndPlatinumSound { get; init; } = true;
+    public string? SteamInstallDirectoryOverride { get; init; }
 }
 
 /// <summary>
@@ -256,4 +257,16 @@ public static class AppSettingKeys
     public const string SaveDefaultMaxSnapshotSizeMb = "saves.default_max_snapshot_size_mb";
     public const string SaveIncludeConfigFilesByDefault = "saves.include_config_default";
     public const string SaveGcGracePeriodHours = "saves.gc_grace_period_hours";
+
+    // Steam client discovery & Launch-via-Steam settings
+    public const string SteamInstallDirectoryOverride = "launcher.steam_install_dir_override";
+    public const string SteamTargetAccountId = "launcher.steam_target_account_id";
+    public const string SteamSuppressDuplicateAchievementToast = "launcher.steam_suppress_duplicate_toast";
+    public const string LauncherLaunchModePrefix = "launcher.launch_mode.";
+    public const string LauncherSteamUseAppIdNamePrefix = "launcher.steam_use_appid_name.";
+    public const string LauncherSteamShortcutAppIdPrefix = "launcher.steam_shortcut_appid.";
+
+    public static string GetGameLaunchModeKey(string gameId) => $"{LauncherLaunchModePrefix}{gameId}";
+    public static string GetGameSteamUseAppIdNameKey(string gameId) => $"{LauncherSteamUseAppIdNamePrefix}{gameId}";
+    public static string GetGameSteamShortcutAppIdKey(string gameId) => $"{LauncherSteamShortcutAppIdPrefix}{gameId}";
 }

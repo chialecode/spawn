@@ -103,6 +103,8 @@ public sealed record ActiveGameSession
     public long SessionActiveSec { get; init; }
     public long SessionBackgroundSec { get; init; }
     public long SessionAfkSec { get; init; }
+    public bool LaunchedViaSteam { get; init; }
+    public bool SuppressAchievementToast { get; init; }
 }
 
 /// <summary>

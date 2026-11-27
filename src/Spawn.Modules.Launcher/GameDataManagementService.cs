@@ -28,6 +28,7 @@ public sealed class GameDataManagementService : IGameDataManagementService
     private readonly IServiceProvider? _serviceProvider;
     private readonly HttpClient _httpClient;
     private readonly GameDataManagementOptions _options;
+    private readonly ISteamClientLocator? _steamClientLocator;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<GameDataManagementService> _logger;
 
@@ -39,7 +40,8 @@ public sealed class GameDataManagementService : IGameDataManagementService
         HttpClient? httpClient = null,
         GameDataManagementOptions? options = null,
         TimeProvider? timeProvider = null,
-        ILogger<GameDataManagementService>? logger = null)
+        ILogger<GameDataManagementService>? logger = null,
+        ISteamClientLocator? steamClientLocator = null)
     {
         ArgumentNullException.ThrowIfNull(database);
         ArgumentNullException.ThrowIfNull(paths);
@@ -50,11 +52,41 @@ public sealed class GameDataManagementService : IGameDataManagementService
         _launchService = launchService;
         _serviceProvider = serviceProvider;
         _options = options ?? new GameDataManagementOptions();
+        _steamClientLocator = steamClientLocator;
         _httpClient = _options.HttpMessageHandlerOverride is not null
             ? PcGamingWikiRuleParser.CreateHttpClient(_options.HttpMessageHandlerOverride, disposeHandler: false)
             : (httpClient ?? GameArtworkExtractor.CreateDefaultHttpClient());
         _timeProvider = timeProvider ?? TimeProvider.System;
         _logger = logger ?? NullLogger<GameDataManagementService>.Instance;
+    }
+
+    private async Task<GameDataManagementOptions> ResolveEffectiveOptionsAsync(CancellationToken cancellationToken)
+    {
+        if (!string.IsNullOrWhiteSpace(_options.SteamInstallDirOverride))
+        {
+            return _options;
+        }
+
+        string? dbSteamOverride = null;
+        try
+        {
+            dbSteamOverride = await _database.GetSteamInstallDirectoryOverrideAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            // Ignore best-effort settings lookup failure.
+        }
+
+        if (string.IsNullOrWhiteSpace(dbSteamOverride) && _steamClientLocator is null)
+        {
+            return _options;
+        }
+
+        return _options.WithEffectiveSteamConfiguration(dbSteamOverride, _steamClientLocator);
     }
 
     public async Task<IReadOnlyList<GameDataEntryDto>> InspectGameDataAsync(
@@ -73,15 +105,16 @@ public sealed class GameDataManagementService : IGameDataManagementService
             return [];
         }
 
+        var effectiveOptions = await ResolveEffectiveOptionsAsync(cancellationToken).ConfigureAwait(false);
         var identity = await BuildTargetIdentityAsync(game, cancellationToken).ConfigureAwait(false);
-        var builder = new CandidateListBuilder(game.GameId, game.InstallDir, identity, _paths, _options);
+        var builder = new CandidateListBuilder(game.GameId, game.InstallDir, identity, _paths, effectiveOptions);
 
         // 1. PCGamingWiki online + SQLite cached rules.
         var pcgwRules = await ResolvePcGamingWikiRulesAsync(game, refreshOnlineRules, cancellationToken)
             .ConfigureAwait(false);
         foreach (var rawRule in pcgwRules)
         {
-            foreach (var (effCategory, resolvedPath) in PcGamingWikiRuleParser.ExpandTemplateRule(rawRule, game.InstallDir, _options, identity))
+            foreach (var (effCategory, resolvedPath) in PcGamingWikiRuleParser.ExpandTemplateRule(rawRule, game.InstallDir, effectiveOptions, identity))
             {
                 builder.TryAdd(
                     category: effCategory,
@@ -101,7 +134,7 @@ public sealed class GameDataManagementService : IGameDataManagementService
         AddPublisherAndSocialClubLocations(game, identity, builder);
 
         // 4. Steam local userdata\<uid>\<AppId>\remote offline save discovery.
-        AddSteamUserdataLocations(game, builder);
+        AddSteamUserdataLocations(game, builder, effectiveOptions);
 
         // 5. Offline Steam Emulators (CODEX, RUNE, Goldberg, gbe_fork, TENOKE, Online-Fix, ALI213, 3DM, SSE, EMPRESS).
         AddSteamEmulatorLocations(game, builder);
@@ -226,18 +259,19 @@ public sealed class GameDataManagementService : IGameDataManagementService
             return new GameDataSafetyCheckResult(false, $"非法的恢复目标路径：{pathOrRegistryKey}");
         }
 
+        var effectiveOptions = await ResolveEffectiveOptionsAsync(cancellationToken).ConfigureAwait(false);
         var (fsSafe, fsReason) = GameDataSafetyFence.ValidateFilesystemTarget(
             normalizedTarget,
             game.InstallDir,
             identity,
             _paths,
-            _options);
+            effectiveOptions);
         if (!fsSafe)
         {
             return new GameDataSafetyCheckResult(false, fsReason ?? $"安全围栏拦截了不安全的文件恢复目标：{pathOrRegistryKey}");
         }
 
-        if (ContainsDisallowedReparsePointOrSubtree(normalizedTarget, game.InstallDir, identity, _options))
+        if (ContainsDisallowedReparsePointOrSubtree(normalizedTarget, game.InstallDir, identity, effectiveOptions))
         {
             return new GameDataSafetyCheckResult(false, $"安全围栏拦截：禁止向符号链接或目录联接点恢复存档：{pathOrRegistryKey}");
         }
@@ -267,6 +301,7 @@ public sealed class GameDataManagementService : IGameDataManagementService
             return GameDataCleanResult.Fail($"《{game.Title}》当前正在运行中，请先关闭游戏后再执行数据清理。");
         }
 
+        var effectiveOptions = await ResolveEffectiveOptionsAsync(cancellationToken).ConfigureAwait(false);
         var identity = await BuildTargetIdentityAsync(game, cancellationToken).ConfigureAwait(false);
         var discovered = await InspectGameDataAsync(game.GameId, refreshOnlineRules: false, cancellationToken)
             .ConfigureAwait(false);
@@ -287,15 +322,15 @@ public sealed class GameDataManagementService : IGameDataManagementService
                 // Defense-in-depth if a caller passed a raw path directly as an EntryId: run full safety fence!
                 bool isReg = id.StartsWith(@"HKCU\", StringComparison.OrdinalIgnoreCase) || id.StartsWith(@"HKLM\", StringComparison.OrdinalIgnoreCase);
                 var (safe, reason) = isReg
-                    ? MapRegValidation(GameDataSafetyFence.ValidateRegistryTarget(id, _options))
-                    : GameDataSafetyFence.ValidateFilesystemTarget(id, game.InstallDir, identity, _paths, _options);
+                    ? MapRegValidation(GameDataSafetyFence.ValidateRegistryTarget(id, effectiveOptions))
+                    : GameDataSafetyFence.ValidateFilesystemTarget(id, game.InstallDir, identity, _paths, effectiveOptions);
 
                 if (!safe)
                 {
                     return GameDataCleanResult.Fail(reason ?? $"安全围栏已拦截不安全路径：{id}");
                 }
 
-                if (!isReg && ContainsDisallowedReparsePointOrSubtree(id, game.InstallDir, identity, _options))
+                if (!isReg && ContainsDisallowedReparsePointOrSubtree(id, game.InstallDir, identity, effectiveOptions))
                 {
                     return GameDataCleanResult.Fail($"安全围栏拦截：目标包含符号链接或 NTFS 目录联接点 (ReparsePoint)，禁止清理：{id}");
                 }
@@ -314,7 +349,7 @@ public sealed class GameDataManagementService : IGameDataManagementService
 
             if (entry.IsRegistryEntry)
             {
-                var (safe, _, reason) = GameDataSafetyFence.ValidateRegistryTarget(entry.PathOrRegistryKey, _options);
+                var (safe, _, reason) = GameDataSafetyFence.ValidateRegistryTarget(entry.PathOrRegistryKey, effectiveOptions);
                 if (!safe)
                 {
                     warnings.Add(reason ?? $"注册表安全围栏拦截：{entry.PathOrRegistryKey}");
@@ -328,14 +363,14 @@ public sealed class GameDataManagementService : IGameDataManagementService
                     game.InstallDir,
                     identity,
                     _paths,
-                    _options);
+                    effectiveOptions);
                 if (!safe)
                 {
                     warnings.Add(reason ?? $"文件系统安全围栏拦截：{entry.PathOrRegistryKey}");
                     continue;
                 }
 
-                if (ContainsDisallowedReparsePointOrSubtree(entry.PathOrRegistryKey, game.InstallDir, identity, _options))
+                if (ContainsDisallowedReparsePointOrSubtree(entry.PathOrRegistryKey, game.InstallDir, identity, effectiveOptions))
                 {
                     warnings.Add($"安全围栏拦截：目标路径或其子目录包含符号链接/NTFS 目录联接点 (ReparsePoint)，已拒绝递归删除：{entry.PathOrRegistryKey}");
                     continue;
@@ -472,7 +507,7 @@ public sealed class GameDataManagementService : IGameDataManagementService
                 }
                 else if (Directory.Exists(entry.PathOrRegistryKey))
                 {
-                    if (ContainsDisallowedReparsePointOrSubtree(entry.PathOrRegistryKey, game.InstallDir, identity, _options))
+                    if (ContainsDisallowedReparsePointOrSubtree(entry.PathOrRegistryKey, game.InstallDir, identity, effectiveOptions))
                     {
                         warnings.Add($"安全围栏拦截：清理执行前检测到目标或其子目录含符号链接/NTFS 目录联接点 (ReparsePoint)，已跳过：{entry.PathOrRegistryKey}");
                         continue;
@@ -498,21 +533,21 @@ public sealed class GameDataManagementService : IGameDataManagementService
                     }
 
                     // Re-check immediately prior to deletion in case a junction was mounted concurrently.
-                    if (ContainsDisallowedReparsePointOrSubtree(entry.PathOrRegistryKey, game.InstallDir, identity, _options))
+                    if (ContainsDisallowedReparsePointOrSubtree(entry.PathOrRegistryKey, game.InstallDir, identity, effectiveOptions))
                     {
                         warnings.Add($"安全围栏拦截：删除前检测到目录包含 NTFS 目录联接点 (ReparsePoint)，已拒绝递归删除：{entry.PathOrRegistryKey}");
                         continue;
                     }
 
                     Directory.Delete(entry.PathOrRegistryKey, recursive: true);
-                    TrackPotentialEmptyCleanupParent(entry, game, identity, emptyEmulatorParentDirsToPrune);
+                    TrackPotentialEmptyCleanupParent(entry, game, identity, emptyEmulatorParentDirsToPrune, effectiveOptions);
                     affectedCount++;
                     totalBytesProcessed += dirBytes;
                     await MarkJournalItemRemovedAsync(manifestPath, manifest, journalItem, totalBytesProcessed).ConfigureAwait(false);
                 }
                 else if (File.Exists(entry.PathOrRegistryKey))
                 {
-                    if (ContainsDisallowedReparsePointOrSubtree(entry.PathOrRegistryKey, game.InstallDir, identity, _options))
+                    if (ContainsDisallowedReparsePointOrSubtree(entry.PathOrRegistryKey, game.InstallDir, identity, effectiveOptions))
                     {
                         warnings.Add($"安全围栏拦截：目标文件或祖先路径含符号链接/联接点 (ReparsePoint)，已跳过：{entry.PathOrRegistryKey}");
                         continue;
@@ -539,7 +574,7 @@ public sealed class GameDataManagementService : IGameDataManagementService
                     }
 
                     File.Delete(entry.PathOrRegistryKey);
-                    TrackPotentialEmptyCleanupParent(entry, game, identity, emptyEmulatorParentDirsToPrune);
+                    TrackPotentialEmptyCleanupParent(entry, game, identity, emptyEmulatorParentDirsToPrune, effectiveOptions);
                     affectedCount++;
                     totalBytesProcessed += fileBytes;
                     await MarkJournalItemRemovedAsync(manifestPath, manifest, journalItem, totalBytesProcessed).ConfigureAwait(false);
@@ -864,6 +899,7 @@ public sealed class GameDataManagementService : IGameDataManagementService
         string snapshotDir,
         CancellationToken cancellationToken)
     {
+        var effectiveOptions = await ResolveEffectiveOptionsAsync(cancellationToken).ConfigureAwait(false);
         var restoreIdentity = await BuildTargetIdentityAsync(game, cancellationToken).ConfigureAwait(false);
         int restoredCount = 0;
         long restoredBytes = 0;
@@ -886,14 +922,14 @@ public sealed class GameDataManagementService : IGameDataManagementService
                                 game.InstallDir,
                                 restoreIdentity,
                                 _paths,
-                                _options);
+                                effectiveOptions);
                             if (!safe)
                             {
                                 warnings.Add(reason ?? $"跳过恢复受保护目录：{item.OriginalPathOrKey}");
                                 continue;
                             }
 
-                            if (ContainsDisallowedReparsePointOrSubtree(item.OriginalPathOrKey, game.InstallDir, restoreIdentity, _options))
+                            if (ContainsDisallowedReparsePointOrSubtree(item.OriginalPathOrKey, game.InstallDir, restoreIdentity, effectiveOptions))
                             {
                                 warnings.Add($"安全围栏拦截：恢复目标或其子目录含符号链接/NTFS 目录联接点 (ReparsePoint)，已跳过：{item.OriginalPathOrKey}");
                                 continue;
@@ -914,14 +950,14 @@ public sealed class GameDataManagementService : IGameDataManagementService
                                 game.InstallDir,
                                 restoreIdentity,
                                 _paths,
-                                _options);
+                                effectiveOptions);
                             if (!safe)
                             {
                                 warnings.Add(reason ?? $"跳过恢复受保护文件：{item.OriginalPathOrKey}");
                                 continue;
                             }
 
-                            if (ContainsDisallowedReparsePointOrSubtree(item.OriginalPathOrKey, game.InstallDir, restoreIdentity, _options))
+                            if (ContainsDisallowedReparsePointOrSubtree(item.OriginalPathOrKey, game.InstallDir, restoreIdentity, effectiveOptions))
                             {
                                 warnings.Add($"安全围栏拦截：恢复目标文件或祖先目录含符号链接/联接点 (ReparsePoint)，已跳过：{item.OriginalPathOrKey}");
                                 continue;
@@ -945,7 +981,7 @@ public sealed class GameDataManagementService : IGameDataManagementService
                         {
                             var (safe, validatedSubKey, reason) = GameDataSafetyFence.ValidateRegistryTarget(
                                 @"HKCU\" + item.RegistrySubKey,
-                                _options);
+                                effectiveOptions);
                             if (!safe || string.IsNullOrWhiteSpace(validatedSubKey))
                             {
                                 warnings.Add(reason ?? $"跳过恢复不安全注册表项：{item.OriginalPathOrKey}");
@@ -2097,7 +2133,10 @@ public sealed class GameDataManagementService : IGameDataManagementService
         }
     }
 
-    private void AddSteamUserdataLocations(GameRecord game, CandidateListBuilder builder)
+    private void AddSteamUserdataLocations(
+        GameRecord game,
+        CandidateListBuilder builder,
+        GameDataManagementOptions effectiveOptions)
     {
         var (_, inspectedAppId, _, _) = GameEngineInspector.InspectSteamFiles(game.InstallDir);
         int? appId = game.SteamAppId ?? inspectedAppId;
@@ -2106,7 +2145,7 @@ public sealed class GameDataManagementService : IGameDataManagementService
             return;
         }
 
-        string? steamRoot = _options.ResolveSteamInstallDir();
+        string? steamRoot = effectiveOptions.ResolveSteamInstallDir();
         if (string.IsNullOrWhiteSpace(steamRoot))
         {
             return;
@@ -2729,11 +2768,12 @@ public sealed class GameDataManagementService : IGameDataManagementService
         return result;
     }
 
-    private void TrackPotentialEmptyCleanupParent(
+    private static void TrackPotentialEmptyCleanupParent(
         GameDataEntryDto entry,
         GameRecord game,
         GameDataTargetIdentity identity,
-        HashSet<string> candidateParents)
+        HashSet<string> candidateParents,
+        GameDataManagementOptions effectiveOptions)
     {
         if (entry.SourceRule == GameDataSourceRule.SteamEmulator && game.SteamAppId.HasValue)
         {
@@ -2766,7 +2806,7 @@ public sealed class GameDataManagementService : IGameDataManagementService
                 break;
             }
 
-            if (!GameDataSafetyFence.IsGameSpecificPathOutsideInstall(fullCurrent, identity, _options))
+            if (!GameDataSafetyFence.IsGameSpecificPathOutsideInstall(fullCurrent, identity, effectiveOptions))
             {
                 break;
             }

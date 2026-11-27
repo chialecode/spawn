@@ -444,7 +444,19 @@ public sealed partial class GameDirectoryScanner
 
             try
             {
-                string norm = Path.TrimEndingDirectorySeparator(Path.GetFullPath(rawPath.Trim().Trim('"')));
+                string trimmed = rawPath.Trim().Trim('"').Replace('/', Path.DirectorySeparatorChar);
+                if (string.IsNullOrWhiteSpace(trimmed))
+                {
+                    return;
+                }
+
+                string full = Path.GetFullPath(trimmed);
+                if (string.Equals(Path.GetFileName(full), SteamClientLocator.SteamExecutableFileName, StringComparison.OrdinalIgnoreCase))
+                {
+                    full = Path.GetDirectoryName(full) ?? full;
+                }
+
+                string norm = Path.TrimEndingDirectorySeparator(full);
                 if (seenSteamRoots.Add(norm))
                 {
                     steamRoots.Add(norm);
@@ -466,20 +478,9 @@ public sealed partial class GameDirectoryScanner
 
         if (probeSystemDefaults)
         {
-            AddSteamRootCandidate(TryReadRegistryStringReadOnly(Registry.CurrentUser, @"Software\Valve\Steam", "SteamPath"));
-            AddSteamRootCandidate(TryReadRegistryStringReadOnly(Registry.LocalMachine, @"SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath"));
-            AddSteamRootCandidate(TryReadRegistryStringReadOnly(Registry.LocalMachine, @"SOFTWARE\Valve\Steam", "InstallPath"));
-
-            string pf86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
-            string pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-            if (!string.IsNullOrWhiteSpace(pf86))
+            foreach (var (steamDir, _) in SteamClientLocator.Default.EnumerateCandidateInstallDirectories(explicitInstallDirOverride: null))
             {
-                AddSteamRootCandidate(Path.Combine(pf86, "Steam"));
-            }
-
-            if (!string.IsNullOrWhiteSpace(pf))
-            {
-                AddSteamRootCandidate(Path.Combine(pf, "Steam"));
+                AddSteamRootCandidate(steamDir);
             }
 
             foreach (string driveRoot in EnumerateReadyFixedDriveRoots())
@@ -3250,19 +3251,6 @@ public sealed partial class GameDirectoryScanner
             {
                 yield return root;
             }
-        }
-    }
-
-    private static string? TryReadRegistryStringReadOnly(RegistryKey hive, string subKeyPath, string valueName)
-    {
-        try
-        {
-            using RegistryKey? key = hive.OpenSubKey(subKeyPath, writable: false);
-            return key?.GetValue(valueName) as string;
-        }
-        catch
-        {
-            return null;
         }
     }
 

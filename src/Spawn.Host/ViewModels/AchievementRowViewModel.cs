@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Spawn.Contracts;
@@ -11,10 +12,17 @@ public sealed partial class AchievementRowViewModel : ObservableObject
 {
     private readonly Func<AchievementRowViewModel, bool, Task> _onSetUnlockedAsync;
     private readonly Func<AchievementRowViewModel, Task> _onPreviewToastAsync;
+    private readonly Dispatcher? _uiDispatcher;
+
+    private BitmapImage? _iconImage;
+    private double _iconOpacity;
+    private int _iconLoadStarted;
+    private Task _iconLoadTask = Task.CompletedTask;
 
     public string GameId { get; }
     public string GameTitle { get; }
     public GameAchievementItemDto Item { get; }
+    public AchievementCaptureMode ChannelCaptureMode { get; }
 
     [ObservableProperty]
     private bool _globalRevealSpoilers;
@@ -28,10 +36,16 @@ public sealed partial class AchievementRowViewModel : ObservableObject
     public bool IsLocked => !Item.IsUnlocked;
     public bool IsHidden => Item.Definition.IsHidden;
     public bool IsRare => Item.Definition.IsRare;
-    public bool HasGlobalPercent => Item.Definition.GlobalPercent.HasValue;
+    public double? GlobalPercent => Item.Definition.GlobalPercent;
 
-    public string GlobalPercentText => Item.Definition.GlobalPercent.HasValue
-        ? string.Create(CultureInfo.InvariantCulture, $"全球 {Item.Definition.GlobalPercent.Value:0.0}%")
+    /// <summary>
+    /// True only when a non-rare achievement has a global unlock rate (rare rows already display the rate inside <see cref="RareBadgeText"/>,
+    /// avoiding duplicate percentage labels on the same row).
+    /// </summary>
+    public bool HasGlobalPercent => Item.Definition.GlobalPercent.HasValue && !IsRare;
+
+    public string GlobalPercentText => HasGlobalPercent
+        ? string.Create(CultureInfo.InvariantCulture, $"全球 {Item.Definition.GlobalPercent!.Value:0.0}%")
         : string.Empty;
 
     public string RareBadgeText => Item.Definition.GlobalPercent.HasValue
@@ -44,8 +58,40 @@ public sealed partial class AchievementRowViewModel : ObservableObject
             : "已解锁")
         : "未解锁";
 
+    public bool HasNumericProgress =>
+        Item.Unlock?.CurrentProgress is double cur
+        && Item.Unlock?.MaxProgress is double max
+        && !double.IsNaN(cur)
+        && !double.IsInfinity(cur)
+        && !double.IsNaN(max)
+        && !double.IsInfinity(max)
+        && max > 0.0
+        && cur >= 0.0;
+
+    public double ProgressFraction => HasNumericProgress
+        ? Math.Clamp(Item.Unlock!.CurrentProgress!.Value / Item.Unlock.MaxProgress!.Value, 0.0, 1.0)
+        : 0.0;
+
+    public string ProgressLabel => HasNumericProgress
+        ? $"{FormatProgressNumber(Item.Unlock!.CurrentProgress!.Value)} / {FormatProgressNumber(Item.Unlock.MaxProgress!.Value)}"
+        : string.Empty;
+
+    public AchievementChannelDotState ChannelDotState => GameListItemViewModel.ResolveChannelDotState(ChannelCaptureMode);
+    public bool IsChannelReady => ChannelDotState == AchievementChannelDotState.Ready;
+    public bool IsChannelPendingPatch => ChannelDotState == AchievementChannelDotState.PendingGbeFork;
+    public bool IsChannelNone => ChannelDotState == AchievementChannelDotState.None;
+    public string ChannelDotHexColor => GameListItemViewModel.ResolveChannelDotHexColor(ChannelDotState);
+
     public bool CanClickToRevealSpoiler =>
         !IsUnlocked && IsHidden && !GlobalRevealSpoilers && !IsRowSpoilerRevealed;
+
+    public bool CanCollapseRowSpoiler =>
+        !IsUnlocked && IsHidden && !GlobalRevealSpoilers && IsRowSpoilerRevealed;
+
+    public bool CanToggleRowSpoiler =>
+        !IsUnlocked && IsHidden && !GlobalRevealSpoilers;
+
+    public string RowSpoilerToggleLabel => IsRowSpoilerRevealed ? "收起剧透" : "查看隐藏条件";
 
     public string EffectiveDescription
     {
@@ -58,8 +104,25 @@ public sealed partial class AchievementRowViewModel : ObservableObject
         }
     }
 
-    public BitmapImage? IconImage { get; }
-    public double IconOpacity { get; }
+    public bool IsIconLoadStarted => Volatile.Read(ref _iconLoadStarted) != 0;
+
+    /// <summary>
+    /// Lazily triggers background icon decoding on first access so typing/filtering never blocks the UI thread.
+    /// </summary>
+    public BitmapImage? IconImage
+    {
+        get
+        {
+            EnsureIconLoadStarted();
+            return _iconImage;
+        }
+    }
+
+    public double IconOpacity
+    {
+        get => _iconOpacity;
+        private set => SetProperty(ref _iconOpacity, value);
+    }
 
     public AchievementRowViewModel(
         string gameId,
@@ -67,45 +130,157 @@ public sealed partial class AchievementRowViewModel : ObservableObject
         GameAchievementItemDto item,
         bool globalRevealSpoilers,
         Func<AchievementRowViewModel, bool, Task> onSetUnlockedAsync,
-        Func<AchievementRowViewModel, Task> onPreviewToastAsync)
+        Func<AchievementRowViewModel, Task> onPreviewToastAsync,
+        AchievementCaptureMode channelCaptureMode = AchievementCaptureMode.None)
     {
         GameId = gameId;
         GameTitle = gameTitle;
-        Item = item;
+        Item = item ?? throw new ArgumentNullException(nameof(item));
+        ChannelCaptureMode = channelCaptureMode;
         _globalRevealSpoilers = globalRevealSpoilers;
         _onSetUnlockedAsync = onSetUnlockedAsync;
         _onPreviewToastAsync = onPreviewToastAsync;
+        _uiDispatcher = GameListItemViewModel.ResolveLiveUiDispatcher();
 
-        if (item.IsUnlocked)
+        // Deterministic initial opacity without touching disk during construction.
+        _iconOpacity = item.IsUnlocked
+            ? 1.0
+            : (!string.IsNullOrWhiteSpace(item.Definition.IconGrayPath) ? 0.92 : 0.45);
+    }
+
+    /// <summary>
+    /// Ensures the row's achievement icon is decoded asynchronously and returns the completion task.
+    /// </summary>
+    public Task EnsureIconLoadedAsync(CancellationToken cancellationToken = default)
+    {
+        EnsureIconLoadStarted();
+        return cancellationToken.CanBeCanceled
+            ? _iconLoadTask.WaitAsync(cancellationToken)
+            : _iconLoadTask;
+    }
+
+    private void EnsureIconLoadStarted()
+    {
+        if (Interlocked.Exchange(ref _iconLoadStarted, 1) != 0)
         {
-            IconImage = ImageLoaderHelper.LoadFrozen(item.Definition.IconPath ?? item.Definition.IconGrayPath, maxDecodeWidth: 112);
-            IconOpacity = 1.0;
+            return;
         }
-        else
+
+        string? primaryPath = Item.IsUnlocked
+            ? (Item.Definition.IconPath ?? Item.Definition.IconGrayPath)
+            : Item.Definition.IconGrayPath;
+        string? fallbackPath = Item.IsUnlocked ? null : Item.Definition.IconPath;
+
+        if (string.IsNullOrWhiteSpace(primaryPath) && string.IsNullOrWhiteSpace(fallbackPath))
         {
-            BitmapImage? gray = ImageLoaderHelper.LoadFrozen(item.Definition.IconGrayPath, maxDecodeWidth: 112);
-            if (gray is not null)
+            _iconLoadTask = Task.CompletedTask;
+            return;
+        }
+
+        // Fast zero-I/O memory cache hit avoids any flicker when scrolling back into view.
+        if (!string.IsNullOrWhiteSpace(primaryPath)
+            && ImageLoaderHelper.TryGetCached(primaryPath, 112, out BitmapImage? cachedPrimary))
+        {
+            _iconImage = cachedPrimary;
+            _iconOpacity = Item.IsUnlocked ? 1.0 : 0.92;
+            _iconLoadTask = Task.CompletedTask;
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(primaryPath)
+            && !string.IsNullOrWhiteSpace(fallbackPath)
+            && ImageLoaderHelper.TryGetCached(fallbackPath, 112, out BitmapImage? cachedFallback))
+        {
+            _iconImage = cachedFallback;
+            _iconOpacity = 0.45;
+            _iconLoadTask = Task.CompletedTask;
+            return;
+        }
+
+        _iconLoadTask = LoadIconAsync(primaryPath, fallbackPath);
+    }
+
+    private async Task LoadIconAsync(string? primaryPath, string? fallbackPath)
+    {
+        BitmapImage? loaded = null;
+        double targetOpacity = Item.IsUnlocked ? 1.0 : 0.92;
+
+        if (!string.IsNullOrWhiteSpace(primaryPath))
+        {
+            loaded = await ImageLoaderHelper.LoadFrozenAsync(primaryPath, maxDecodeWidth: 112).ConfigureAwait(false);
+        }
+
+        if (loaded is null && !string.IsNullOrWhiteSpace(fallbackPath))
+        {
+            loaded = await ImageLoaderHelper.LoadFrozenAsync(fallbackPath, maxDecodeWidth: 112).ConfigureAwait(false);
+            if (!Item.IsUnlocked)
             {
-                IconImage = gray;
-                IconOpacity = 0.92;
-            }
-            else
-            {
-                IconImage = ImageLoaderHelper.LoadFrozen(item.Definition.IconPath, maxDecodeWidth: 112);
-                IconOpacity = 0.45;
+                targetOpacity = 0.45;
             }
         }
+
+        if (loaded is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await PostToOwnerThreadAsync(() =>
+            {
+                _iconImage = loaded;
+                IconOpacity = targetOpacity;
+                OnPropertyChanged(nameof(IconImage));
+            }).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Ignore Dispatcher shutdown cancellation during app exit.
+        }
+    }
+
+    private Task PostToOwnerThreadAsync(Action action)
+    {
+        if (_uiDispatcher is not null && !_uiDispatcher.HasShutdownStarted && !_uiDispatcher.HasShutdownFinished)
+        {
+            if (_uiDispatcher.CheckAccess())
+            {
+                action();
+                return Task.CompletedTask;
+            }
+
+            return _uiDispatcher.InvokeAsync(action, DispatcherPriority.Background).Task;
+        }
+
+        // No live WPF Dispatcher (headless/test execution): decoded BitmapImage instances are already frozen,
+        // so updating properties directly avoids starving on non-WPF SynchronizationContexts (e.g. xUnit MaxConcurrencySyncContext).
+        action();
+        return Task.CompletedTask;
+    }
+
+    private static string FormatProgressNumber(double value)
+    {
+        double rounded = Math.Round(value);
+        return Math.Abs(value - rounded) < 1e-6
+            ? ((long)rounded).ToString(CultureInfo.InvariantCulture)
+            : value.ToString("0.#", CultureInfo.InvariantCulture);
     }
 
     partial void OnGlobalRevealSpoilersChanged(bool value)
     {
         OnPropertyChanged(nameof(CanClickToRevealSpoiler));
+        OnPropertyChanged(nameof(CanCollapseRowSpoiler));
+        OnPropertyChanged(nameof(CanToggleRowSpoiler));
+        OnPropertyChanged(nameof(RowSpoilerToggleLabel));
         OnPropertyChanged(nameof(EffectiveDescription));
     }
 
     partial void OnIsRowSpoilerRevealedChanged(bool value)
     {
         OnPropertyChanged(nameof(CanClickToRevealSpoiler));
+        OnPropertyChanged(nameof(CanCollapseRowSpoiler));
+        OnPropertyChanged(nameof(CanToggleRowSpoiler));
+        OnPropertyChanged(nameof(RowSpoilerToggleLabel));
         OnPropertyChanged(nameof(EffectiveDescription));
     }
 
@@ -113,6 +288,23 @@ public sealed partial class AchievementRowViewModel : ObservableObject
     private void RevealRowSpoiler()
     {
         IsRowSpoilerRevealed = true;
+    }
+
+    [RelayCommand]
+    private void HideRowSpoiler()
+    {
+        IsRowSpoilerRevealed = false;
+    }
+
+    [RelayCommand]
+    private void ToggleRowSpoiler()
+    {
+        if (!CanToggleRowSpoiler)
+        {
+            return;
+        }
+
+        IsRowSpoilerRevealed = !IsRowSpoilerRevealed;
     }
 
     [RelayCommand]

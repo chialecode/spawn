@@ -1,6 +1,7 @@
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO.Compression;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -22,8 +23,15 @@ public sealed record ExtractedGameArtwork(
 /// Extracts zero-network offline GOG <c>webcache.zip</c> / <c>.ico</c> / PE <c>.exe</c> icons
 /// and optionally enriches vertical boxart &amp; hero banners from official GOG / Steam CDNs.
 /// </summary>
-public sealed class GameArtworkExtractor
+public sealed partial class GameArtworkExtractor
 {
+    private const uint ShgfiSysIconIndex = 0x00004000;
+    private const int ShilExtraLarge = 0x2; // 48x48
+    private const int ShilJumbo = 0x4;      // 256x256
+    private const uint IldTransparent = 0x00000001;
+    private const uint IldImage = 0x00000020;
+
+    private static readonly Guid IidIImageList = new("46EB5926-582E-4017-9FDF-E8998DAA0950");
     private readonly SpawnPaths _paths;
     private readonly HttpClient _httpClient;
     private readonly ILogger<GameArtworkExtractor> _logger;
@@ -298,6 +306,15 @@ public sealed class GameArtworkExtractor
         try
         {
             Directory.CreateDirectory(artworkDir);
+            string destPath = Path.Combine(artworkDir, "icon.png");
+
+            using Bitmap? highResBmp = TryExtractShellImageListIconBitmap(exeFullPath);
+            if (highResBmp is not null)
+            {
+                highResBmp.Save(destPath, ImageFormat.Png);
+                return destPath;
+            }
+
             using Icon? associatedIcon = Icon.ExtractAssociatedIcon(exeFullPath);
             if (associatedIcon is null)
             {
@@ -305,7 +322,6 @@ public sealed class GameArtworkExtractor
             }
 
             using Bitmap bmp = associatedIcon.ToBitmap();
-            string destPath = Path.Combine(artworkDir, "icon.png");
             bmp.Save(destPath, ImageFormat.Png);
             return destPath;
         }
@@ -314,6 +330,224 @@ public sealed class GameArtworkExtractor
             return null;
         }
     }
+
+    private static Bitmap? TryExtractShellImageListIconBitmap(string exeFullPath)
+    {
+        if (!TryGetSystemIconIndex(exeFullPath, out int iconIndex))
+        {
+            return null;
+        }
+
+        // 1. Prefer SHIL_JUMBO (256x256) when the executable embeds a genuinely high-resolution icon.
+        Bitmap? jumboBmp = TryGetIconBitmapFromShellImageList(iconIndex, ShilJumbo);
+        if (jumboBmp is not null)
+        {
+            if (TryMeasureOpaqueBounds(jumboBmp, out Rectangle jumboBounds))
+            {
+                bool isSmallIconPaddedInJumboCorner =
+                    jumboBmp.Width >= 128
+                    && jumboBounds.Right <= jumboBmp.Width / 2
+                    && jumboBounds.Bottom <= jumboBmp.Height / 2
+                    && jumboBounds.Width <= 64
+                    && jumboBounds.Height <= 64;
+
+                if (!isSmallIconPaddedInJumboCorner)
+                {
+                    return jumboBmp;
+                }
+            }
+
+            // EXE only carries a small icon (Windows places it in the top-left corner of the 256x256 JUMBO slot).
+            // Fall through to SHIL_EXTRALARGE (48x48) or cleanly crop the padded JUMBO region.
+            Bitmap? extraLargeBmp = TryGetIconBitmapFromShellImageList(iconIndex, ShilExtraLarge);
+            if (extraLargeBmp is not null)
+            {
+                jumboBmp.Dispose();
+                return NormalizePaddedIconBitmap(extraLargeBmp);
+            }
+
+            return NormalizePaddedIconBitmap(jumboBmp);
+        }
+
+        // 2. Fallback to SHIL_EXTRALARGE (48x48) if SHIL_JUMBO is unavailable.
+        Bitmap? xlFallback = TryGetIconBitmapFromShellImageList(iconIndex, ShilExtraLarge);
+        return xlFallback is null ? null : NormalizePaddedIconBitmap(xlFallback);
+    }
+
+    private static unsafe bool TryGetSystemIconIndex(string exeFullPath, out int iconIndex)
+    {
+        iconIndex = -1;
+        SHFILEINFOW shfi = default;
+        nint result = SHGetFileInfoW(exeFullPath, 0, &shfi, (uint)sizeof(SHFILEINFOW), ShgfiSysIconIndex);
+        if (result == nint.Zero || shfi.iIcon < 0)
+        {
+            return false;
+        }
+
+        iconIndex = shfi.iIcon;
+        return true;
+    }
+
+    private static unsafe Bitmap? TryGetIconBitmapFromShellImageList(int iconIndex, int shilSize)
+    {
+        nint imageListPtr = nint.Zero;
+        nint hIcon = nint.Zero;
+        try
+        {
+            int hr = SHGetImageList(shilSize, in IidIImageList, out imageListPtr);
+            if (hr != 0 || imageListPtr == nint.Zero)
+            {
+                return null;
+            }
+
+            // IImageList (GUID 46EB5926-582E-4017-9FDF-E8998DAA0950) vtable layout:
+            // [0] QueryInterface, [1] AddRef, [2] Release, [3..9] list ops, [10] GetIcon(int i, uint flags, out nint picon).
+            nint* vtable = *(nint**)imageListPtr;
+            var getIcon = (delegate* unmanaged[Stdcall]<nint, int, uint, nint*, int>)vtable[10];
+            int iconHr = getIcon(imageListPtr, iconIndex, IldTransparent | IldImage, &hIcon);
+            if (iconHr != 0 || hIcon == nint.Zero)
+            {
+                return null;
+            }
+
+            using Icon managedIcon = Icon.FromHandle(hIcon);
+            return managedIcon.ToBitmap();
+        }
+        catch
+        {
+            return null;
+        }
+        finally
+        {
+            if (hIcon != nint.Zero)
+            {
+                _ = DestroyIcon(hIcon);
+            }
+
+            if (imageListPtr != nint.Zero)
+            {
+                nint* vtable = *(nint**)imageListPtr;
+                var release = (delegate* unmanaged[Stdcall]<nint, uint>)vtable[2];
+                _ = release(imageListPtr);
+            }
+        }
+    }
+
+    private static Bitmap NormalizePaddedIconBitmap(Bitmap source)
+    {
+        if (!TryMeasureOpaqueBounds(source, out Rectangle bounds))
+        {
+            return source;
+        }
+
+        // If Windows Shell placed a smaller icon in the top-left corner of a larger slot, crop to a centered square.
+        bool isTopLeftPadded = bounds.Right < (int)(source.Width * 0.78)
+                               && bounds.Bottom < (int)(source.Height * 0.78);
+        if (!isTopLeftPadded)
+        {
+            return source;
+        }
+
+        int side = Math.Max(bounds.Width, bounds.Height);
+        side = Math.Clamp(side, 16, Math.Min(source.Width, source.Height));
+        int destX = (side - bounds.Width) / 2;
+        int destY = (side - bounds.Height) / 2;
+
+        var cropped = new Bitmap(side, side, PixelFormat.Format32bppArgb);
+        using (Graphics g = Graphics.FromImage(cropped))
+        {
+            g.Clear(Color.Transparent);
+            g.DrawImage(
+                source,
+                new Rectangle(destX, destY, bounds.Width, bounds.Height),
+                bounds,
+                GraphicsUnit.Pixel);
+        }
+
+        source.Dispose();
+        return cropped;
+    }
+
+    private static unsafe bool TryMeasureOpaqueBounds(Bitmap bitmap, out Rectangle bounds)
+    {
+        bounds = Rectangle.Empty;
+        if (bitmap.Width <= 0 || bitmap.Height <= 0)
+        {
+            return false;
+        }
+
+        BitmapData? data = null;
+        try
+        {
+            data = bitmap.LockBits(
+                new Rectangle(0, 0, bitmap.Width, bitmap.Height),
+                ImageLockMode.ReadOnly,
+                PixelFormat.Format32bppArgb);
+
+            int minX = bitmap.Width;
+            int minY = bitmap.Height;
+            int maxX = -1;
+            int maxY = -1;
+
+            byte* scan0 = (byte*)data.Scan0;
+            int stride = data.Stride;
+            for (int y = 0; y < bitmap.Height; y++)
+            {
+                byte* row = scan0 + (y * stride);
+                for (int x = 0; x < bitmap.Width; x++)
+                {
+                    byte alpha = row[(x * 4) + 3];
+                    if (alpha > 8)
+                    {
+                        if (x < minX) minX = x;
+                        if (x > maxX) maxX = x;
+                        if (y < minY) minY = y;
+                        if (y > maxY) maxY = y;
+                    }
+                }
+            }
+
+            if (maxX < minX || maxY < minY)
+            {
+                return false;
+            }
+
+            bounds = Rectangle.FromLTRB(minX, minY, maxX + 1, maxY + 1);
+            return true;
+        }
+        finally
+        {
+            if (data is not null)
+            {
+                bitmap.UnlockBits(data);
+            }
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private unsafe struct SHFILEINFOW
+    {
+        public nint hIcon;
+        public int iIcon;
+        public uint dwAttributes;
+        public fixed char szDisplayName[260];
+        public fixed char szTypeName[80];
+    }
+
+    [LibraryImport("shell32.dll", EntryPoint = "SHGetFileInfoW", StringMarshalling = StringMarshalling.Utf16)]
+    private static unsafe partial nint SHGetFileInfoW(
+        string pszPath,
+        uint dwFileAttributes,
+        SHFILEINFOW* psfi,
+        uint cbFileInfo,
+        uint uFlags);
+
+    [LibraryImport("shell32.dll", EntryPoint = "SHGetImageList")]
+    private static partial int SHGetImageList(int iImageList, in Guid riid, out nint ppvObj);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool DestroyIcon(nint hIcon);
 
     private static string? TryExtractMappedZipAsset(
         ZipArchive archive,

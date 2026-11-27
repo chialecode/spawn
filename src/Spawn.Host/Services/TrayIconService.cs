@@ -9,6 +9,36 @@ using Spawn.Core;
 namespace Spawn.Host.Services;
 
 /// <summary>
+/// Lightweight entry for a quick-launch recent game item in the system tray context menu.
+/// </summary>
+public sealed record TrayRecentGameEntry(string GameId, string Title);
+
+/// <summary>
+/// Live runtime status summary displayed in the system tray tooltip and context menu.
+/// </summary>
+public sealed record TrayRuntimeStatusSnapshot
+{
+    public string? RunningGameId { get; init; }
+    public string? RunningGameTitle { get; init; }
+    public PlaySessionActivityState RunningGameState { get; init; } = PlaySessionActivityState.Stopped;
+    public string? ActiveTrainerName { get; init; }
+    public AntiCheatGuardPhase AntiCheatPhase { get; init; } = AntiCheatGuardPhase.IdleSafe;
+    public double AntiCheatCooldownSeconds { get; init; }
+    public IReadOnlyList<TrayRecentGameEntry> RecentGames { get; init; } = [];
+}
+
+/// <summary>
+/// Declarative descriptor for a native Win32 system tray context menu item (enables headless unit testing).
+/// </summary>
+public sealed record TrayMenuItemDescriptor(
+    uint CommandId,
+    string Text,
+    bool IsSeparator = false,
+    bool IsDisabled = false,
+    bool IsDefault = false,
+    string? Tag = null);
+
+/// <summary>
 /// Pure Win32 <c>Shell_NotifyIconW</c> + <c>SkiaSharp</c> system tray integration for <c>Spawn.Host</c>.
 /// Zero <c>System.Windows.Forms</c> dependency and zero sensitive Win32 imports.
 /// Automatically renders an amber <c>DEV</c> badge for <c>dev</c>/<c>source</c> channels and recovers
@@ -41,16 +71,23 @@ public sealed partial class TrayIconService : IDisposable
     private const uint NiifNoSound = 0x00000010;
 
     private const uint MfString = 0x00000000;
+    private const uint MfGrayed = 0x00000001;
+    private const uint MfDisabled = 0x00000002;
     private const uint MfSeparator = 0x00000800;
     private const uint TpmRightButton = 0x0002;
     private const uint TpmReturnCmd = 0x0100;
     private const uint TpmBottomAlign = 0x0020;
 
-    private const uint CmdOpenWindow = 1001;
-    private const uint CmdExitApp = 1002;
-    private const uint CmdTestToast = 1003;
-    private const uint CmdRestartForUpdate = 1004;
-    private const uint CmdOpenUpdateSettings = 1005;
+    public const uint CmdOpenWindow = 1001;
+    public const uint CmdExitApp = 1002;
+    public const uint CmdTestToast = 1003;
+    public const uint CmdRestartForUpdate = 1004;
+    public const uint CmdOpenUpdateSettings = 1005;
+    public const uint CmdStopActiveTrainer = 1006;
+    public const uint CmdStopRunningGame = 1007;
+    public const uint CmdStatusHeaderBase = 1900;
+    public const uint CmdQuickLaunchBase = 2000;
+    private const int MaxQuickLaunchRecentGames = 3;
 
     private const int SmCxSmIcon = 49;
     private const int SmCySmIcon = 50;
@@ -71,8 +108,12 @@ public sealed partial class TrayIconService : IDisposable
     private string _currentTooltip;
     private bool _iconAdded;
     private int _disposed;
+    private List<TrayMenuItemDescriptor> _lastBuiltMenu = [];
 
     public bool IsActive => _iconAdded && _disposed == 0;
+    public bool IsDevChannel => _isDevChannel;
+    public string CurrentTooltip => _currentTooltip;
+    public TrayRuntimeStatusSnapshot RuntimeStatus { get; private set; } = new();
     public string? ReadyUpdateVersion { get; private set; }
     public string? LastNotificationTitle { get; private set; }
     public string? LastNotificationMessage { get; private set; }
@@ -82,13 +123,29 @@ public sealed partial class TrayIconService : IDisposable
     public event Action? TestToastRequested;
     public event Action? RestartForUpdateRequested;
     public event Action? OpenUpdateSettingsRequested;
+    public event Action? StopActiveTrainerRequested;
+    public event Action<string>? StopRunningGameRequested;
+    public event Action<string>? QuickLaunchGameRequested;
     public event Action? ExitApplicationRequested;
 
     public TrayIconService()
+        : this(
+            isDevChannelOverride: SpawnBuildInfo.IsDevOrSourceChannel,
+            forceHeadless: StartupWindowPolicy.IsHeadlessTestEnvironment(SpawnBuildInfo.IsReleaseChannel),
+            productTitleOverride: SpawnBuildInfo.DisplayProductName)
     {
-        _isHeadless = StartupWindowPolicy.IsHeadlessTestEnvironment(SpawnBuildInfo.IsReleaseChannel);
-        _isDevChannel = SpawnBuildInfo.IsDevOrSourceChannel;
-        _productTitle = SpawnBuildInfo.DisplayProductName;
+    }
+
+    public TrayIconService(
+        bool isDevChannelOverride,
+        bool forceHeadless = true,
+        string? productTitleOverride = null)
+    {
+        _isDevChannel = isDevChannelOverride;
+        _isHeadless = forceHeadless;
+        _productTitle = !string.IsNullOrWhiteSpace(productTitleOverride)
+            ? productTitleOverride.Trim()
+            : (isDevChannelOverride ? "SPAWN Dev" : "SPAWN");
         _currentTooltip = $"{_productTitle} · 运行就绪";
     }
 
@@ -192,7 +249,58 @@ public sealed partial class TrayIconService : IDisposable
         }
 
         ReadyUpdateVersion = normalized;
-        UpdateToolTip(normalized is null ? "运行就绪" : $"新版本 v{normalized} 已就绪，重启更新");
+        UpdateToolTip(BuildDynamicTooltipSuffix());
+    }
+
+    /// <summary>
+    /// Updates the live runtime summary (running game, active trainer, anti-cheat cooldown, and recent games)
+    /// reflected in both the tray tooltip and the right-click context menu.
+    /// </summary>
+    public void UpdateRuntimeStatus(TrayRuntimeStatusSnapshot? snapshot)
+    {
+        RuntimeStatus = snapshot ?? new TrayRuntimeStatusSnapshot();
+        UpdateToolTip(BuildDynamicTooltipSuffix());
+    }
+
+    private string BuildDynamicTooltipSuffix()
+    {
+        TrayRuntimeStatusSnapshot status = RuntimeStatus;
+        if (status.AntiCheatPhase == AntiCheatGuardPhase.ResidualGuardWatch)
+        {
+            return "反作弊守护进程监测中";
+        }
+
+        if (status.AntiCheatPhase == AntiCheatGuardPhase.CooldownLocked)
+        {
+            int secs = (int)Math.Ceiling(Math.Max(0.0, status.AntiCheatCooldownSeconds));
+            return secs > 0 ? $"反作弊冷却中 ({secs}s)" : "反作弊冷却中";
+        }
+
+        bool hasRunningGame = !string.IsNullOrWhiteSpace(status.RunningGameTitle)
+                              && status.RunningGameState != PlaySessionActivityState.Stopped;
+        bool hasActiveTrainer = !string.IsNullOrWhiteSpace(status.ActiveTrainerName);
+
+        if (hasRunningGame && hasActiveTrainer)
+        {
+            return $"运行中：{status.RunningGameTitle} · 修改器运行中";
+        }
+
+        if (hasRunningGame)
+        {
+            return $"运行中：{status.RunningGameTitle}";
+        }
+
+        if (hasActiveTrainer)
+        {
+            return $"修改器运行中：{status.ActiveTrainerName}";
+        }
+
+        if (!string.IsNullOrWhiteSpace(ReadyUpdateVersion))
+        {
+            return $"新版本 v{ReadyUpdateVersion} 已就绪，重启更新";
+        }
+
+        return "运行就绪";
     }
 
     public void ShowNotification(string title, string message, bool isError = false)
@@ -388,11 +496,200 @@ public sealed partial class TrayIconService : IDisposable
             else if (mouseMsg == NinBalloonUserClick)
             {
                 handled = true;
-                OpenUpdateSettingsRequested?.Invoke();
+                if (!_isDevChannel && !string.IsNullOrWhiteSpace(ReadyUpdateVersion))
+                {
+                    OpenUpdateSettingsRequested?.Invoke();
+                }
+                else
+                {
+                    OpenMainWindowRequested?.Invoke();
+                }
             }
         }
 
         return nint.Zero;
+    }
+
+    /// <summary>
+    /// Builds the ordered context menu items for the current channel and runtime status snapshot.
+    /// Dev channel hides invalid "更新设置…" and retains debug "测试跳杯弹窗"; release channel keeps the menu focused and clean.
+    /// </summary>
+    public IReadOnlyList<TrayMenuItemDescriptor> BuildContextMenuItems()
+    {
+        var items = new List<TrayMenuItemDescriptor>(12)
+        {
+            new(CmdOpenWindow, $"打开主界面 ({_productTitle})", IsDefault: true),
+        };
+
+        TrayRuntimeStatusSnapshot status = RuntimeStatus;
+        bool isCoolingDown = status.AntiCheatPhase is AntiCheatGuardPhase.ResidualGuardWatch or AntiCheatGuardPhase.CooldownLocked;
+        bool hasRunningGame = !string.IsNullOrWhiteSpace(status.RunningGameTitle)
+                              && status.RunningGameState != PlaySessionActivityState.Stopped;
+        bool hasActiveTrainer = !string.IsNullOrWhiteSpace(status.ActiveTrainerName);
+
+        uint statusHeaderId = CmdStatusHeaderBase;
+        if (isCoolingDown || hasRunningGame || hasActiveTrainer)
+        {
+            items.Add(new TrayMenuItemDescriptor(0, string.Empty, IsSeparator: true));
+
+            if (status.AntiCheatPhase == AntiCheatGuardPhase.ResidualGuardWatch)
+            {
+                items.Add(new TrayMenuItemDescriptor(statusHeaderId++, "反作弊守护进程监测中", IsDisabled: true));
+            }
+            else if (status.AntiCheatPhase == AntiCheatGuardPhase.CooldownLocked)
+            {
+                int secs = (int)Math.Ceiling(Math.Max(0.0, status.AntiCheatCooldownSeconds));
+                string cooldownText = secs > 0 ? $"反作弊冷却中（剩余 {secs} 秒）" : "反作弊冷却中";
+                items.Add(new TrayMenuItemDescriptor(statusHeaderId++, cooldownText, IsDisabled: true));
+            }
+
+            if (hasRunningGame)
+            {
+                items.Add(new TrayMenuItemDescriptor(statusHeaderId++, $"运行中：{status.RunningGameTitle}", IsDisabled: true));
+                if (!string.IsNullOrWhiteSpace(status.RunningGameId) && StopRunningGameRequested is not null)
+                {
+                    items.Add(new TrayMenuItemDescriptor(
+                        CmdStopRunningGame,
+                        $"优雅关闭《{status.RunningGameTitle}》",
+                        Tag: status.RunningGameId));
+                }
+            }
+
+            if (hasActiveTrainer)
+            {
+                items.Add(new TrayMenuItemDescriptor(
+                    CmdStopActiveTrainer,
+                    $"停止修改器 ({status.ActiveTrainerName})"));
+            }
+        }
+
+        if (!isCoolingDown && status.RecentGames is { Count: > 0 })
+        {
+            var quickEntries = status.RecentGames
+                .Where(g => !string.IsNullOrWhiteSpace(g.GameId)
+                            && !string.IsNullOrWhiteSpace(g.Title)
+                            && (!hasRunningGame || !string.Equals(g.GameId, status.RunningGameId, StringComparison.OrdinalIgnoreCase)))
+                .Take(MaxQuickLaunchRecentGames)
+                .ToList();
+
+            if (quickEntries.Count > 0)
+            {
+                items.Add(new TrayMenuItemDescriptor(0, string.Empty, IsSeparator: true));
+                for (int i = 0; i < quickEntries.Count; i++)
+                {
+                    TrayRecentGameEntry entry = quickEntries[i];
+                    items.Add(new TrayMenuItemDescriptor(
+                        CmdQuickLaunchBase + (uint)i,
+                        $"快速启动：{entry.Title}",
+                        Tag: entry.GameId));
+                }
+            }
+        }
+
+        bool addedUpdateOrDevSeparator = false;
+        if (!string.IsNullOrWhiteSpace(ReadyUpdateVersion))
+        {
+            items.Add(new TrayMenuItemDescriptor(0, string.Empty, IsSeparator: true));
+            addedUpdateOrDevSeparator = true;
+            items.Add(new TrayMenuItemDescriptor(CmdRestartForUpdate, $"立即重启更新 (v{ReadyUpdateVersion})"));
+        }
+
+        if (!_isDevChannel)
+        {
+            if (!addedUpdateOrDevSeparator)
+            {
+                items.Add(new TrayMenuItemDescriptor(0, string.Empty, IsSeparator: true));
+            }
+
+            items.Add(new TrayMenuItemDescriptor(CmdOpenUpdateSettings, "更新设置…"));
+        }
+        else
+        {
+            if (!addedUpdateOrDevSeparator)
+            {
+                items.Add(new TrayMenuItemDescriptor(0, string.Empty, IsSeparator: true));
+            }
+
+            items.Add(new TrayMenuItemDescriptor(CmdTestToast, "测试跳杯弹窗"));
+        }
+
+        items.Add(new TrayMenuItemDescriptor(0, string.Empty, IsSeparator: true));
+        items.Add(new TrayMenuItemDescriptor(CmdExitApp, $"退出 {_productTitle}"));
+
+        _lastBuiltMenu = items;
+        return items;
+    }
+
+    /// <summary>
+    /// Dispatches a tray context menu command ID to the matching callback event.
+    /// </summary>
+    public bool DispatchMenuCommand(uint commandId)
+    {
+        if (commandId == 0)
+        {
+            return false;
+        }
+
+        if (commandId == CmdOpenWindow)
+        {
+            OpenMainWindowRequested?.Invoke();
+            return true;
+        }
+
+        if (commandId == CmdRestartForUpdate)
+        {
+            RestartForUpdateRequested?.Invoke();
+            return true;
+        }
+
+        if (commandId == CmdOpenUpdateSettings)
+        {
+            OpenUpdateSettingsRequested?.Invoke();
+            return true;
+        }
+
+        if (commandId == CmdTestToast)
+        {
+            TestToastRequested?.Invoke();
+            return true;
+        }
+
+        if (commandId == CmdStopActiveTrainer)
+        {
+            StopActiveTrainerRequested?.Invoke();
+            return true;
+        }
+
+        if (commandId == CmdStopRunningGame)
+        {
+            string? runningId = RuntimeStatus.RunningGameId;
+            if (!string.IsNullOrWhiteSpace(runningId))
+            {
+                StopRunningGameRequested?.Invoke(runningId);
+                return true;
+            }
+
+            return false;
+        }
+
+        if (commandId == CmdExitApp)
+        {
+            ExitApplicationRequested?.Invoke();
+            return true;
+        }
+
+        if (commandId >= CmdQuickLaunchBase && commandId < CmdQuickLaunchBase + MaxQuickLaunchRecentGames)
+        {
+            IReadOnlyList<TrayMenuItemDescriptor> menu = _lastBuiltMenu.Count > 0 ? _lastBuiltMenu : BuildContextMenuItems();
+            TrayMenuItemDescriptor? match = menu.FirstOrDefault(m => m.CommandId == commandId);
+            if (!string.IsNullOrWhiteSpace(match?.Tag))
+            {
+                QuickLaunchGameRequested?.Invoke(match.Tag);
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private void ShowNativeContextMenu(nint hwnd)
@@ -410,17 +707,22 @@ public sealed partial class TrayIconService : IDisposable
 
         try
         {
-            _ = AppendMenuW(hMenu, MfString, CmdOpenWindow, $"打开主界面 ({_productTitle})");
-            _ = SetMenuDefaultItem(hMenu, CmdOpenWindow, 0);
-            if (!string.IsNullOrWhiteSpace(ReadyUpdateVersion))
+            IReadOnlyList<TrayMenuItemDescriptor> menuItems = BuildContextMenuItems();
+            foreach (TrayMenuItemDescriptor item in menuItems)
             {
-                _ = AppendMenuW(hMenu, MfString, CmdRestartForUpdate, $"立即重启更新 (v{ReadyUpdateVersion})");
-            }
+                if (item.IsSeparator)
+                {
+                    _ = AppendMenuW(hMenu, MfSeparator, 0, string.Empty);
+                    continue;
+                }
 
-            _ = AppendMenuW(hMenu, MfString, CmdOpenUpdateSettings, "更新设置…");
-            _ = AppendMenuW(hMenu, MfString, CmdTestToast, "测试跳杯弹窗");
-            _ = AppendMenuW(hMenu, MfSeparator, 0, string.Empty);
-            _ = AppendMenuW(hMenu, MfString, CmdExitApp, $"退出 {_productTitle}");
+                uint flags = item.IsDisabled ? (MfString | MfDisabled | MfGrayed) : MfString;
+                _ = AppendMenuW(hMenu, flags, item.CommandId, item.Text);
+                if (item.IsDefault)
+                {
+                    _ = SetMenuDefaultItem(hMenu, item.CommandId, 0);
+                }
+            }
 
             _ = SetForegroundWindow(hwnd);
             uint cmd = TrackPopupMenuEx(
@@ -432,26 +734,7 @@ public sealed partial class TrayIconService : IDisposable
                 nint.Zero);
             _ = PostMessageW(hwnd, WmNull, nint.Zero, nint.Zero);
 
-            if (cmd == CmdOpenWindow)
-            {
-                OpenMainWindowRequested?.Invoke();
-            }
-            else if (cmd == CmdRestartForUpdate)
-            {
-                RestartForUpdateRequested?.Invoke();
-            }
-            else if (cmd == CmdOpenUpdateSettings)
-            {
-                OpenUpdateSettingsRequested?.Invoke();
-            }
-            else if (cmd == CmdTestToast)
-            {
-                TestToastRequested?.Invoke();
-            }
-            else if (cmd == CmdExitApp)
-            {
-                ExitApplicationRequested?.Invoke();
-            }
+            _ = DispatchMenuCommand(cmd);
         }
         finally
         {

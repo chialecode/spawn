@@ -172,6 +172,22 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
         return recordToSave;
     }
 
+    public async Task<CloudSyncEndpointRecord> UpdateEndpointAsync(
+        CloudSyncEndpointRecord endpoint,
+        CloudSyncEndpointSecrets? secrets = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(endpoint);
+        ArgumentException.ThrowIfNullOrWhiteSpace(endpoint.EndpointId);
+        return await SaveEndpointAsync(endpoint, secrets, ct).ConfigureAwait(false);
+    }
+
+    public Task<bool> SetDefaultEndpointAsync(string endpointId, CancellationToken ct = default) =>
+        _database.SetDefaultCloudSyncEndpointAsync(endpointId, _timeProvider.GetUtcNow(), ct);
+
+    public Task<string> ResolveCloudGameKeyAsync(string gameId, CancellationToken ct = default) =>
+        CloudGameKeyResolver.ResolveAsync(_database, gameId, ct: ct);
+
     public async Task<bool> DeleteEndpointAsync(string endpointId, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(endpointId))
@@ -260,17 +276,82 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
     // Sync Execution (Push / Pull / Divergence Resolution)
     // -------------------------------------------------------------------------
 
-    public async Task<CloudSyncExecutionReport> ExecuteSyncAsync(
+    public Task<CloudSyncExecutionReport> ExecuteSyncAsync(
         string gameId,
         string? endpointId = null,
         CloudDivergenceResolution? divergenceResolution = null,
         IProgress<CloudSyncProgressTick>? progress = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default) =>
+        ExecuteSyncCoreAsync(gameId, endpointId, divergenceResolution, forcePushAllBranches: false, progress, ct);
+
+    public Task<CloudSyncExecutionReport> PushAllBranchesAsync(
+        string gameId,
+        string? endpointId = null,
+        IProgress<CloudSyncProgressTick>? progress = null,
+        CancellationToken ct = default) =>
+        ExecuteSyncCoreAsync(gameId, endpointId, divergenceResolution: null, forcePushAllBranches: true, progress, ct);
+
+    public async Task<CloudSyncExecutionReport?> HandleGameExitAutoPushAsync(string gameId, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(gameId))
+        {
+            return null;
+        }
+
+        SaveSettingsDto settings = await _database.GetSaveSettingsAsync(ct).ConfigureAwait(false);
+        if (!settings.AutoCloudPushOnGameExit)
+        {
+            return null;
+        }
+
+        CloudSyncPlanPreview plan = await PlanSyncAsync(gameId, endpointId: null, ct).ConfigureAwait(false);
+        if (plan.Relation == CloudSyncRelation.FastForwardPush)
+        {
+            return await ExecuteSyncAsync(gameId, endpointId: null, divergenceResolution: null, progress: null, ct)
+                .ConfigureAwait(false);
+        }
+
+        if (plan.Relation == CloudSyncRelation.UpToDate && plan.SyncScope == SaveCloudSyncScope.AllBranches && plan.PendingBranchPushCount > 0)
+        {
+            return await PushAllBranchesAsync(gameId, endpointId: null, progress: null, ct).ConfigureAwait(false);
+        }
+
+        return null;
+    }
+
+    public async Task<CloudSyncPlanPreview?> CheckRemoteUpdateBeforeLaunchAsync(string gameId, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(gameId))
+        {
+            return null;
+        }
+
+        SaveSettingsDto settings = await _database.GetSaveSettingsAsync(ct).ConfigureAwait(false);
+        if (!settings.CheckRemoteUpdatesBeforeLaunch)
+        {
+            return null;
+        }
+
+        CloudSyncPlanPreview plan = await PlanSyncAsync(gameId, endpointId: null, ct).ConfigureAwait(false);
+        return plan.Relation == CloudSyncRelation.NotConfigured ? null : plan;
+    }
+
+    private async Task<CloudSyncExecutionReport> ExecuteSyncCoreAsync(
+        string gameId,
+        string? endpointId,
+        CloudDivergenceResolution? divergenceResolution,
+        bool forcePushAllBranches,
+        IProgress<CloudSyncProgressTick>? progress,
+        CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(gameId);
 
+        GameRecord? game = await _database.GetGameByIdAsync(gameId, ct).ConfigureAwait(false);
         SaveGameStateRecord state = await _database
             .GetOrCreateSaveGameStateAsync(gameId, _timeProvider.GetUtcNow(), ct)
+            .ConfigureAwait(false);
+        string resolvedCloudKey = await CloudGameKeyResolver
+            .ResolveAsync(_database, gameId, state, game, ct)
             .ConfigureAwait(false);
 
         CloudSyncEndpointRecord? endpoint = await ResolveEndpointAsync(state, endpointId, ct).ConfigureAwait(false);
@@ -280,45 +361,84 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
             {
                 Succeeded = false,
                 Relation = CloudSyncRelation.NotConfigured,
-                Message = "未配置云同步端点，请先在设置中配置 LocalFolder、WebDAV 或 S3/R2 端点。",
+                GameId = gameId,
+                GameTitle = game?.Title,
+                CloudGameKey = resolvedCloudKey,
+                Message = "未配置云同步端点，请先在设置中配置本地目录、WebDAV 或 S3/R2 端点。",
             };
         }
 
         try
         {
             using ICloudSyncTransport transport = CreateTransport(endpoint);
-            progress?.Report(new CloudSyncProgressTick("Init", 0, 1, 0, "正在检查远端血缘状态..."));
+            progress?.Report(new CloudSyncProgressTick("Init", 0, 1, 0, "正在检查云端版本状态..."));
 
             PlanContext ctx = await BuildPlanContextAsync(gameId, state, endpoint, transport, ct).ConfigureAwait(false);
             CloudSyncPlanPreview plan = ctx.Preview;
+            bool includeSideBranches = forcePushAllBranches || state.SyncAllBranchesToCloud;
 
+            CloudSyncExecutionReport report;
             switch (plan.Relation)
             {
                 case CloudSyncRelation.UpToDate:
                 {
                     DateTimeOffset now = _timeProvider.GetUtcNow();
+                    if (plan.LocalHeadSnapshot is not null)
+                    {
+                        await MarkActiveLineageSyncedAsync(
+                            ctx.GameId,
+                            ctx.Endpoint.EndpointId,
+                            plan.LocalHeadSnapshot.SnapshotId,
+                            plan.RemoteHead?.AncestorIds,
+                            now,
+                            ct).ConfigureAwait(false);
+                    }
+
+                    int sideBranchesSynced = 0;
+                    int extraPacks = 0;
+                    long extraBytes = 0;
+                    if (includeSideBranches)
+                    {
+                        (sideBranchesSynced, extraPacks, extraBytes) = await PushSideBranchesAsync(ctx, transport, progress, ct)
+                            .ConfigureAwait(false);
+                    }
+
                     await _database.SetSaveGameCloudSyncStatusAsync(gameId, now, hasUnresolvedConflict: false, now, ct)
                         .ConfigureAwait(false);
-                    return new CloudSyncExecutionReport
+                    await PublishTreeChangedAsync(gameId, ctx.ActiveBranch.BranchId, plan.LocalHeadSnapshot?.SnapshotId, "CloudSyncUpToDate", ct)
+                        .ConfigureAwait(false);
+
+                    report = new CloudSyncExecutionReport
                     {
                         Succeeded = true,
                         Relation = CloudSyncRelation.UpToDate,
-                        Message = "本地与远端存档已处于最新一致状态。",
+                        GameId = gameId,
+                        GameTitle = ctx.Game?.Title,
+                        CloudGameKey = ctx.CloudGameKey,
+                        UploadedPackCount = extraPacks,
+                        UploadedBytes = extraBytes,
+                        SyncedBranchCount = (plan.LocalHeadSnapshot is not null ? 1 : 0) + sideBranchesSynced,
+                        Message = sideBranchesSynced > 0
+                            ? $"当前路线已一致，并同步推送了 {sideBranchesSynced} 条其他分支路线至云端。"
+                            : "本地与云端存档已处于最新一致状态。",
                         ResultHeadSnapshotId = plan.LocalHeadSnapshot?.SnapshotId,
                     };
+                    break;
                 }
 
                 case CloudSyncRelation.FastForwardPush:
-                    return await ExecuteFastForwardPushAsync(ctx, transport, progress, ct).ConfigureAwait(false);
+                    report = await ExecuteFastForwardPushAsync(ctx, transport, includeSideBranches, progress, ct).ConfigureAwait(false);
+                    break;
 
                 case CloudSyncRelation.FastForwardPull:
-                    return await ExecuteFastForwardPullAsync(
+                    report = await ExecuteFastForwardPullAsync(
                         ctx,
                         transport,
                         targetBranchId: ctx.ActiveBranch.BranchId,
                         createSafetySnapshot: true,
                         progress,
                         ct).ConfigureAwait(false);
+                    break;
 
                 case CloudSyncRelation.Diverged:
                     if (!divergenceResolution.HasValue)
@@ -329,35 +449,56 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
                         await PublishTreeChangedAsync(gameId, ctx.ActiveBranch.BranchId, ctx.LocalHeadSnapshot?.SnapshotId, "CloudConflictDetected", ct)
                             .ConfigureAwait(false);
 
-                        return new CloudSyncExecutionReport
+                        report = new CloudSyncExecutionReport
                         {
                             Succeeded = false,
                             Relation = CloudSyncRelation.Diverged,
+                            GameId = gameId,
+                            GameTitle = ctx.Game?.Title,
+                            CloudGameKey = ctx.CloudGameKey,
                             Message = "检测到双端离线分叉：已拒绝按时间静默覆盖，请选择保留本机或采用远端（另一端将完整保留为独立分叉分支）。",
                             ResultHeadSnapshotId = ctx.LocalHeadSnapshot?.SnapshotId,
                         };
                     }
+                    else
+                    {
+                        report = divergenceResolution.Value == CloudDivergenceResolution.AdoptRemoteAndBackupLocal
+                            ? await ExecuteAdoptRemoteAndBackupLocalAsync(ctx, transport, progress, ct).ConfigureAwait(false)
+                            : await ExecuteKeepLocalAndBackupRemoteAsync(ctx, transport, includeSideBranches, progress, ct).ConfigureAwait(false);
+                    }
 
-                    return divergenceResolution.Value == CloudDivergenceResolution.AdoptRemoteAndBackupLocal
-                        ? await ExecuteAdoptRemoteAndBackupLocalAsync(ctx, transport, progress, ct).ConfigureAwait(false)
-                        : await ExecuteKeepLocalAndBackupRemoteAsync(ctx, transport, progress, ct).ConfigureAwait(false);
+                    break;
 
                 default:
-                    return new CloudSyncExecutionReport
+                    report = new CloudSyncExecutionReport
                     {
                         Succeeded = false,
                         Relation = plan.Relation,
+                        GameId = gameId,
+                        GameTitle = ctx.Game?.Title,
+                        CloudGameKey = ctx.CloudGameKey,
                         Message = plan.Message,
                     };
+                    break;
             }
+
+            return report with
+            {
+                GameId = report.GameId ?? gameId,
+                GameTitle = report.GameTitle ?? ctx.Game?.Title,
+                CloudGameKey = report.CloudGameKey ?? ctx.CloudGameKey,
+            };
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger?.LogWarning(ex, "Cloud sync execution failed for game {GameId}", gameId);
             return new CloudSyncExecutionReport
             {
                 Succeeded = false,
                 Relation = CloudSyncRelation.Error,
+                GameId = gameId,
+                GameTitle = game?.Title,
+                CloudGameKey = resolvedCloudKey,
                 Message = $"云同步执行失败：{ex.Message}",
             };
         }
@@ -369,38 +510,69 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
     {
         IReadOnlyList<GameRecord> games = await _database.GetAllGamesAsync(ct).ConfigureAwait(false);
         IReadOnlyList<SaveGameStateRecord> states = await _database.GetAllSaveGameStatesAsync(ct).ConfigureAwait(false);
-        IReadOnlyDictionary<string, SaveGameAggregateStats> stats = await _database
-            .GetSaveGameAggregateStatsAsync(ct)
-            .ConfigureAwait(false);
         CloudSyncEndpointRecord? defaultEndpoint = await _database
             .GetDefaultCloudSyncEndpointAsync(ct)
             .ConfigureAwait(false);
 
         var stateMap = states.ToDictionary(static s => s.GameId, StringComparer.OrdinalIgnoreCase);
-        var reports = new List<CloudSyncExecutionReport>();
+        var targetGames = new List<(GameRecord Game, string CloudGameKey)>();
 
-        var targetGameIds = new List<string>();
         foreach (GameRecord game in games)
         {
-            bool hasExplicitEndpoint = stateMap.TryGetValue(game.GameId, out SaveGameStateRecord? st)
-                && !string.IsNullOrWhiteSpace(st.CloudEndpointId);
-            bool hasSnapshotsOrState = stateMap.ContainsKey(game.GameId)
-                || (stats.TryGetValue(game.GameId, out SaveGameAggregateStats? gStats) && gStats.SnapshotCount > 0);
+            stateMap.TryGetValue(game.GameId, out SaveGameStateRecord? st);
+            bool hasExplicitEndpoint = !string.IsNullOrWhiteSpace(st?.CloudEndpointId);
+            string resolvedKey = await CloudGameKeyResolver.ResolveAsync(_database, game.GameId, st, game, ct)
+                .ConfigureAwait(false);
+            bool hasStableCloudKey = !string.IsNullOrWhiteSpace(resolvedKey);
 
-            if (hasExplicitEndpoint || (defaultEndpoint is not null && hasSnapshotsOrState))
+            // When a default endpoint exists, include ALL library games with a valid CloudGameKey
+            // (including brand-new devices that have 0 local snapshots yet so they can pull down cloud saves).
+            if (hasExplicitEndpoint || (defaultEndpoint is not null && hasStableCloudKey))
             {
-                targetGameIds.Add(game.GameId);
+                targetGames.Add((game, resolvedKey));
             }
         }
 
-        for (int i = 0; i < targetGameIds.Count; i++)
+        var reports = new List<CloudSyncExecutionReport>(targetGames.Count);
+        for (int i = 0; i < targetGames.Count; i++)
         {
             ct.ThrowIfCancellationRequested();
-            string gid = targetGameIds[i];
-            progress?.Report(new CloudSyncProgressTick("SyncAll", i, targetGameIds.Count, 0, $"正在同步游戏 ({i + 1}/{targetGameIds.Count})..."));
-            CloudSyncExecutionReport report = await ExecuteSyncAsync(gid, endpointId: null, divergenceResolution: null, progress: null, ct)
-                .ConfigureAwait(false);
-            reports.Add(report);
+            var (game, cloudKey) = targetGames[i];
+            progress?.Report(new CloudSyncProgressTick(
+                "SyncAll",
+                i,
+                targetGames.Count,
+                0,
+                $"正在同步《{game.Title}》({i + 1}/{targetGames.Count})..."));
+
+            try
+            {
+                CloudSyncExecutionReport report = await ExecuteSyncAsync(
+                    game.GameId,
+                    endpointId: null,
+                    divergenceResolution: null,
+                    progress: null,
+                    ct).ConfigureAwait(false);
+                reports.Add(report with
+                {
+                    GameId = report.GameId ?? game.GameId,
+                    GameTitle = report.GameTitle ?? game.Title,
+                    CloudGameKey = report.CloudGameKey ?? cloudKey,
+                });
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger?.LogWarning(ex, "SyncAll failed for game {GameId} ({Title})", game.GameId, game.Title);
+                reports.Add(new CloudSyncExecutionReport
+                {
+                    Succeeded = false,
+                    Relation = CloudSyncRelation.Error,
+                    GameId = game.GameId,
+                    GameTitle = game.Title,
+                    CloudGameKey = cloudKey,
+                    Message = $"《{game.Title}》同步失败：{ex.Message}",
+                });
+            }
         }
 
         return reports;
@@ -417,8 +589,16 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
         ICloudSyncTransport transport,
         CancellationToken ct)
     {
+        GameRecord? game = await _database.GetGameByIdAsync(gameId, ct).ConfigureAwait(false);
         SaveSettingsDto settings = await _database.GetSaveSettingsAsync(ct).ConfigureAwait(false);
         SaveBranchRecord activeBranch = await ResolveActiveBranchAsync(gameId, state, ct).ConfigureAwait(false);
+
+        string cloudGameKey = await CloudGameKeyResolver
+            .ResolveAsync(_database, gameId, state, game, ct)
+            .ConfigureAwait(false);
+        string primaryRemoteKey = CloudGameKeyResolver.ToRemotePathSegment(cloudGameKey);
+        string legacyRemoteKey = CloudSyncTransportHelpers.SanitizePathSegment(gameId);
+        string remoteReadKey = primaryRemoteKey;
 
         string? localHeadId = state.CurrentHeadSnapshotId ?? activeBranch.HeadSnapshotId;
         SaveSnapshotRecord? localHead = !string.IsNullOrWhiteSpace(localHeadId)
@@ -430,10 +610,23 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
             : [];
         var localAncestorSet = new HashSet<string>(localAncestors, StringComparer.Ordinal);
 
-        string safeGameId = CloudSyncTransportHelpers.SanitizePathSegment(gameId);
         IReadOnlyList<CloudSyncObjectInfo> headObjects = await transport
-            .ListPrefixAsync($"heads/{safeGameId}/", ct)
+            .ListPrefixAsync($"heads/{primaryRemoteKey}/", ct)
             .ConfigureAwait(false);
+
+        // Backward-compatible fallback: read legacy ULID GameId path if primary stable CloudGameKey has no remote heads yet.
+        if (headObjects.Count == 0
+            && !string.Equals(primaryRemoteKey, legacyRemoteKey, StringComparison.OrdinalIgnoreCase))
+        {
+            IReadOnlyList<CloudSyncObjectInfo> legacyHeads = await transport
+                .ListPrefixAsync($"heads/{legacyRemoteKey}/", ct)
+                .ConfigureAwait(false);
+            if (legacyHeads.Count > 0)
+            {
+                headObjects = legacyHeads;
+                remoteReadKey = legacyRemoteKey;
+            }
+        }
 
         var allRemoteHeads = new List<CloudRemoteHeadSummary>();
         foreach (CloudSyncObjectInfo obj in headObjects)
@@ -489,7 +682,6 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
         if (relation == CloudSyncRelation.FastForwardPush && localHead is not null)
         {
             (IReadOnlyList<SppkChunkInput> missingToUpload, _, _, int syncableCount) = await ComputeMissingRemoteChunksAsync(
-                gameId,
                 localHead,
                 transport,
                 ct).ConfigureAwait(false);
@@ -501,7 +693,9 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
             && selectedRemote is not null)
         {
             RemoteSnapshotManifest? remoteManifest = await TryFetchRemoteSnapshotManifestAsync(
-                gameId,
+                primaryRemoteKey,
+                remoteReadKey,
+                legacyRemoteKey,
                 selectedRemote.HeadSnapshotId,
                 transport,
                 ct).ConfigureAwait(false);
@@ -525,14 +719,33 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
                 }
 
                 missingLocalChunkCount = uniqueMissing.Count;
-                estimatedDownloadBytes = uniqueMissing.Count > 0 ? remoteManifest.TotalStoredBytes : 0;
+                estimatedDownloadBytes = uniqueMissing.Count > 0
+                    ? await EstimateMissingChunksDownloadBytesAsync(remoteManifest, uniqueMissing, transport, ct).ConfigureAwait(false)
+                    : 0;
             }
         }
+
+        // Count local side branches that have not yet been synced to this endpoint.
+        IReadOnlyList<SaveBranchRecord> allBranches = await _database.GetSaveBranchesByGameAsync(gameId, ct).ConfigureAwait(false);
+        HashSet<string> syncedIds = await _database
+            .GetCloudSyncedSnapshotIdsForGameAsync(gameId, endpoint.EndpointId, ct)
+            .ConfigureAwait(false);
+        int unsyncedSideBranches = allBranches.Count(b =>
+            !b.IsArchived
+            && !string.Equals(b.BranchId, activeBranch.BranchId, StringComparison.Ordinal)
+            && !string.IsNullOrWhiteSpace(b.HeadSnapshotId)
+            && !syncedIds.Contains(b.HeadSnapshotId));
+
+        SaveCloudSyncScope syncScope = state.SyncAllBranchesToCloud
+            ? SaveCloudSyncScope.AllBranches
+            : SaveCloudSyncScope.ActiveBranchOnly;
 
         var preview = new CloudSyncPlanPreview
         {
             GameId = gameId,
             EndpointId = endpoint.EndpointId,
+            ResolvedCloudGameKey = cloudGameKey,
+            SyncScope = syncScope,
             Relation = relation,
             Message = message,
             LocalHeadSnapshot = localHead,
@@ -544,10 +757,17 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
             MissingLocalChunkCount = missingLocalChunkCount,
             EstimatedDownloadBytes = estimatedDownloadBytes,
             SaveFileCount = saveFileCount,
+            UnsyncedBranchCount = unsyncedSideBranches,
+            PendingBranchPushCount = state.SyncAllBranchesToCloud ? unsyncedSideBranches : 0,
         };
 
         return new PlanContext(
             GameId: gameId,
+            Game: game,
+            CloudGameKey: cloudGameKey,
+            RemoteKeySegment: primaryRemoteKey,
+            RemoteReadKeySegment: remoteReadKey,
+            LegacyRemoteKeySegment: legacyRemoteKey,
             Settings: settings,
             GameState: state,
             ActiveBranch: activeBranch,
@@ -725,6 +945,7 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
     private async Task<CloudSyncExecutionReport> ExecuteFastForwardPushAsync(
         PlanContext ctx,
         ICloudSyncTransport transport,
+        bool includeSideBranches,
         IProgress<CloudSyncProgressTick>? progress,
         CancellationToken ct)
     {
@@ -733,23 +954,157 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
 
         await transport.EnsureRepoInitializedAsync(ct).ConfigureAwait(false);
 
-        // Collect the local snapshot chain that does not yet exist on remote (oldest -> newest).
+        (int uploadedPacks, long uploadedBytes, List<string> pushedLineageIds) = await UploadBranchLineageAsync(
+            ctx,
+            localHead,
+            ctx.ActiveBranch.Name,
+            publishAsActiveHead: true,
+            transport,
+            progress,
+            ct).ConfigureAwait(false);
+
+        DateTimeOffset now = _timeProvider.GetUtcNow();
+        await _database.MarkSnapshotsCloudSyncedAsync(
+            ctx.GameId,
+            ctx.Endpoint.EndpointId,
+            pushedLineageIds,
+            now,
+            ct).ConfigureAwait(false);
+
+        int syncedBranchCount = 1;
+        if (includeSideBranches)
+        {
+            (int sideBranches, int sidePacks, long sideBytes) = await PushSideBranchesAsync(ctx, transport, progress, ct)
+                .ConfigureAwait(false);
+            syncedBranchCount += sideBranches;
+            uploadedPacks += sidePacks;
+            uploadedBytes += sideBytes;
+        }
+
+        await _database.SetSaveGameCloudSyncStatusAsync(ctx.GameId, now, hasUnresolvedConflict: false, now, ct)
+            .ConfigureAwait(false);
+        await PublishTreeChangedAsync(ctx.GameId, ctx.ActiveBranch.BranchId, localHead.SnapshotId, "CloudPush", ct)
+            .ConfigureAwait(false);
+
+        progress?.Report(new CloudSyncProgressTick("Completed", 1, 1, uploadedBytes, "云端推送完成。"));
+
+        string branchSuffix = syncedBranchCount > 1 ? $"（共覆盖 {syncedBranchCount} 条路线）" : "（仅当前激活路线）";
+        return new CloudSyncExecutionReport
+        {
+            Succeeded = true,
+            Relation = CloudSyncRelation.FastForwardPush,
+            GameId = ctx.GameId,
+            GameTitle = ctx.Game?.Title,
+            CloudGameKey = ctx.CloudGameKey,
+            Message = uploadedPacks > 0
+                ? $"已封装 {uploadedPacks} 个数据包并推送最新存档至云端{branchSuffix}。"
+                : $"已增量同步快照清单与分支指针至云端{branchSuffix}（所有数据块已去重复用）。",
+            UploadedPackCount = uploadedPacks,
+            UploadedBytes = uploadedBytes,
+            SyncedBranchCount = syncedBranchCount,
+            ResultHeadSnapshotId = localHead.SnapshotId,
+        };
+    }
+
+    private async Task<(int SyncedBranches, int UploadedPacks, long UploadedBytes)> PushSideBranchesAsync(
+        PlanContext ctx,
+        ICloudSyncTransport transport,
+        IProgress<CloudSyncProgressTick>? progress,
+        CancellationToken ct)
+    {
+        IReadOnlyList<SaveBranchRecord> allBranches = await _database
+            .GetSaveBranchesByGameAsync(ctx.GameId, ct)
+            .ConfigureAwait(false);
+        HashSet<string> alreadySynced = await _database
+            .GetCloudSyncedSnapshotIdsForGameAsync(ctx.GameId, ctx.Endpoint.EndpointId, ct)
+            .ConfigureAwait(false);
+
+        int syncedCount = 0;
+        int totalPacks = 0;
+        long totalBytes = 0;
+        DateTimeOffset now = _timeProvider.GetUtcNow();
+
+        foreach (SaveBranchRecord branch in allBranches)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (branch.IsArchived
+                || string.Equals(branch.BranchId, ctx.ActiveBranch.BranchId, StringComparison.Ordinal)
+                || string.IsNullOrWhiteSpace(branch.HeadSnapshotId))
+            {
+                continue;
+            }
+
+            if (alreadySynced.Contains(branch.HeadSnapshotId))
+            {
+                continue;
+            }
+
+            SaveSnapshotRecord? tipSnap = await _database
+                .GetSaveSnapshotByIdAsync(branch.HeadSnapshotId, ct)
+                .ConfigureAwait(false);
+            if (tipSnap is null)
+            {
+                continue;
+            }
+
+            await transport.EnsureRepoInitializedAsync(ct).ConfigureAwait(false);
+            (int packs, long bytes, List<string> lineageIds) = await UploadBranchLineageAsync(
+                ctx,
+                tipSnap,
+                branch.Name,
+                publishAsActiveHead: false,
+                transport,
+                progress,
+                ct).ConfigureAwait(false);
+
+            await _database.MarkSnapshotsCloudSyncedAsync(
+                ctx.GameId,
+                ctx.Endpoint.EndpointId,
+                lineageIds,
+                now,
+                ct).ConfigureAwait(false);
+            foreach (string id in lineageIds)
+            {
+                alreadySynced.Add(id);
+            }
+
+            syncedCount++;
+            totalPacks += packs;
+            totalBytes += bytes;
+        }
+
+        return (syncedCount, totalPacks, totalBytes);
+    }
+
+    private async Task<(int UploadedPacks, long UploadedBytes, List<string> SyncedLineageIds)> UploadBranchLineageAsync(
+        PlanContext ctx,
+        SaveSnapshotRecord tipSnapshot,
+        string branchName,
+        bool publishAsActiveHead,
+        ICloudSyncTransport transport,
+        IProgress<CloudSyncProgressTick>? progress,
+        CancellationToken ct)
+    {
         var snapshotsToUpload = new List<SaveSnapshotRecord>();
-        string safeGameId = CloudSyncTransportHelpers.SanitizePathSegment(ctx.GameId);
-        string? cursor = localHead.SnapshotId;
+        var lineageIds = new List<string>();
+        string remoteKey = ctx.RemoteKeySegment;
+        string? cursor = tipSnapshot.SnapshotId;
         var visited = new HashSet<string>(StringComparer.Ordinal);
-        while (!string.IsNullOrWhiteSpace(cursor) && snapshotsToUpload.Count < MaxLineageDepth && visited.Add(cursor))
+
+        while (!string.IsNullOrWhiteSpace(cursor) && lineageIds.Count < MaxLineageDepth && visited.Add(cursor))
         {
             bool remoteExists = await transport
-                .ExistsAsync($"snapshots/{safeGameId}/{cursor}.json", ct)
+                .ExistsAsync($"snapshots/{remoteKey}/{cursor}.json", ct)
                 .ConfigureAwait(false);
-            if (remoteExists && cursor != localHead.SnapshotId)
+
+            SaveSnapshotRecord? snap = await _database.GetSaveSnapshotByIdAsync(cursor, ct).ConfigureAwait(false);
+            if (snap is null)
             {
                 break;
             }
 
-            SaveSnapshotRecord? snap = await _database.GetSaveSnapshotByIdAsync(cursor, ct).ConfigureAwait(false);
-            if (snap is null)
+            lineageIds.Add(snap.SnapshotId);
+            if (remoteExists && cursor != tipSnapshot.SnapshotId)
             {
                 break;
             }
@@ -764,7 +1119,6 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
 
         snapshotsToUpload.Reverse(); // oldest first
 
-        // Gather all files & missing chunks across snapshots to upload.
         IReadOnlyList<CloudSyncObjectInfo> remotePacks = await transport.ListPrefixAsync("packs/", ct).ConfigureAwait(false);
         var remotePackIds = new HashSet<string>(
             remotePacks
@@ -782,7 +1136,6 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
             IReadOnlyList<SaveSnapshotFileRecord> allFiles = await _database
                 .GetSnapshotFilesAsync(snap.SnapshotId, ct)
                 .ConfigureAwait(false);
-            // Cloud sync strictly transmits [save] + HKCU registry exports and NEVER uploads [config] files.
             SaveSnapshotFileRecord[] files = allFiles
                 .Where(static f => IsCloudSyncableFile(f.Category))
                 .ToArray();
@@ -845,7 +1198,7 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
                 i,
                 packBatches.Count,
                 uploadedBytes,
-                $"正在上传 SPPK 数据包 ({i + 1}/{packBatches.Count})..."));
+                $"正在上传存档数据包 ({i + 1}/{packBatches.Count})..."));
 
             if (!remotePackIds.Contains(builtPack.PackId))
             {
@@ -891,9 +1244,10 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
                 FormatVersion = 1,
                 SnapshotId = snap.SnapshotId,
                 GameId = snap.GameId,
+                CloudGameKey = ctx.CloudGameKey,
                 ParentSnapshotId = snap.ParentSnapshotId,
                 MergeParentSnapshotId = snap.MergeParentSnapshotId,
-                BranchName = snapBranch?.Name ?? ctx.ActiveBranch.Name,
+                BranchName = snapBranch?.Name ?? branchName,
                 ProfileId = snap.ProfileId,
                 ModProfileHash = snap.ModProfileHash,
                 TriggerKind = snap.TriggerKind,
@@ -922,45 +1276,41 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
 
             byte[] manifestBytes = JsonSerializer.SerializeToUtf8Bytes(manifest, JsonOptions);
             await transport.PutBytesAsync(
-                $"snapshots/{safeGameId}/{snap.SnapshotId}.json",
+                $"snapshots/{remoteKey}/{snap.SnapshotId}.json",
                 manifestBytes,
                 "application/json",
                 ct).ConfigureAwait(false);
             uploadedBytes += manifestBytes.Length;
         }
 
-        // STEP 3 (Tail-Commit): Atomically publish heads/<GameId>/<MachineId>.json LAST
-        IReadOnlyList<string> headAncestors = await GetLocalAncestorIdsBfsAsync(localHead.SnapshotId, MaxLineageDepth, ct)
+        // STEP 3 (Tail-Commit): Publish heads/<CloudGameKey>/<MachineId>.json for active branch,
+        // or branches/<CloudGameKey>/<BranchName>/<MachineId>.json for side branches so 3-way HEAD lineage stays isolated.
+        IReadOnlyList<string> headAncestors = await GetLocalAncestorIdsBfsAsync(tipSnapshot.SnapshotId, MaxLineageDepth, ct)
             .ConfigureAwait(false);
-        byte[] headBytes = await PublishMachineHeadAsync(
-            ctx.GameId,
-            ctx.Settings,
-            localHead,
-            ctx.ActiveBranch.Name,
-            headAncestors,
-            transport,
-            ct).ConfigureAwait(false);
-        uploadedBytes += headBytes.Length;
+        byte[] refBytes = publishAsActiveHead
+            ? await PublishMachineHeadAsync(
+                ctx.GameId,
+                ctx.CloudGameKey,
+                ctx.RemoteKeySegment,
+                ctx.Settings,
+                tipSnapshot,
+                branchName,
+                headAncestors,
+                transport,
+                ct).ConfigureAwait(false)
+            : await PublishSideBranchHeadAsync(
+                ctx.GameId,
+                ctx.CloudGameKey,
+                ctx.RemoteKeySegment,
+                ctx.Settings,
+                tipSnapshot,
+                branchName,
+                headAncestors,
+                transport,
+                ct).ConfigureAwait(false);
+        uploadedBytes += refBytes.Length;
 
-        DateTimeOffset now = _timeProvider.GetUtcNow();
-        await _database.SetSaveGameCloudSyncStatusAsync(ctx.GameId, now, hasUnresolvedConflict: false, now, ct)
-            .ConfigureAwait(false);
-        await PublishTreeChangedAsync(ctx.GameId, ctx.ActiveBranch.BranchId, localHead.SnapshotId, "CloudPush", ct)
-            .ConfigureAwait(false);
-
-        progress?.Report(new CloudSyncProgressTick("Completed", 1, 1, uploadedBytes, "云端推送完成。"));
-
-        return new CloudSyncExecutionReport
-        {
-            Succeeded = true,
-            Relation = CloudSyncRelation.FastForwardPush,
-            Message = uploadedPacks > 0
-                ? $"已封装 {uploadedPacks} 个 SPPK 数据包并推送最新快照至云端。"
-                : "已增量同步快照清单与分支指针至云端（所有块已去重复用）。",
-            UploadedPackCount = uploadedPacks,
-            UploadedBytes = uploadedBytes,
-            ResultHeadSnapshotId = localHead.SnapshotId,
-        };
+        return (uploadedPacks, uploadedBytes, lineageIds);
     }
 
     // -------------------------------------------------------------------------
@@ -983,9 +1333,9 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
         // and re-plannable as FastForwardPull, (b) PreRollbackSafety attaches to old local HEAD, and
         // (c) AdoptRemoteAndBackupLocal diffs outgoing files against old local HEAD to prune stale [save] files.
         bool deferHeadAdvance = _timeMachineService is not null;
-        (int downloadedChunks, long downloadedBytes, SaveSnapshotRecord importedTip) =
+        (int downloadedChunks, long downloadedBytes, SaveSnapshotRecord importedTip, List<string> importedIds) =
             await PullRemoteChainIntoBranchAsync(
-                ctx.GameId,
+                ctx,
                 remoteHead.HeadSnapshotId,
                 targetBranchId,
                 advanceBranchHead: !deferHeadAdvance,
@@ -1016,6 +1366,9 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
                 {
                     Succeeded = false,
                     Relation = CloudSyncRelation.FastForwardPull,
+                    GameId = ctx.GameId,
+                    GameTitle = ctx.Game?.Title,
+                    CloudGameKey = ctx.CloudGameKey,
                     Message = $"云端快照已下载至本地仓库，但应用到磁盘失败：{restore.Message}",
                     DownloadedChunkCount = downloadedChunks,
                     DownloadedBytes = downloadedBytes,
@@ -1039,6 +1392,8 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
             .ConfigureAwait(false);
         await PublishMachineHeadAsync(
             ctx.GameId,
+            ctx.CloudGameKey,
+            ctx.RemoteKeySegment,
             ctx.Settings,
             importedTip,
             ctx.ActiveBranch.Name,
@@ -1047,6 +1402,14 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
             ct).ConfigureAwait(false);
 
         DateTimeOffset now = _timeProvider.GetUtcNow();
+        var syncedSet = new HashSet<string>(importedIds, StringComparer.Ordinal) { importedTip.SnapshotId };
+        foreach (string ancestorId in remoteHead.AncestorIds)
+        {
+            syncedSet.Add(ancestorId);
+        }
+
+        await _database.MarkSnapshotsCloudSyncedAsync(ctx.GameId, ctx.Endpoint.EndpointId, syncedSet, now, ct)
+            .ConfigureAwait(false);
         await _database.SetSaveGameCloudSyncStatusAsync(ctx.GameId, now, hasUnresolvedConflict: false, now, ct)
             .ConfigureAwait(false);
         await PublishTreeChangedAsync(ctx.GameId, targetBranchId, importedTip.SnapshotId, "CloudPull", ct)
@@ -1058,9 +1421,13 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
         {
             Succeeded = true,
             Relation = CloudSyncRelation.FastForwardPull,
+            GameId = ctx.GameId,
+            GameTitle = ctx.Game?.Title,
+            CloudGameKey = ctx.CloudGameKey,
             Message = $"已从设备 '{remoteHead.MachineName ?? remoteHead.MachineId}' 快进拉取存档（下载 {downloadedChunks} 个缺失块）。",
             DownloadedChunkCount = downloadedChunks,
             DownloadedBytes = downloadedBytes,
+            SyncedBranchCount = 1,
             ResultHeadSnapshotId = importedTip.SnapshotId,
             Warnings = warnings,
         };
@@ -1144,6 +1511,65 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
             updateGameActiveHead: false,
             cancellationToken: ct).ConfigureAwait(false);
 
+        // P1-4 Anti-data-loss guard: before overwriting disk with remote saves, verify whether the live disk
+        // contains unsaved modifications beyond localHead; if so, capture a pinned live-disk safety snapshot first!
+        bool capturedLiveDiskSafety = false;
+        if (_timeMachineService is not null)
+        {
+            SaveSnapshotDiffDto? diskDiff = null;
+            try
+            {
+                diskDiff = await _timeMachineService
+                    .DiffSnapshotWithDiskAsync(localHead.SnapshotId, ct)
+                    .ConfigureAwait(false);
+            }
+            catch (NotImplementedException)
+            {
+                // Minimal test fakes that only implement rollback skip live-disk diffing.
+            }
+
+            if (diskDiff is not null && (diskDiff.AddedCount > 0 || diskDiff.ModifiedCount > 0 || diskDiff.DeletedCount > 0))
+            {
+                CreateSaveSnapshotResult liveSafety = await _timeMachineService.CreateSnapshotAsync(
+                    new CreateSaveSnapshotRequest
+                    {
+                        GameId = ctx.GameId,
+                        BranchId = backupBranch.BranchId,
+                        ExpectedParentSnapshotId = backupAnchorId,
+                        TriggerKind = SaveSnapshotTriggerKind.PreRollbackSafety,
+                        Note = "采用云端前自动保护未入库磁盘改动",
+                        Pin = true,
+                        SkipIfUnchangedFromHead = false,
+                    },
+                    ct).ConfigureAwait(false);
+
+                if (!liveSafety.Succeeded && liveSafety.SkipReason != SaveSnapshotSkipReason.NoSaveLocationsFound)
+                {
+                    return new CloudSyncExecutionReport
+                    {
+                        Succeeded = false,
+                        Relation = CloudSyncRelation.Diverged,
+                        GameId = ctx.GameId,
+                        GameTitle = ctx.Game?.Title,
+                        CloudGameKey = ctx.CloudGameKey,
+                        Message = $"检测到磁盘存在未快照存档改动，且自动保护快照失败，已中止覆写以防丢档：{liveSafety.Message}",
+                        DivergenceBackupBranchId = backupBranch.BranchId,
+                        DivergenceBackupBranchName = backupBranch.Name,
+                    };
+                }
+
+                if (liveSafety.Snapshot is not null)
+                {
+                    capturedLiveDiskSafety = true;
+                    await _database.UpdateSaveBranchHeadAsync(
+                        backupBranch.BranchId,
+                        liveSafety.Snapshot.SnapshotId,
+                        _timeProvider.GetUtcNow(),
+                        ct).ConfigureAwait(false);
+                }
+            }
+        }
+
         CloudSyncExecutionReport pullReport = await ExecuteFastForwardPullAsync(
             ctx,
             transport,
@@ -1165,7 +1591,9 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
         return pullReport with
         {
             Relation = CloudSyncRelation.Diverged,
-            Message = $"已采用远端 '{remoteHead.MachineName ?? remoteHead.MachineId}' 进度，本机原进度已完整保留至固定分支 '{backupBranch.Name}'。",
+            Message = capturedLiveDiskSafety
+                ? $"已采用远端 '{remoteHead.MachineName ?? remoteHead.MachineId}' 进度，本机原进度及未入库磁盘改动均已安全备份至固定分支 '{backupBranch.Name}'。"
+                : $"已采用远端 '{remoteHead.MachineName ?? remoteHead.MachineId}' 进度，本机原进度已完整保留至固定分支 '{backupBranch.Name}'。",
             DivergenceBackupBranchId = backupBranch.BranchId,
             DivergenceBackupBranchName = backupBranch.Name,
         };
@@ -1174,6 +1602,7 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
     private async Task<CloudSyncExecutionReport> ExecuteKeepLocalAndBackupRemoteAsync(
         PlanContext ctx,
         ICloudSyncTransport transport,
+        bool includeSideBranches,
         IProgress<CloudSyncProgressTick>? progress,
         CancellationToken ct)
     {
@@ -1210,9 +1639,9 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
         await _database.UpsertSaveBranchAsync(remoteBackupBranch, ct).ConfigureAwait(false);
 
         // Import the remote diverged snapshot into the dedicated preserved branch (without touching active branch or disk).
-        (int downloadedChunks, long downloadedBytes, SaveSnapshotRecord importedRemoteTip) =
+        (int downloadedChunks, long downloadedBytes, SaveSnapshotRecord importedRemoteTip, List<string> importedRemoteIds) =
             await PullRemoteChainIntoBranchAsync(
-                ctx.GameId,
+                ctx,
                 remoteHead.HeadSnapshotId,
                 remoteBackupBranch.BranchId,
                 advanceBranchHead: true,
@@ -1221,6 +1650,13 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
                 transport,
                 progress,
                 ct).ConfigureAwait(false);
+
+        await _database.MarkSnapshotsCloudSyncedAsync(
+            ctx.GameId,
+            ctx.Endpoint.EndpointId,
+            importedRemoteIds.Append(importedRemoteTip.SnapshotId),
+            _timeProvider.GetUtcNow(),
+            ct).ConfigureAwait(false);
 
         // Create a merge-resolution snapshot on the active branch referencing BOTH localHead and importedRemoteTip
         // so both histories are preserved in the DAG and subsequent syncs fast-forward cleanly.
@@ -1267,7 +1703,7 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
             LocalAncestors = await GetLocalAncestorIdsBfsAsync(mergeSnapshotId, MaxLineageDepth, ct).ConfigureAwait(false),
         };
 
-        CloudSyncExecutionReport pushReport = await ExecuteFastForwardPushAsync(pushCtx, transport, progress, ct)
+        CloudSyncExecutionReport pushReport = await ExecuteFastForwardPushAsync(pushCtx, transport, includeSideBranches, progress, ct)
             .ConfigureAwait(false);
 
         return pushReport with
@@ -1285,9 +1721,9 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
     // SPPK Delta Pull & Range Extraction Helpers
     // -------------------------------------------------------------------------
 
-    private async Task<(int DownloadedChunks, long DownloadedBytes, SaveSnapshotRecord TipSnapshot)>
+    private async Task<(int DownloadedChunks, long DownloadedBytes, SaveSnapshotRecord TipSnapshot, List<string> ImportedSnapshotIds)>
         PullRemoteChainIntoBranchAsync(
-            string gameId,
+            PlanContext ctx,
             string tipSnapshotId,
             string targetBranchId,
             bool advanceBranchHead,
@@ -1297,6 +1733,7 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
             IProgress<CloudSyncProgressTick>? progress,
             CancellationToken ct)
     {
+        string gameId = ctx.GameId;
         // Walk remote snapshot manifests backwards until we hit a snapshot that already exists locally.
         var manifestsToImport = new List<RemoteSnapshotManifest>();
         string? cursor = tipSnapshotId;
@@ -1310,8 +1747,13 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
                 break;
             }
 
-            RemoteSnapshotManifest? manifest = await TryFetchRemoteSnapshotManifestAsync(gameId, cursor, transport, ct)
-                .ConfigureAwait(false);
+            RemoteSnapshotManifest? manifest = await TryFetchRemoteSnapshotManifestAsync(
+                ctx.RemoteKeySegment,
+                ctx.RemoteReadKeySegment,
+                ctx.LegacyRemoteKeySegment,
+                cursor,
+                transport,
+                ct).ConfigureAwait(false);
             if (manifest is null)
             {
                 if (cursor == tipSnapshotId)
@@ -1347,7 +1789,7 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
                     .ConfigureAwait(false);
             }
 
-            return (0, 0, alreadyLocal);
+            return (0, 0, alreadyLocal, [alreadyLocal.SnapshotId]);
         }
 
         manifestsToImport.Reverse(); // oldest -> newest
@@ -1547,7 +1989,117 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
             lastImported = snapRecord;
         }
 
-        return (downloadedChunks, downloadedBytes, lastImported!);
+        List<string> importedIds = manifestsToImport.Select(static m => m.SnapshotId).ToList();
+        return (downloadedChunks, downloadedBytes, lastImported!, importedIds);
+    }
+
+    private async Task<long> EstimateMissingChunksDownloadBytesAsync(
+        RemoteSnapshotManifest remoteManifest,
+        HashSet<string> missingChunkHashes,
+        ICloudSyncTransport transport,
+        CancellationToken ct)
+    {
+        if (missingChunkHashes.Count == 0)
+        {
+            return 0;
+        }
+
+        var missingByPack = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        int unmappedCount = 0;
+        foreach (string hash in missingChunkHashes)
+        {
+            if (remoteManifest.ChunkPackMap.TryGetValue(hash, out string? packId) && !string.IsNullOrWhiteSpace(packId))
+            {
+                if (!missingByPack.TryGetValue(packId, out List<string>? list))
+                {
+                    list = [];
+                    missingByPack[packId] = list;
+                }
+
+                list.Add(hash);
+            }
+            else
+            {
+                unmappedCount++;
+            }
+        }
+
+        long exactBytes = 0;
+        int resolvedCount = 0;
+
+        foreach (var (packId, hashes) in missingByPack)
+        {
+            try
+            {
+                SppkParsedFooter footer = await ReadRemotePackFooterAsync(transport, $"packs/{packId}.sppk", ct)
+                    .ConfigureAwait(false);
+                var entryMap = footer.Entries.ToDictionary(static e => e.ChunkBlake3Hex, StringComparer.Ordinal);
+                foreach (string h in hashes)
+                {
+                    if (entryMap.TryGetValue(h, out SppkIndexEntry? entry))
+                    {
+                        exactBytes += entry.ZstdLength;
+                        resolvedCount++;
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                if (_logger is not null && _logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Could not read remote SPPK footer for exact download size estimate on pack {PackId}.", packId);
+                }
+            }
+        }
+
+        if (resolvedCount == missingChunkHashes.Count && unmappedCount == 0)
+        {
+            return exactBytes;
+        }
+
+        int totalDistinctChunks = remoteManifest.Files
+            .Where(static f => IsCloudSyncableFile(f.Category))
+            .SelectMany(static f => f.ChunkHashes)
+            .Select(static h => h.Trim().ToLowerInvariant())
+            .Distinct(StringComparer.Ordinal)
+            .Count();
+
+        if (resolvedCount > 0 && missingChunkHashes.Count > resolvedCount)
+        {
+            long avgPerChunk = Math.Max(1, exactBytes / resolvedCount);
+            return exactBytes + (avgPerChunk * (missingChunkHashes.Count - resolvedCount));
+        }
+
+        if (totalDistinctChunks > 0 && remoteManifest.TotalStoredBytes > 0)
+        {
+            return (long)Math.Ceiling((double)remoteManifest.TotalStoredBytes * missingChunkHashes.Count / totalDistinctChunks);
+        }
+
+        return remoteManifest.TotalStoredBytes;
+    }
+
+    private async Task MarkActiveLineageSyncedAsync(
+        string gameId,
+        string endpointId,
+        string localHeadId,
+        IReadOnlyList<string>? remoteAncestors,
+        DateTimeOffset syncedAtUtc,
+        CancellationToken ct)
+    {
+        var idsToMark = new HashSet<string>(StringComparer.Ordinal) { localHeadId };
+        if (remoteAncestors is { Count: > 0 })
+        {
+            foreach (string id in remoteAncestors)
+            {
+                if (!string.IsNullOrWhiteSpace(id))
+                {
+                    idsToMark.Add(id);
+                }
+            }
+        }
+
+        await _database.MarkSnapshotsCloudSyncedAsync(gameId, endpointId, idsToMark, syncedAtUtc, ct)
+            .ConfigureAwait(false);
     }
 
     private static async Task<SppkParsedFooter> ReadRemotePackFooterAsync(
@@ -1590,7 +2142,6 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
 
     private async Task<(IReadOnlyList<SppkChunkInput> MissingChunks, Dictionary<string, string> ExistingPackMap, HashSet<string> RemotePackIds, int SyncableFileCount)>
         ComputeMissingRemoteChunksAsync(
-            string gameId,
             SaveSnapshotRecord localHead,
             ICloudSyncTransport transport,
             CancellationToken ct)
@@ -1646,6 +2197,8 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
 
     private async Task<byte[]> PublishMachineHeadAsync(
         string gameId,
+        string cloudGameKey,
+        string remoteKeySegment,
         SaveSettingsDto settings,
         SaveSnapshotRecord headSnapshot,
         string branchName,
@@ -1653,13 +2206,13 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
         ICloudSyncTransport transport,
         CancellationToken ct)
     {
-        string safeGameId = CloudSyncTransportHelpers.SanitizePathSegment(gameId);
         string safeMachineId = CloudSyncTransportHelpers.SanitizePathSegment(settings.MachineId);
 
         var headDoc = new RemoteMachineHeadDocument
         {
             FormatVersion = 1,
             GameId = gameId,
+            CloudGameKey = cloudGameKey,
             MachineId = settings.MachineId,
             MachineName = settings.MachineDisplayName,
             HeadSnapshotId = headSnapshot.SnapshotId,
@@ -1673,7 +2226,46 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
 
         byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(headDoc, JsonOptions);
         await transport.PutBytesAsync(
-            $"heads/{safeGameId}/{safeMachineId}.json",
+            $"heads/{remoteKeySegment}/{safeMachineId}.json",
+            bytes,
+            "application/json",
+            ct).ConfigureAwait(false);
+        return bytes;
+    }
+
+    private async Task<byte[]> PublishSideBranchHeadAsync(
+        string gameId,
+        string cloudGameKey,
+        string remoteKeySegment,
+        SaveSettingsDto settings,
+        SaveSnapshotRecord headSnapshot,
+        string branchName,
+        IReadOnlyList<string> ancestorIds,
+        ICloudSyncTransport transport,
+        CancellationToken ct)
+    {
+        string safeMachineId = CloudSyncTransportHelpers.SanitizePathSegment(settings.MachineId);
+        string safeBranchName = CloudGameKeyResolver.ToSideBranchPathSegment(branchName);
+
+        var headDoc = new RemoteMachineHeadDocument
+        {
+            FormatVersion = 1,
+            GameId = gameId,
+            CloudGameKey = cloudGameKey,
+            MachineId = settings.MachineId,
+            MachineName = settings.MachineDisplayName,
+            HeadSnapshotId = headSnapshot.SnapshotId,
+            BranchName = branchName,
+            UpdatedAtUtc = _timeProvider.GetUtcNow(),
+            PlaytimeActiveSeconds = headSnapshot.PlaytimeActiveSeconds,
+            FileCount = headSnapshot.FileCount,
+            TotalRawBytes = headSnapshot.TotalRawBytes,
+            AncestorIds = ancestorIds,
+        };
+
+        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(headDoc, JsonOptions);
+        await transport.PutBytesAsync(
+            $"branches/{remoteKeySegment}/{safeBranchName}/{safeMachineId}.json",
             bytes,
             "application/json",
             ct).ConfigureAwait(false);
@@ -1681,21 +2273,30 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
     }
 
     private static async Task<RemoteSnapshotManifest?> TryFetchRemoteSnapshotManifestAsync(
-        string gameId,
+        string primaryRemoteKey,
+        string readRemoteKey,
+        string legacyRemoteKey,
         string snapshotId,
         ICloudSyncTransport transport,
         CancellationToken ct)
     {
-        string safeGameId = CloudSyncTransportHelpers.SanitizePathSegment(gameId);
-        byte[]? raw = await transport
-            .GetBytesAsync($"snapshots/{safeGameId}/{snapshotId}.json", ct)
-            .ConfigureAwait(false);
-        if (raw is null || raw.Length == 0)
+        string[] candidateKeys = new[] { readRemoteKey, primaryRemoteKey, legacyRemoteKey }
+            .Where(static k => !string.IsNullOrWhiteSpace(k))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        foreach (string key in candidateKeys)
         {
-            return null;
+            byte[]? raw = await transport
+                .GetBytesAsync($"snapshots/{key}/{snapshotId}.json", ct)
+                .ConfigureAwait(false);
+            if (raw is not null && raw.Length > 0)
+            {
+                return JsonSerializer.Deserialize<RemoteSnapshotManifest>(raw, JsonOptions);
+            }
         }
 
-        return JsonSerializer.Deserialize<RemoteSnapshotManifest>(raw, JsonOptions);
+        return null;
     }
 
     /// <summary>
@@ -1868,6 +2469,11 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
 
     private sealed record PlanContext(
         string GameId,
+        GameRecord? Game,
+        string CloudGameKey,
+        string RemoteKeySegment,
+        string RemoteReadKeySegment,
+        string LegacyRemoteKeySegment,
         SaveSettingsDto Settings,
         SaveGameStateRecord GameState,
         SaveBranchRecord ActiveBranch,
@@ -1882,6 +2488,7 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
     {
         public int FormatVersion { get; init; } = 1;
         public required string GameId { get; init; }
+        public string? CloudGameKey { get; init; }
         public required string MachineId { get; init; }
         public string? MachineName { get; init; }
         public required string HeadSnapshotId { get; init; }
@@ -1898,6 +2505,7 @@ public sealed class CloudSaveSyncService : ICloudSaveSyncService
         public int FormatVersion { get; init; } = 1;
         public required string SnapshotId { get; init; }
         public required string GameId { get; init; }
+        public string? CloudGameKey { get; init; }
         public string? ParentSnapshotId { get; init; }
         public string? MergeParentSnapshotId { get; init; }
         public string? BranchName { get; init; }

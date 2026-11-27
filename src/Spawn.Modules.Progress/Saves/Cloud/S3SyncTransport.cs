@@ -87,8 +87,10 @@ internal sealed class S3SyncTransport : ICloudSyncTransport
 
         S3SigV4Signer.SignRequest(request, payloadBytes, _accessKey, _secretKey, _region, _timeProvider.GetUtcNow());
 
-        using HttpResponseMessage response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
+        using HttpResponseMessage response = await CloudSyncHttpDiagnostics
+            .SendWithDiagnosticsAsync(_httpClient, request, "S3/R2", "上传对象", cancellationToken)
+            .ConfigureAwait(false);
+        CloudSyncHttpDiagnostics.EnsureSuccess(response, "S3/R2", "上传对象");
     }
 
     public async Task<byte[]?> GetBytesAsync(string relativePath, CancellationToken cancellationToken = default)
@@ -99,13 +101,15 @@ internal sealed class S3SyncTransport : ICloudSyncTransport
         using var request = new HttpRequestMessage(HttpMethod.Get, uri);
         S3SigV4Signer.SignRequest(request, ReadOnlySpan<byte>.Empty, _accessKey, _secretKey, _region, _timeProvider.GetUtcNow());
 
-        using HttpResponseMessage response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        using HttpResponseMessage response = await CloudSyncHttpDiagnostics
+            .SendWithDiagnosticsAsync(_httpClient, request, "S3/R2", "下载对象", cancellationToken)
+            .ConfigureAwait(false);
         if (response.StatusCode == HttpStatusCode.NotFound)
         {
             return null;
         }
 
-        response.EnsureSuccessStatusCode();
+        CloudSyncHttpDiagnostics.EnsureSuccess(response, "S3/R2", "下载对象");
         return await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -122,7 +126,9 @@ internal sealed class S3SyncTransport : ICloudSyncTransport
         request.Headers.Range = CloudSyncTransportHelpers.CreateRangeHeader(offset, length);
         S3SigV4Signer.SignRequest(request, ReadOnlySpan<byte>.Empty, _accessKey, _secretKey, _region, _timeProvider.GetUtcNow());
 
-        using HttpResponseMessage response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        using HttpResponseMessage response = await CloudSyncHttpDiagnostics
+            .SendWithDiagnosticsAsync(_httpClient, request, "S3/R2", "分片读取", cancellationToken)
+            .ConfigureAwait(false);
         if (response.StatusCode == HttpStatusCode.NotFound)
         {
             return null;
@@ -133,7 +139,7 @@ internal sealed class S3SyncTransport : ICloudSyncTransport
             return new CloudSyncRangeResult([], response.Content.Headers.ContentRange?.Length ?? 0, Math.Max(0, offset));
         }
 
-        response.EnsureSuccessStatusCode();
+        CloudSyncHttpDiagnostics.EnsureSuccess(response, "S3/R2", "分片读取");
         byte[] body = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
         if (response.StatusCode == HttpStatusCode.PartialContent)
@@ -169,13 +175,15 @@ internal sealed class S3SyncTransport : ICloudSyncTransport
             using var request = new HttpRequestMessage(HttpMethod.Get, uri);
             S3SigV4Signer.SignRequest(request, ReadOnlySpan<byte>.Empty, _accessKey, _secretKey, _region, _timeProvider.GetUtcNow());
 
-            using HttpResponseMessage response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            using HttpResponseMessage response = await CloudSyncHttpDiagnostics
+                .SendWithDiagnosticsAsync(_httpClient, request, "S3/R2", "列举目录", cancellationToken)
+                .ConfigureAwait(false);
             if (response.StatusCode == HttpStatusCode.NotFound)
             {
                 return [];
             }
 
-            response.EnsureSuccessStatusCode();
+            CloudSyncHttpDiagnostics.EnsureSuccess(response, "S3/R2", "列举目录");
             string xml = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
             (IReadOnlyList<CloudSyncObjectInfo> pageItems, string? nextToken) = ParseListObjectsV2Xml(xml);
             results.AddRange(pageItems);
@@ -200,13 +208,15 @@ internal sealed class S3SyncTransport : ICloudSyncTransport
         using var request = new HttpRequestMessage(HttpMethod.Head, uri);
         S3SigV4Signer.SignRequest(request, ReadOnlySpan<byte>.Empty, _accessKey, _secretKey, _region, _timeProvider.GetUtcNow());
 
-        using HttpResponseMessage response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        using HttpResponseMessage response = await CloudSyncHttpDiagnostics
+            .SendWithDiagnosticsAsync(_httpClient, request, "S3/R2", "检查对象", cancellationToken)
+            .ConfigureAwait(false);
         if (response.StatusCode == HttpStatusCode.NotFound)
         {
             return false;
         }
 
-        response.EnsureSuccessStatusCode();
+        CloudSyncHttpDiagnostics.EnsureSuccess(response, "S3/R2", "检查对象");
         return true;
     }
 

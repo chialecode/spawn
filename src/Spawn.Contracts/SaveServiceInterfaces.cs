@@ -28,11 +28,41 @@ public interface ILudusaviRuleResolver
     Task<int> EnsureBuiltInRulesSeededAsync(CancellationToken ct = default);
 
     /// <summary>
-    /// Imports or refreshes precompiled Ludusavi rules from a JSON array payload.
+    /// Imports or refreshes precompiled Ludusavi rules from a JSON array/object or Ludusavi <c>manifest.yaml</c> payload.
     /// </summary>
     Task<int> ImportRulesJsonAsync(string rulesJson, CancellationToken ct = default);
 
+    /// <summary>
+    /// Imports or refreshes Ludusavi rules from an official Ludusavi <c>manifest.yaml</c> document.
+    /// </summary>
+    Task<int> ImportRulesYamlAsync(string manifestYaml, CancellationToken ct = default) =>
+        ImportRulesJsonAsync(manifestYaml, ct);
+
     Task<int> GetRuleCountAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Lists user-configured custom save locations for a game.
+    /// </summary>
+    Task<IReadOnlyList<SaveCustomLocationRecord>> GetCustomLocationsAsync(string gameId, CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<SaveCustomLocationRecord>>([]);
+
+    /// <summary>
+    /// Validates against hard safety redlines and persists a user-configured custom save directory, file, or HKCU registry key.
+    /// </summary>
+    Task<SaveCustomLocationRecord> AddCustomLocationAsync(
+        string gameId,
+        string pathOrRegistryKey,
+        SaveCustomLocationKind locationKind,
+        SaveFileCategory category = SaveFileCategory.Save,
+        string? label = null,
+        CancellationToken ct = default) =>
+        throw new NotSupportedException("Custom save locations are not supported by this resolver implementation.");
+
+    /// <summary>
+    /// Removes a previously added custom save location.
+    /// </summary>
+    Task<bool> RemoveCustomLocationAsync(string locationId, CancellationToken ct = default) =>
+        Task.FromResult(false);
 }
 
 /// <summary>
@@ -117,4 +147,59 @@ public interface ICloudSaveSyncService
     Task<IReadOnlyList<CloudSyncExecutionReport>> SyncAllConfiguredGamesAsync(
         IProgress<CloudSyncProgressTick>? progress = null,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Updates an existing cloud sync endpoint configuration and optional credentials.
+    /// </summary>
+    Task<CloudSyncEndpointRecord> UpdateEndpointAsync(
+        CloudSyncEndpointRecord endpoint,
+        CloudSyncEndpointSecrets? secrets = null,
+        CancellationToken ct = default) =>
+        SaveEndpointAsync(endpoint, secrets, ct);
+
+    /// <summary>
+    /// Promotes <paramref name="endpointId"/> to the default cloud sync endpoint.
+    /// </summary>
+    async Task<bool> SetDefaultEndpointAsync(string endpointId, CancellationToken ct = default)
+    {
+        IReadOnlyList<CloudSyncEndpointRecord> endpoints = await ListEndpointsAsync(ct).ConfigureAwait(false);
+        CloudSyncEndpointRecord? target = endpoints.FirstOrDefault(
+            e => string.Equals(e.EndpointId, endpointId, StringComparison.OrdinalIgnoreCase));
+        if (target is null)
+        {
+            return false;
+        }
+
+        await SaveEndpointAsync(target with { IsDefault = true }, secrets: null, ct).ConfigureAwait(false);
+        return true;
+    }
+
+    /// <summary>
+    /// Resolves the stable cross-machine cloud slot key for <paramref name="gameId"/>.
+    /// </summary>
+    Task<string> ResolveCloudGameKeyAsync(string gameId, CancellationToken ct = default) =>
+        Task.FromResult(gameId);
+
+    /// <summary>
+    /// Syncs the active branch and pushes all non-empty local side branches to the remote SPPK repository.
+    /// </summary>
+    Task<CloudSyncExecutionReport> PushAllBranchesAsync(
+        string gameId,
+        string? endpointId = null,
+        IProgress<CloudSyncProgressTick>? progress = null,
+        CancellationToken ct = default) =>
+        ExecuteSyncAsync(gameId, endpointId, divergenceResolution: null, progress, ct);
+
+    /// <summary>
+    /// Policy hook executed after a game exits when <see cref="SaveSettingsDto.AutoCloudPushOnGameExit"/> is enabled.
+    /// Only performs a safe fast-forward push and never silently overwrites diverged or remote-ahead saves.
+    /// </summary>
+    Task<CloudSyncExecutionReport?> HandleGameExitAutoPushAsync(string gameId, CancellationToken ct = default) =>
+        Task.FromResult<CloudSyncExecutionReport?>(null);
+
+    /// <summary>
+    /// Policy hook executed before launching a game when <see cref="SaveSettingsDto.CheckRemoteUpdatesBeforeLaunch"/> is enabled.
+    /// </summary>
+    Task<CloudSyncPlanPreview?> CheckRemoteUpdateBeforeLaunchAsync(string gameId, CancellationToken ct = default) =>
+        Task.FromResult<CloudSyncPlanPreview?>(null);
 }

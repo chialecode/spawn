@@ -70,6 +70,16 @@ public static class GameDataSafetyFence
     {
         ".exe",
         ".dll",
+        ".bat",
+        ".cmd",
+        ".ps1",
+        ".vbs",
+        ".msi",
+        ".com",
+        ".scr",
+        ".pif",
+        ".reg",
+        ".sh",
         ".cdx",
         ".rne",
         ".sys",
@@ -536,4 +546,280 @@ public static class GameDataSafetyFence
 
         return childPath.StartsWith(potentialParent + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
     }
+
+    /// <summary>
+    /// Validates a save target originating from a trusted Ludusavi rule match or an explicit user custom location.
+    /// Relaxes the heuristic segment-length (&gt;= 3) and fixed 10-folder in-game whitelist (allowing paths such as
+    /// <c>b1/Saved/SaveGames</c>, <c>preferences</c>, <c>runs</c>, <c>SNAppData</c>) while strictly enforcing all hard
+    /// safety redlines: drive roots, OS system directories, NTFS ReparsePoints/Junctions, executable/script extensions,
+    /// SPAWN's own data root, game installation root, and core engine subdirectories.
+    /// </summary>
+    public static (bool IsSafe, string? Reason) ValidateTrustedSaveTarget(
+        string candidatePath,
+        string? gameInstallDir,
+        SpawnPaths spawnPaths,
+        GameDataManagementOptions options,
+        bool isUserCustomPath = false)
+    {
+        ArgumentNullException.ThrowIfNull(spawnPaths);
+        ArgumentNullException.ThrowIfNull(options);
+
+        if (string.IsNullOrWhiteSpace(candidatePath))
+        {
+            return (false, "目标路径为空。");
+        }
+
+        if (candidatePath.Contains('*', StringComparison.Ordinal) || candidatePath.Contains('?', StringComparison.Ordinal))
+        {
+            return (false, "安全围栏拦截：目标路径不得包含通配符。");
+        }
+
+        string fullTarget;
+        try
+        {
+            fullTarget = Path.TrimEndingDirectorySeparator(Path.GetFullPath(candidatePath));
+        }
+        catch
+        {
+            return (false, "目标路径格式非法。");
+        }
+
+        string? root = Path.GetPathRoot(fullTarget);
+        if (string.IsNullOrWhiteSpace(root)
+            || string.Equals(fullTarget, Path.TrimEndingDirectorySeparator(root), StringComparison.OrdinalIgnoreCase))
+        {
+            return (false, "安全围栏拦截：严禁指向磁盘根目录。");
+        }
+
+        // Hard redline: OS Windows directory and all its descendants.
+        string windowsDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+        if (!string.IsNullOrWhiteSpace(windowsDir))
+        {
+            string normWindows = Path.TrimEndingDirectorySeparator(Path.GetFullPath(windowsDir));
+            if (IsSameOrParentDirectory(normWindows, fullTarget) || IsSameOrParentDirectory(fullTarget, normWindows))
+            {
+                return (false, "安全围栏拦截：严禁访问 Windows 系统目录。");
+            }
+        }
+
+        // Hard redline: system recycle/boot/volume roots.
+        string[] segments = fullTarget.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length >= 2 && IsProtectedRootChild(segments[1]))
+        {
+            return (false, $"安全围栏拦截：严禁访问系统保护目录 ({segments[1]})。");
+        }
+
+        // Hard redline: SPAWN's own data root, parents, and descendants.
+        string spawnDataRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(spawnPaths.DataRoot));
+        if (IsSameOrParentDirectory(fullTarget, spawnDataRoot) || IsSameOrParentDirectory(spawnDataRoot, fullTarget))
+        {
+            return (false, "安全围栏拦截：严禁指向 SPAWN 自身数据或数据库目录。");
+        }
+
+        // Hard redline: game installation root itself or any parent of it.
+        string? fullInstallDir = null;
+        if (!string.IsNullOrWhiteSpace(gameInstallDir))
+        {
+            try
+            {
+                fullInstallDir = Path.TrimEndingDirectorySeparator(Path.GetFullPath(gameInstallDir));
+            }
+            catch
+            {
+                fullInstallDir = null;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(fullInstallDir))
+        {
+            if (string.Equals(fullTarget, fullInstallDir, StringComparison.OrdinalIgnoreCase))
+            {
+                return (false, "安全围栏拦截：严禁指向游戏安装根目录本体！");
+            }
+
+            if (IsSameOrParentDirectory(fullTarget, fullInstallDir))
+            {
+                return (false, "安全围栏拦截：目标路径包含游戏安装目录！");
+            }
+        }
+
+        // Hard redline: base system/user special folder roots (exact match) and shared parents.
+        string? userDocuments = options.ResolveUserDocuments();
+        string[] protectedSpecialRoots =
+        [
+            options.ResolveAppDataRoaming(),
+            options.ResolveLocalAppData(),
+            options.ResolveLocalLow(),
+            options.ResolvePublicDocuments(),
+            options.ResolvePublicRoot(),
+            userDocuments,
+            string.IsNullOrWhiteSpace(userDocuments) ? string.Empty : Path.Combine(userDocuments, "My Games"),
+            options.ResolveUserProfile(),
+            options.ResolveSavedGames(),
+            options.ResolveProgramData(),
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+            Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+            Path.Combine(Path.GetPathRoot(Environment.SystemDirectory) ?? @"C:\", "Users"),
+        ];
+
+        foreach (string? special in protectedSpecialRoots)
+        {
+            if (string.IsNullOrWhiteSpace(special))
+            {
+                continue;
+            }
+
+            string normSpecial;
+            try
+            {
+                normSpecial = Path.TrimEndingDirectorySeparator(Path.GetFullPath(special));
+            }
+            catch
+            {
+                continue;
+            }
+
+            if (string.Equals(fullTarget, normSpecial, StringComparison.OrdinalIgnoreCase))
+            {
+                return (false, "安全围栏拦截：严禁指向系统或用户共享根文件夹。");
+            }
+        }
+
+        // Hard redline: shared cross-game emulator / store roots.
+        string leafName = Path.GetFileName(fullTarget);
+        if (leafName.Equals("Steam", StringComparison.OrdinalIgnoreCase)
+            || leafName.Equals("userdata", StringComparison.OrdinalIgnoreCase)
+            || leafName.Equals("CODEX", StringComparison.OrdinalIgnoreCase)
+            || leafName.Equals("RUNE", StringComparison.OrdinalIgnoreCase)
+            || leafName.Equals("Goldberg SteamEmu Saves", StringComparison.OrdinalIgnoreCase)
+            || leafName.Equals("GSE Saves", StringComparison.OrdinalIgnoreCase))
+        {
+            return (false, "安全围栏拦截：严禁指向跨游戏共享总目录。");
+        }
+
+        // Hard redline: executable binaries, scripts, DLLs, and packed game archives.
+        string ext = Path.GetExtension(fullTarget);
+        if (!string.IsNullOrWhiteSpace(ext) && ForbiddenFileExtensions.Contains(ext))
+        {
+            return (false, $"安全围栏拦截：禁止读写可执行文件、脚本或核心资源包 ({ext})。");
+        }
+
+        // Hard redline: NTFS ReparsePoint / Junction / SymbolicLink protection.
+        if (HasDisallowedReparsePointOnPath(fullTarget, out string? reparsePath))
+        {
+            return (false, $"安全围栏拦截：禁止指向 NTFS 联接点或符号链接 ({reparsePath})。");
+        }
+
+        // Hard redline: core engine directories inside game install folder.
+        if (!string.IsNullOrWhiteSpace(fullInstallDir)
+            && fullTarget.StartsWith(fullInstallDir + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+        {
+            string relPath = Path.GetRelativePath(fullInstallDir, fullTarget);
+            string[] relSegments = relPath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (relSegments.Length == 0)
+            {
+                return (false, "安全围栏拦截：非法游戏内相对路径。");
+            }
+
+            string topSegment = relSegments[0];
+            if (topSegment.EndsWith("_Data", StringComparison.OrdinalIgnoreCase)
+                || topSegment.Equals("Engine", StringComparison.OrdinalIgnoreCase)
+                || topSegment.Equals("Binaries", StringComparison.OrdinalIgnoreCase)
+                || topSegment.Equals("Content", StringComparison.OrdinalIgnoreCase)
+                || topSegment.Equals("MonoBleedingEdge", StringComparison.OrdinalIgnoreCase)
+                || topSegment.Equals("steam_settings", StringComparison.OrdinalIgnoreCase))
+            {
+                return (false, $"安全围栏拦截：禁止将游戏核心引擎目录 ({topSegment}) 作为存档目录。");
+            }
+
+            if (relSegments.Any(static s =>
+                    s.Equals("Binaries", StringComparison.OrdinalIgnoreCase)
+                    || s.Equals("MonoBleedingEdge", StringComparison.OrdinalIgnoreCase)))
+            {
+                return (false, "安全围栏拦截：禁止将引擎二进制目录作为存档目录。");
+            }
+
+            return (true, null);
+        }
+
+        // Outside game install dir: trusted Ludusavi rules and explicit user custom paths still require at least 2 segments (e.g. D:\MySaves).
+        int minDepth = isUserCustomPath ? 2 : 3;
+        if (segments.Length < minDepth)
+        {
+            return (false, "路径层级过浅，已触发系统防误删围栏。");
+        }
+
+        return (true, null);
+    }
+
+    /// <summary>
+    /// Detects whether <paramref name="fullPath"/> or any of its existing ancestor directories is an NTFS Junction or Symbolic Link.
+    /// </summary>
+    public static bool HasDisallowedReparsePointOnPath(string fullPath, out string? offendingPath)
+    {
+        offendingPath = null;
+        if (string.IsNullOrWhiteSpace(fullPath))
+        {
+            return false;
+        }
+
+        string? cursor = Path.TrimEndingDirectorySeparator(fullPath);
+        string? root = Path.GetPathRoot(cursor);
+        string? normalizedRoot = string.IsNullOrWhiteSpace(root) ? null : Path.TrimEndingDirectorySeparator(root);
+
+        int guard = 0;
+        while (!string.IsNullOrWhiteSpace(cursor) && guard++ < 64)
+        {
+            if (normalizedRoot is not null
+                && string.Equals(cursor, normalizedRoot, StringComparison.OrdinalIgnoreCase))
+            {
+                break;
+            }
+
+            try
+            {
+                if (File.Exists(cursor))
+                {
+                    var fi = new FileInfo(cursor);
+                    if ((fi.Attributes & FileAttributes.ReparsePoint) != 0 && !string.IsNullOrEmpty(fi.LinkTarget))
+                    {
+                        offendingPath = cursor;
+                        return true;
+                    }
+                }
+                else if (Directory.Exists(cursor))
+                {
+                    var di = new DirectoryInfo(cursor);
+                    if ((di.Attributes & FileAttributes.ReparsePoint) != 0 && !string.IsNullOrEmpty(di.LinkTarget))
+                    {
+                        offendingPath = cursor;
+                        return true;
+                    }
+                }
+            }
+            catch
+            {
+                // Ignore inaccessible intermediate folders (e.g. locked drive roots).
+            }
+
+            string? parent = Path.GetDirectoryName(cursor);
+            if (string.IsNullOrWhiteSpace(parent) || string.Equals(parent, cursor, StringComparison.OrdinalIgnoreCase))
+            {
+                break;
+            }
+
+            cursor = Path.TrimEndingDirectorySeparator(parent);
+        }
+
+        return false;
+    }
+
+    private static bool IsProtectedRootChild(string firstSegmentAfterDrive) =>
+        firstSegmentAfterDrive.Equals("$Recycle.Bin", StringComparison.OrdinalIgnoreCase)
+        || firstSegmentAfterDrive.Equals("System Volume Information", StringComparison.OrdinalIgnoreCase)
+        || firstSegmentAfterDrive.Equals("Recovery", StringComparison.OrdinalIgnoreCase)
+        || firstSegmentAfterDrive.Equals("Boot", StringComparison.OrdinalIgnoreCase)
+        || firstSegmentAfterDrive.Equals("PerfLogs", StringComparison.OrdinalIgnoreCase)
+        || firstSegmentAfterDrive.Equals("Windows", StringComparison.OrdinalIgnoreCase);
 }

@@ -1,5 +1,6 @@
 using Spawn.Contracts;
 using Spawn.Core.Storage;
+using Spawn.Modules.Progress.Saves.Rules;
 using Spawn.Modules.Progress.Snapshots;
 
 namespace Spawn.Modules.Progress.Saves.Engine;
@@ -17,11 +18,13 @@ public sealed class AtomicSaveRestorer
     private readonly CasChunkStore _casStore;
     private readonly ILudusaviRuleResolver _ruleResolver;
     private readonly IGameDataManagementService _gameDataService;
+    private readonly string? _spawnDataRoot;
 
     public AtomicSaveRestorer(
         CasChunkStore casStore,
         ILudusaviRuleResolver ruleResolver,
-        IGameDataManagementService gameDataService)
+        IGameDataManagementService gameDataService,
+        string? spawnDataRoot = null)
     {
         ArgumentNullException.ThrowIfNull(casStore);
         ArgumentNullException.ThrowIfNull(ruleResolver);
@@ -29,6 +32,7 @@ public sealed class AtomicSaveRestorer
         _casStore = casStore;
         _ruleResolver = ruleResolver;
         _gameDataService = gameDataService;
+        _spawnDataRoot = spawnDataRoot;
     }
 
     /// <summary>
@@ -52,6 +56,46 @@ public sealed class AtomicSaveRestorer
         var warnings = new List<string>();
         var filePlans = new List<(SaveSnapshotFileRecord Record, string TargetPath)>();
         var registryEntries = new List<SaveSnapshotFileRecord>();
+        ResolvedSaveLayout? cachedTrustedLayout = null;
+
+        async Task<GameDataSafetyCheckResult> ValidateTargetWithTrustedFallbackAsync(string candidateTarget)
+        {
+            GameDataSafetyCheckResult safety = await _gameDataService
+                .ValidateSaveRestoreTargetAsync(game.GameId, candidateTarget, cancellationToken)
+                .ConfigureAwait(false);
+            if (safety.IsSafe)
+            {
+                return safety;
+            }
+
+            if (!TrustedSavePathFence.IsHeuristicStrictFenceRejection(safety.Reason))
+            {
+                return safety;
+            }
+
+            cachedTrustedLayout ??= await _ruleResolver
+                .ResolveGameSaveLayoutAsync(game.GameId, refreshOnlineRules: false, cancellationToken)
+                .ConfigureAwait(false);
+
+            string normCandidate = Path.TrimEndingDirectorySeparator(Path.GetFullPath(candidateTarget));
+            ResolvedSaveLocation? matchingTrusted = cachedTrustedLayout.Locations.FirstOrDefault(loc =>
+                loc.IsSafe
+                && (loc.IsCustom || loc.SourceRule == GameDataSourceRule.Ludusavi)
+                && IsPathCoveredByLocation(normCandidate, loc.ResolvedFullPath));
+            if (matchingTrusted is null)
+            {
+                return safety;
+            }
+
+            var (trustedOk, trustedReason) = TrustedSavePathFence.ValidateTrustedFilesystemTarget(
+                normCandidate,
+                game.InstallDir,
+                spawnDataRoot: _spawnDataRoot,
+                isUserCustomPath: matchingTrusted.IsCustom);
+            return trustedOk
+                ? new GameDataSafetyCheckResult(true)
+                : new GameDataSafetyCheckResult(false, trustedReason ?? safety.Reason);
+        }
 
         // 1. Pre-validate EVERY file and registry target through safety fence BEFORE mutating disk or registry.
         foreach (SaveSnapshotFileRecord entry in targetFiles)
@@ -75,8 +119,12 @@ public sealed class AtomicSaveRestorer
                 return FailOutcome($"无法解析存档文件的还原目标路径：{entry.LogicalPath}", safetySnapshot, targetSnapshot, warnings);
             }
 
-            GameDataSafetyCheckResult safety = await _gameDataService
-                .ValidateSaveRestoreTargetAsync(game.GameId, targetPath, cancellationToken)
+            if (TrustedSavePathFence.IsForbiddenExecutableFile(targetPath))
+            {
+                return FailOutcome($"安全围栏拦截：禁止覆写可执行文件或脚本 ({Path.GetExtension(targetPath)})。", safetySnapshot, targetSnapshot, warnings);
+            }
+
+            GameDataSafetyCheckResult safety = await ValidateTargetWithTrustedFallbackAsync(targetPath)
                 .ConfigureAwait(false);
             if (!safety.IsSafe)
             {
@@ -87,7 +135,8 @@ public sealed class AtomicSaveRestorer
                     warnings);
             }
 
-            if (AntiTearFileCapture.IsReparsePoint(targetPath))
+            if (AntiTearFileCapture.IsReparsePoint(targetPath)
+                || TrustedSavePathFence.HasDisallowedReparsePointOnPath(targetPath, out _))
             {
                 return FailOutcome(
                     $"目标路径为符号链接或目录联接点，拒绝写入：{targetPath}",
@@ -196,10 +245,9 @@ public sealed class AtomicSaveRestorer
                     continue;
                 }
 
-                GameDataSafetyCheckResult delCheck = await _gameDataService
-                    .ValidateSaveRestoreTargetAsync(game.GameId, normPrev, cancellationToken)
+                GameDataSafetyCheckResult delCheck = await ValidateTargetWithTrustedFallbackAsync(normPrev)
                     .ConfigureAwait(false);
-                if (delCheck.IsSafe)
+                if (delCheck.IsSafe && !TrustedSavePathFence.IsForbiddenExecutableFile(normPrev))
                 {
                     extraneousToDelete.Add(normPrev);
                 }
@@ -511,6 +559,25 @@ public sealed class AtomicSaveRestorer
             {
                 // Best-effort cleanup.
             }
+        }
+    }
+
+    private static bool IsPathCoveredByLocation(string normalizedTarget, string locationPath)
+    {
+        if (string.IsNullOrWhiteSpace(locationPath))
+        {
+            return false;
+        }
+
+        try
+        {
+            string normLoc = Path.TrimEndingDirectorySeparator(Path.GetFullPath(locationPath));
+            return string.Equals(normalizedTarget, normLoc, StringComparison.OrdinalIgnoreCase)
+                   || normalizedTarget.StartsWith(normLoc + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
         }
     }
 

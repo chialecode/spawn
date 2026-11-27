@@ -1,5 +1,6 @@
 using Spawn.Contracts;
 using Spawn.Core.Storage;
+using Spawn.Modules.Progress.Saves.Rules;
 using Spawn.Modules.Progress.Snapshots;
 
 namespace Spawn.Modules.Progress.Saves.Engine;
@@ -118,7 +119,9 @@ public sealed class AntiTearFileCapture
             if (File.Exists(normalizedRoot))
             {
                 var fi = new FileInfo(normalizedRoot);
-                if ((fi.Attributes & FileAttributes.ReparsePoint) != 0 || IsIgnoredTempFile(normalizedRoot))
+                if ((fi.Attributes & FileAttributes.ReparsePoint) != 0
+                    || IsIgnoredTempFile(normalizedRoot)
+                    || TrustedSavePathFence.IsForbiddenExecutableFile(normalizedRoot))
                 {
                     continue;
                 }
@@ -444,7 +447,7 @@ public sealed class AntiTearFileCapture
         foreach (string file in files)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (IsReparsePoint(file) || IsIgnoredTempFile(file))
+            if (IsReparsePoint(file) || IsIgnoredTempFile(file) || TrustedSavePathFence.IsForbiddenExecutableFile(file))
             {
                 continue;
             }

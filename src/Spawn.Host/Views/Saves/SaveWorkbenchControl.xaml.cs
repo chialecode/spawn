@@ -12,14 +12,67 @@ public partial class SaveWorkbenchControl : UserControl
 {
     private readonly HashSet<Popup> _openPopups = [];
     private bool _isTreeSearchImeComposing;
+    private SaveWorkbenchViewModel? _subscribedVm;
 
     public SaveWorkbenchControl()
     {
         InitializeComponent();
 
+        DataContextChanged += OnDataContextChanged;
+        Unloaded += OnUnloaded;
+
         TextCompositionManager.AddPreviewTextInputStartHandler(TreeSearchTextBox, (_, _) => _isTreeSearchImeComposing = true);
         TextCompositionManager.AddPreviewTextInputUpdateHandler(TreeSearchTextBox, (_, _) => _isTreeSearchImeComposing = true);
         TextCompositionManager.AddPreviewTextInputHandler(TreeSearchTextBox, (_, _) => _isTreeSearchImeComposing = false);
+    }
+
+    private void OnDataContextChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        if (_subscribedVm is not null)
+        {
+            _subscribedVm.ScrollToSnapshotRequested -= OnScrollToSnapshotRequested;
+            _subscribedVm = null;
+        }
+
+        if (e.NewValue is SaveWorkbenchViewModel vm)
+        {
+            _subscribedVm = vm;
+            _subscribedVm.ScrollToSnapshotRequested += OnScrollToSnapshotRequested;
+        }
+    }
+
+    private void OnUnloaded(object sender, RoutedEventArgs e)
+    {
+        if (_subscribedVm is not null)
+        {
+            _subscribedVm.ScrollToSnapshotRequested -= OnScrollToSnapshotRequested;
+            _subscribedVm = null;
+        }
+    }
+
+    private void OnScrollToSnapshotRequested(SaveSnapshotRowViewModel row)
+    {
+        _ = Dispatcher.BeginInvoke(
+            DispatcherPriority.Background,
+            new Action(() =>
+            {
+                if (SaveTreeListBox.Items.Contains(row))
+                {
+                    SaveTreeListBox.ScrollIntoView(row);
+                }
+            }));
+    }
+
+    private void OnTreeItemPreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is ListBoxItem item)
+        {
+            item.IsSelected = true;
+            if (DataContext is SaveWorkbenchViewModel vm && item.DataContext is SaveSnapshotRowViewModel row)
+            {
+                vm.SelectedNode = row;
+            }
+        }
     }
 
     private void OnControlSizeChanged(object sender, SizeChangedEventArgs e)
@@ -69,7 +122,7 @@ public partial class SaveWorkbenchControl : UserControl
 
     private void OnControlPreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key != Key.Escape || _openPopups.Count == 0)
+        if (e.Key != Key.Escape)
         {
             return;
         }
@@ -82,6 +135,11 @@ public partial class SaveWorkbenchControl : UserControl
                 popup.IsOpen = false;
                 closed = true;
             }
+        }
+
+        if (!closed && DataContext is SaveWorkbenchViewModel vm)
+        {
+            closed = vm.TryHandleEscapeKey();
         }
 
         if (closed)

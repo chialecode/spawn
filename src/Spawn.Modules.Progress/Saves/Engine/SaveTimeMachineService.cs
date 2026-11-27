@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Spawn.Contracts;
 using Spawn.Core;
 using Spawn.Core.Storage;
+using Spawn.Modules.Progress.Saves.Cloud;
 using Spawn.Modules.Progress.Snapshots;
 
 namespace Spawn.Modules.Progress.Saves.Engine;
@@ -94,7 +95,7 @@ public sealed class SaveTimeMachineService : ISaveTimeMachineService
         _maxSnapshotBytesOverrideForTest = maxSnapshotBytesOverrideForTest;
 
         _fileCapture = new AntiTearFileCapture(_casStore, _ruleResolver, _timeProvider, afterReadConsistencyTestHook);
-        _restorer = new AtomicSaveRestorer(_casStore, _ruleResolver, _gameDataService);
+        _restorer = new AtomicSaveRestorer(_casStore, _ruleResolver, _gameDataService, _paths.DataRoot);
         _legacyBridge = new LegacyPreTrainerSnapshotBridge(_database, _paths, _casStore, _ruleResolver);
     }
 
@@ -131,7 +132,27 @@ public sealed class SaveTimeMachineService : ISaveTimeMachineService
         IReadOnlyList<SaveSnapshotRecord> snapshots = await _database.GetSaveSnapshotsByGameAsync(gameId, branchId: null, limit: 1000, ct).ConfigureAwait(false);
         long dedupBytes = await _database.GetGameUniqueChunkStoredBytesAsync(gameId, ct).ConfigureAwait(false);
 
-        return SaveTreeLayoutBuilder.BuildGraph(gameId, state, branches, snapshots, dedupBytes);
+        CloudSyncEndpointRecord? defaultEndpoint = await _database.GetDefaultCloudSyncEndpointAsync(ct).ConfigureAwait(false);
+        string? effectiveEndpointId = state?.CloudEndpointId ?? defaultEndpoint?.EndpointId;
+        HashSet<string> syncedSnapshotIds = await _database
+            .GetCloudSyncedSnapshotIdsForGameAsync(gameId, effectiveEndpointId, ct)
+            .ConfigureAwait(false);
+        string effectiveCloudKey = await CloudGameKeyResolver
+            .ResolveAsync(_database, gameId, state, ct: ct)
+            .ConfigureAwait(false);
+        int unimportedLegacyCount = await _database
+            .GetUnimportedLegacyPreTrainerCountForGameAsync(gameId, ct)
+            .ConfigureAwait(false);
+
+        return SaveTreeLayoutBuilder.BuildGraph(
+            gameId,
+            state,
+            branches,
+            snapshots,
+            dedupBytes,
+            syncedSnapshotIds,
+            effectiveCloudKey,
+            unimportedLegacyCount);
     }
 
     public async Task<IReadOnlyList<SaveLibraryGameOverviewDto>> GetLibraryOverviewAsync(CancellationToken ct = default)
@@ -464,16 +485,19 @@ public sealed class SaveTimeMachineService : ISaveTimeMachineService
             if (string.IsNullOrWhiteSpace(targetBranch.HeadSnapshotId))
             {
                 SaveSnapshotRecord? safetySnap = null;
-                if (request.CreateSafetySnapshot && !string.IsNullOrWhiteSpace(state.ActiveBranchId))
+                string? safetyTargetBranchId = !string.IsNullOrWhiteSpace(request.SafetySnapshotBranchId)
+                    ? request.SafetySnapshotBranchId
+                    : state.ActiveBranchId;
+                if (request.CreateSafetySnapshot && !string.IsNullOrWhiteSpace(safetyTargetBranchId))
                 {
                     CreateSaveSnapshotResult safetyRes = await CreateSnapshotCoreAsync(
                         new CreateSaveSnapshotRequest
                         {
                             GameId = game.GameId,
-                            BranchId = state.ActiveBranchId,
+                            BranchId = safetyTargetBranchId,
                             TriggerKind = SaveSnapshotTriggerKind.PreBranchSwitchSafety,
                             Note = $"切换至「{targetBranch.Name}」前自动保护",
-                            SkipIfUnchangedFromHead = true,
+                            SkipIfUnchangedFromHead = !request.ForceSafetySnapshotEvenIfUnchanged,
                         },
                         ct).ConfigureAwait(false);
                     safetySnap = safetyRes.Snapshot;
@@ -499,6 +523,8 @@ public sealed class SaveTimeMachineService : ISaveTimeMachineService
                 safetyTriggerKind: SaveSnapshotTriggerKind.PreBranchSwitchSafety,
                 includeConfigFiles: request.IncludeConfigFiles,
                 modMismatchPolicy: request.ModMismatchPolicy,
+                safetySnapshotBranchId: request.SafetySnapshotBranchId,
+                forceSafetySnapshotEvenIfUnchanged: request.ForceSafetySnapshotEvenIfUnchanged,
                 ct: ct).ConfigureAwait(false);
 
             if (outcome.Succeeded)
@@ -815,9 +841,9 @@ public sealed class SaveTimeMachineService : ISaveTimeMachineService
 
             IReadOnlyList<SaveSnapshotRecord> children = await _database.GetChildSaveSnapshotsAsync(snap.SnapshotId, ct)
                 .ConfigureAwait(false);
-            if (children.Count > 0)
+            if (children.Count >= 2)
             {
-                return new DeleteSnapshotResult(false, $"该快照存在 {children.Count} 个子节点依赖，禁止直接删除以保持存档树完整。");
+                return new DeleteSnapshotResult(false, $"该快照存在 {children.Count} 个分支子节点依赖（分叉枢纽节点），禁止直接删除以保持存档树完整。");
             }
 
             // Protect any other branch whose BaseSnapshotId or HeadSnapshotId points at this snapshot
@@ -840,7 +866,12 @@ public sealed class SaveTimeMachineService : ISaveTimeMachineService
                 }
             }
 
-            // If this leaf snapshot is its own branch's HEAD or Base, roll that pointer back to its parent.
+            if (children.Count == 1 && !string.Equals(children[0].BranchId, snap.BranchId, StringComparison.Ordinal))
+            {
+                return new DeleteSnapshotResult(false, "该快照被其他分支子节点直接依赖，无法直接删除。");
+            }
+
+            // Update own branch's Head / Base pointers cleanly before deleting & re-linking children.
             DateTimeOffset now = _timeProvider.GetUtcNow();
             foreach (SaveBranchRecord b in branches)
             {
@@ -851,11 +882,14 @@ public sealed class SaveTimeMachineService : ISaveTimeMachineService
 
                 if (string.Equals(b.BaseSnapshotId, snap.SnapshotId, StringComparison.Ordinal))
                 {
-                    await _database.UpdateSaveBranchBaseAsync(b.BranchId, snap.ParentSnapshotId, now, ct).ConfigureAwait(false);
+                    string? nextBase = snap.ParentSnapshotId ?? (children.Count == 1 ? children[0].SnapshotId : null);
+                    await _database.UpdateSaveBranchBaseAsync(b.BranchId, nextBase, now, ct).ConfigureAwait(false);
                 }
             }
 
-            var (deleted, unrefCount) = await _database.DeleteSaveSnapshotAsync(snap.SnapshotId, now, ct).ConfigureAwait(false);
+            var (deleted, unrefCount) = children.Count == 1
+                ? await _database.DeleteSaveSnapshotAndRelinkChildrenAsync(snap.SnapshotId, snap.ParentSnapshotId, now, ct).ConfigureAwait(false)
+                : await _database.DeleteSaveSnapshotAsync(snap.SnapshotId, now, ct).ConfigureAwait(false);
             if (!deleted)
             {
                 return new DeleteSnapshotResult(false, "删除快照失败。");
@@ -864,7 +898,10 @@ public sealed class SaveTimeMachineService : ISaveTimeMachineService
             await PublishTreeChangedAsync(snap.GameId, snap.BranchId, snap.SnapshotId, "SnapshotDeleted", ct)
                 .ConfigureAwait(false);
 
-            return new DeleteSnapshotResult(true, "已删除快照。", unrefCount);
+            return new DeleteSnapshotResult(
+                true,
+                children.Count == 1 ? "已删除该中间快照，并自动重连子节点的父指针。" : "已删除快照。",
+                unrefCount);
         }
         finally
         {
@@ -1132,7 +1169,9 @@ public sealed class SaveTimeMachineService : ISaveTimeMachineService
         SaveSnapshotTriggerKind safetyTriggerKind,
         bool includeConfigFiles,
         SaveModMismatchPolicy modMismatchPolicy,
-        CancellationToken ct)
+        string? safetySnapshotBranchId = null,
+        bool forceSafetySnapshotEvenIfUnchanged = false,
+        CancellationToken ct = default)
     {
         SaveSnapshotRecord? targetSnapshot = await _database.GetSaveSnapshotByIdAsync(targetSnapshotId, ct).ConfigureAwait(false);
         if (targetSnapshot is null)
@@ -1150,17 +1189,23 @@ public sealed class SaveTimeMachineService : ISaveTimeMachineService
         SaveSnapshotRecord? safetySnapshot = null;
         if (createSafetySnapshot)
         {
+            string? effectiveSafetyBranchId = !string.IsNullOrWhiteSpace(safetySnapshotBranchId)
+                ? safetySnapshotBranchId
+                : state.ActiveBranchId;
+            bool skipUnchanged = !forceSafetySnapshotEvenIfUnchanged
+                && safetyTriggerKind == SaveSnapshotTriggerKind.PreBranchSwitchSafety;
+
             CreateSaveSnapshotResult safetyRes = await CreateSnapshotCoreAsync(
                 new CreateSaveSnapshotRequest
                 {
                     GameId = game.GameId,
-                    BranchId = state.ActiveBranchId,
+                    BranchId = effectiveSafetyBranchId,
                     TriggerKind = safetyTriggerKind,
                     Note = safetyTriggerKind == SaveSnapshotTriggerKind.PreBranchSwitchSafety
                         ? "切换分支前自动保护快照"
                         : "回滚前自动保护快照",
                     IncludeConfigFiles = includeConfigFiles,
-                    SkipIfUnchangedFromHead = safetyTriggerKind == SaveSnapshotTriggerKind.PreBranchSwitchSafety,
+                    SkipIfUnchangedFromHead = skipUnchanged,
                 },
                 ct).ConfigureAwait(false);
 
@@ -1291,18 +1336,35 @@ public sealed class SaveTimeMachineService : ISaveTimeMachineService
             }
         }
 
-        // Count children per snapshot so fork points (>= 2 children) are NEVER pruned.
-        var childCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+        // Track mutable lineage pointers so rolling retention can safely splice out oldest unpinned linear
+        // middle nodes via parent re-linking (preventing an early pinned ★ node from freezing retention).
+        var parentBySnap = new Dictionary<string, string?>(allSnaps.Count, StringComparer.Ordinal);
+        var branchBySnap = new Dictionary<string, string>(allSnaps.Count, StringComparer.Ordinal);
+        var childrenBySnap = new Dictionary<string, List<string>>(StringComparer.Ordinal);
         foreach (SaveSnapshotRecord s in allSnaps)
         {
+            parentBySnap[s.SnapshotId] = s.ParentSnapshotId;
+            branchBySnap[s.SnapshotId] = s.BranchId;
             if (!string.IsNullOrWhiteSpace(s.ParentSnapshotId))
             {
-                childCounts[s.ParentSnapshotId] = childCounts.TryGetValue(s.ParentSnapshotId, out int c) ? c + 1 : 1;
+                if (!childrenBySnap.TryGetValue(s.ParentSnapshotId, out List<string>? kids))
+                {
+                    kids = [];
+                    childrenBySnap[s.ParentSnapshotId] = kids;
+                }
+
+                kids.Add(s.SnapshotId);
             }
 
             if (!string.IsNullOrWhiteSpace(s.MergeParentSnapshotId))
             {
-                childCounts[s.MergeParentSnapshotId] = childCounts.TryGetValue(s.MergeParentSnapshotId, out int c) ? c + 1 : 1;
+                if (!childrenBySnap.TryGetValue(s.MergeParentSnapshotId, out List<string>? kids))
+                {
+                    kids = [];
+                    childrenBySnap[s.MergeParentSnapshotId] = kids;
+                }
+
+                kids.Add(s.SnapshotId);
             }
         }
 
@@ -1318,23 +1380,56 @@ public sealed class SaveTimeMachineService : ISaveTimeMachineService
                 continue;
             }
 
-            // Never break fork points (nodes with >= 2 children) or interior nodes with active parent + child.
-            // Only oldest root-side nodes (ParentSnapshotId == null && childCount <= 1) or unreferenced leaves can age out safely.
-            int kids = childCounts.TryGetValue(candidate.SnapshotId, out int kc) ? kc : 0;
-            if (kids >= 2)
+            childrenBySnap.TryGetValue(candidate.SnapshotId, out List<string>? kids);
+            int kidCount = kids?.Count ?? 0;
+
+            // Never break fork hubs (nodes with >= 2 children) or cross-branch parents.
+            if (kidCount >= 2)
             {
                 continue;
             }
 
-            if (kids == 1 && !string.IsNullOrWhiteSpace(candidate.ParentSnapshotId))
+            string? currentParentId = parentBySnap.GetValueOrDefault(candidate.SnapshotId);
+            if (kidCount == 1)
             {
-                continue;
-            }
+                string onlyChildId = kids![0];
+                if (!branchBySnap.TryGetValue(onlyChildId, out string? childBranchId)
+                    || !string.Equals(childBranchId, candidate.BranchId, StringComparison.Ordinal))
+                {
+                    continue;
+                }
 
-            var (deleted, _) = await _database.DeleteSaveSnapshotAsync(candidate.SnapshotId, now, ct).ConfigureAwait(false);
-            if (deleted)
+                var (deleted, _) = await _database
+                    .DeleteSaveSnapshotAndRelinkChildrenAsync(candidate.SnapshotId, currentParentId, now, ct)
+                    .ConfigureAwait(false);
+                if (deleted)
+                {
+                    parentBySnap[onlyChildId] = currentParentId;
+                    if (!string.IsNullOrWhiteSpace(currentParentId)
+                        && childrenBySnap.TryGetValue(currentParentId, out List<string>? parentKids))
+                    {
+                        parentKids.Remove(candidate.SnapshotId);
+                        parentKids.Add(onlyChildId);
+                    }
+
+                    childrenBySnap.Remove(candidate.SnapshotId);
+                    excess--;
+                }
+            }
+            else
             {
-                excess--;
+                var (deleted, _) = await _database.DeleteSaveSnapshotAsync(candidate.SnapshotId, now, ct).ConfigureAwait(false);
+                if (deleted)
+                {
+                    if (!string.IsNullOrWhiteSpace(currentParentId)
+                        && childrenBySnap.TryGetValue(currentParentId, out List<string>? parentKids))
+                    {
+                        parentKids.Remove(candidate.SnapshotId);
+                    }
+
+                    childrenBySnap.Remove(candidate.SnapshotId);
+                    excess--;
+                }
             }
         }
     }

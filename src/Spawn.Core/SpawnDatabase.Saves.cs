@@ -22,6 +22,13 @@ public sealed record SaveGameAggregateStats(
 public sealed partial class SpawnDatabase
 {
     public const string DefaultSaveBranchName = "main";
+    public const string SaveAutoCloudPushOnGameExitSettingKey = "saves.auto_cloud_push_on_exit";
+    public const string SaveCheckRemoteUpdatesBeforeLaunchSettingKey = "saves.check_remote_before_launch";
+
+    /// <summary>
+    /// Root data directory backing this <see cref="SpawnDatabase"/> instance (isolated in tests, channel-specific in runtime).
+    /// </summary>
+    public string DataRootPath => _paths.DataRoot;
 
     // -------------------------------------------------------------------------
     // Schema v4 -> v5 Idempotent Migration (Save Time Machine, Branches & Cloud Sync)
@@ -111,10 +118,37 @@ public sealed partial class SpawnDatabase
                     include_config_files            INTEGER NOT NULL DEFAULT 0,
                     max_rolling_snapshots           INTEGER NOT NULL DEFAULT 30,
                     cloud_endpoint_id               TEXT REFERENCES cloud_sync_endpoints(endpoint_id) ON DELETE SET NULL,
+                    cloud_game_key                  TEXT,
+                    sync_all_branches               INTEGER NOT NULL DEFAULT 0,
                     last_synced_at_utc              TEXT,
                     has_unresolved_cloud_conflict   INTEGER NOT NULL DEFAULT 0,
                     updated_at_utc                  TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS save_synced_snapshots (
+                    game_id         TEXT NOT NULL REFERENCES games(game_id) ON DELETE CASCADE,
+                    endpoint_id     TEXT NOT NULL,
+                    snapshot_id     TEXT NOT NULL REFERENCES save_snapshots(snapshot_id) ON DELETE CASCADE,
+                    synced_at_utc   TEXT NOT NULL,
+                    PRIMARY KEY (game_id, endpoint_id, snapshot_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS ix_save_synced_snapshots_game_endpoint
+                    ON save_synced_snapshots(game_id, endpoint_id);
+
+                CREATE TABLE IF NOT EXISTS save_custom_locations (
+                    location_id          TEXT PRIMARY KEY,
+                    game_id              TEXT NOT NULL REFERENCES games(game_id) ON DELETE CASCADE,
+                    path_or_registry_key TEXT NOT NULL,
+                    location_kind        TEXT NOT NULL DEFAULT 'Directory',
+                    category             TEXT NOT NULL DEFAULT 'Save',
+                    label                TEXT,
+                    created_at_utc       TEXT NOT NULL,
+                    UNIQUE (game_id, path_or_registry_key COLLATE NOCASE)
+                );
+
+                CREATE INDEX IF NOT EXISTS ix_save_custom_locations_game
+                    ON save_custom_locations(game_id, created_at_utc ASC);
 
                 CREATE TABLE IF NOT EXISTS snapshot_files (
                     snapshot_id         TEXT NOT NULL REFERENCES save_snapshots(snapshot_id) ON DELETE CASCADE,
@@ -162,6 +196,35 @@ public sealed partial class SpawnDatabase
                 VALUES (5, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
                 """;
             await ddlCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        // Idempotent column upgrades for existing v5 databases.
+        var existingStateColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        await using (var pragmaCmd = conn.CreateCommand())
+        {
+            pragmaCmd.Transaction = tx;
+            pragmaCmd.CommandText = "PRAGMA table_info(save_game_state);";
+            await using var reader = await pragmaCmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                existingStateColumns.Add(reader.GetString(1));
+            }
+        }
+
+        if (!existingStateColumns.Contains("cloud_game_key"))
+        {
+            await using var alterCmd = conn.CreateCommand();
+            alterCmd.Transaction = tx;
+            alterCmd.CommandText = "ALTER TABLE save_game_state ADD COLUMN cloud_game_key TEXT;";
+            await alterCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        if (!existingStateColumns.Contains("sync_all_branches"))
+        {
+            await using var alterCmd = conn.CreateCommand();
+            alterCmd.Transaction = tx;
+            alterCmd.CommandText = "ALTER TABLE save_game_state ADD COLUMN sync_all_branches INTEGER NOT NULL DEFAULT 0;";
+            await alterCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 
         await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -239,13 +302,13 @@ public sealed partial class SpawnDatabase
                     INSERT INTO save_game_state (
                         game_id, active_branch_id, current_head_snapshot_id,
                         auto_watch_enabled, post_exit_snapshot_enabled, include_config_files,
-                        max_rolling_snapshots, cloud_endpoint_id, last_synced_at_utc,
-                        has_unresolved_cloud_conflict, updated_at_utc
+                        max_rolling_snapshots, cloud_endpoint_id, cloud_game_key, sync_all_branches,
+                        last_synced_at_utc, has_unresolved_cloud_conflict, updated_at_utc
                     ) VALUES (
                         $game_id, $active_branch_id, $current_head_snapshot_id,
                         $auto_watch_enabled, $post_exit_snapshot_enabled, $include_config_files,
-                        $max_rolling_snapshots, NULL, NULL,
-                        0, $updated_at_utc
+                        $max_rolling_snapshots, NULL, NULL, 0,
+                        NULL, 0, $updated_at_utc
                     )
                     ON CONFLICT(game_id) DO UPDATE SET
                         active_branch_id = COALESCE(save_game_state.active_branch_id, excluded.active_branch_id);
@@ -634,13 +697,13 @@ public sealed partial class SpawnDatabase
                 INSERT INTO save_game_state (
                     game_id, active_branch_id, current_head_snapshot_id,
                     auto_watch_enabled, post_exit_snapshot_enabled, include_config_files,
-                    max_rolling_snapshots, cloud_endpoint_id, last_synced_at_utc,
-                    has_unresolved_cloud_conflict, updated_at_utc
+                    max_rolling_snapshots, cloud_endpoint_id, cloud_game_key, sync_all_branches,
+                    last_synced_at_utc, has_unresolved_cloud_conflict, updated_at_utc
                 ) VALUES (
                     $game_id, $active_branch_id, $current_head_snapshot_id,
                     $auto_watch_enabled, $post_exit_snapshot_enabled, $include_config_files,
-                    $max_rolling_snapshots, $cloud_endpoint_id, $last_synced_at_utc,
-                    $has_unresolved_cloud_conflict, $updated_at_utc
+                    $max_rolling_snapshots, $cloud_endpoint_id, $cloud_game_key, $sync_all_branches,
+                    $last_synced_at_utc, $has_unresolved_cloud_conflict, $updated_at_utc
                 )
                 ON CONFLICT(game_id) DO UPDATE SET
                     active_branch_id = excluded.active_branch_id,
@@ -650,6 +713,8 @@ public sealed partial class SpawnDatabase
                     include_config_files = excluded.include_config_files,
                     max_rolling_snapshots = excluded.max_rolling_snapshots,
                     cloud_endpoint_id = excluded.cloud_endpoint_id,
+                    cloud_game_key = excluded.cloud_game_key,
+                    sync_all_branches = excluded.sync_all_branches,
                     last_synced_at_utc = excluded.last_synced_at_utc,
                     has_unresolved_cloud_conflict = excluded.has_unresolved_cloud_conflict,
                     updated_at_utc = excluded.updated_at_utc;
@@ -662,6 +727,8 @@ public sealed partial class SpawnDatabase
             cmd.Parameters.AddWithValue("$include_config_files", state.IncludeConfigFiles ? 1 : 0);
             cmd.Parameters.AddWithValue("$max_rolling_snapshots", Math.Clamp(state.MaxRollingSnapshots, 1, 500));
             cmd.Parameters.AddWithValue("$cloud_endpoint_id", (object?)state.CloudEndpointId ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$cloud_game_key", string.IsNullOrWhiteSpace(state.CloudGameKey) ? DBNull.Value : state.CloudGameKey.Trim());
+            cmd.Parameters.AddWithValue("$sync_all_branches", state.SyncAllBranchesToCloud ? 1 : 0);
             cmd.Parameters.AddWithValue("$last_synced_at_utc", FormatNullableUtc(state.LastSyncedAtUtc));
             cmd.Parameters.AddWithValue("$has_unresolved_cloud_conflict", state.HasUnresolvedCloudConflict ? 1 : 0);
             cmd.Parameters.AddWithValue("$updated_at_utc", FormatUtc(state.UpdatedAtUtc));
@@ -757,6 +824,231 @@ public sealed partial class SpawnDatabase
         }
 
         return list;
+    }
+
+    public async Task<bool> UpdateSaveGameCloudKeyAsync(
+        string gameId,
+        string? cloudGameKey,
+        DateTimeOffset? updatedAtUtc = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(gameId);
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var conn = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = """
+                UPDATE save_game_state
+                SET cloud_game_key = $cloud_game_key,
+                    updated_at_utc = $updated_at_utc
+                WHERE game_id = $game_id;
+                """;
+            cmd.Parameters.AddWithValue("$game_id", gameId);
+            cmd.Parameters.AddWithValue("$cloud_game_key", string.IsNullOrWhiteSpace(cloudGameKey) ? DBNull.Value : cloudGameKey.Trim());
+            cmd.Parameters.AddWithValue("$updated_at_utc", FormatUtc(updatedAtUtc ?? DateTimeOffset.UtcNow));
+            return await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) > 0;
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Persists the exact set of snapshot IDs confirmed uploaded to or downloaded from a cloud sync endpoint.
+    /// </summary>
+    public async Task<int> MarkSnapshotsCloudSyncedAsync(
+        string gameId,
+        string endpointId,
+        IEnumerable<string> snapshotIds,
+        DateTimeOffset syncedAtUtc,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(gameId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(endpointId);
+        ArgumentNullException.ThrowIfNull(snapshotIds);
+
+        string[] uniqueIds = snapshotIds
+            .Where(static id => !string.IsNullOrWhiteSpace(id))
+            .Select(static id => id.Trim())
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (uniqueIds.Length == 0)
+        {
+            return 0;
+        }
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var conn = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+            int affected = 0;
+            string syncedStr = FormatUtc(syncedAtUtc);
+
+            foreach (string snapshotId in uniqueIds)
+            {
+                await using var cmd = conn.CreateCommand();
+                cmd.Transaction = tx;
+                cmd.CommandText = """
+                    INSERT INTO save_synced_snapshots (game_id, endpoint_id, snapshot_id, synced_at_utc)
+                    SELECT $game_id, $endpoint_id, $snapshot_id, $synced_at_utc
+                    WHERE EXISTS (SELECT 1 FROM save_snapshots WHERE snapshot_id = $snapshot_id)
+                    ON CONFLICT(game_id, endpoint_id, snapshot_id) DO UPDATE SET
+                        synced_at_utc = excluded.synced_at_utc;
+                    """;
+                cmd.Parameters.AddWithValue("$game_id", gameId);
+                cmd.Parameters.AddWithValue("$endpoint_id", endpointId);
+                cmd.Parameters.AddWithValue("$snapshot_id", snapshotId);
+                cmd.Parameters.AddWithValue("$synced_at_utc", syncedStr);
+                affected += await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return affected;
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Returns the exact set of snapshot IDs recorded as synced to cloud for <paramref name="gameId"/>.
+    /// </summary>
+    public async Task<HashSet<string>> GetCloudSyncedSnapshotIdsForGameAsync(
+        string gameId,
+        string? endpointId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var result = new HashSet<string>(StringComparer.Ordinal);
+        if (string.IsNullOrWhiteSpace(gameId))
+        {
+            return result;
+        }
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        await using var conn = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = string.IsNullOrWhiteSpace(endpointId)
+            ? "SELECT DISTINCT snapshot_id FROM save_synced_snapshots WHERE game_id = $game_id;"
+            : "SELECT snapshot_id FROM save_synced_snapshots WHERE game_id = $game_id AND endpoint_id = $endpoint_id;";
+        cmd.Parameters.AddWithValue("$game_id", gameId);
+        if (!string.IsNullOrWhiteSpace(endpointId))
+        {
+            cmd.Parameters.AddWithValue("$endpoint_id", endpointId);
+        }
+
+        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            result.Add(reader.GetString(0));
+        }
+
+        return result;
+    }
+
+    // -------------------------------------------------------------------------
+    // save_custom_locations CRUD
+    // -------------------------------------------------------------------------
+
+    public async Task<IReadOnlyList<SaveCustomLocationRecord>> GetSaveCustomLocationsByGameAsync(
+        string gameId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(gameId))
+        {
+            return [];
+        }
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        await using var conn = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT * FROM save_custom_locations
+            WHERE game_id = $game_id
+            ORDER BY created_at_utc ASC, location_id ASC;
+            """;
+        cmd.Parameters.AddWithValue("$game_id", gameId);
+
+        var list = new List<SaveCustomLocationRecord>();
+        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            list.Add(MapSaveCustomLocationRecord(reader));
+        }
+
+        return list;
+    }
+
+    public async Task UpsertSaveCustomLocationAsync(
+        SaveCustomLocationRecord location,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(location);
+        ArgumentException.ThrowIfNullOrWhiteSpace(location.LocationId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(location.GameId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(location.PathOrRegistryKey);
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var conn = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = """
+                INSERT INTO save_custom_locations (
+                    location_id, game_id, path_or_registry_key, location_kind, category, label, created_at_utc
+                ) VALUES (
+                    $location_id, $game_id, $path_or_registry_key, $location_kind, $category, $label, $created_at_utc
+                )
+                ON CONFLICT(game_id, path_or_registry_key) DO UPDATE SET
+                    location_kind = excluded.location_kind,
+                    category = excluded.category,
+                    label = excluded.label;
+                """;
+            cmd.Parameters.AddWithValue("$location_id", location.LocationId);
+            cmd.Parameters.AddWithValue("$game_id", location.GameId);
+            cmd.Parameters.AddWithValue("$path_or_registry_key", location.PathOrRegistryKey.Trim());
+            cmd.Parameters.AddWithValue("$location_kind", location.LocationKind.ToString());
+            cmd.Parameters.AddWithValue("$category", location.Category.ToString());
+            cmd.Parameters.AddWithValue("$label", string.IsNullOrWhiteSpace(location.Label) ? DBNull.Value : location.Label.Trim());
+            cmd.Parameters.AddWithValue("$created_at_utc", FormatUtc(location.CreatedAtUtc));
+            await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    public async Task<bool> DeleteSaveCustomLocationAsync(
+        string locationId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(locationId))
+        {
+            return false;
+        }
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var conn = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = "DELETE FROM save_custom_locations WHERE location_id = $location_id;";
+            cmd.Parameters.AddWithValue("$location_id", locationId);
+            return await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) > 0;
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -1210,6 +1502,129 @@ public sealed partial class SpawnDatabase
         {
             _writeLock.Release();
         }
+    }
+
+    /// <summary>
+    /// Atomically deletes a snapshot node while re-linking direct child pointers (<c>parent_snapshot_id</c>,
+    /// <c>merge_parent_snapshot_id</c>, and <c>save_branches.base_snapshot_id</c>) to
+    /// <paramref name="relinkParentSnapshotId"/>, preserving the DAG lineage chain.
+    /// </summary>
+    public async Task<(bool Deleted, int UnreferencedChunkCount)> DeleteSaveSnapshotAndRelinkChildrenAsync(
+        string snapshotId,
+        string? relinkParentSnapshotId,
+        DateTimeOffset? nowUtc = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(snapshotId))
+        {
+            return (false, 0);
+        }
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        DateTimeOffset timestamp = nowUtc ?? DateTimeOffset.UtcNow;
+
+        await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var conn = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+
+            var chunkCounts = await CollectUniqueChunksPerSnapshotsCoreAsync(conn, tx, [snapshotId], cancellationToken)
+                .ConfigureAwait(false);
+
+            // Re-link children before deleting so ON DELETE SET NULL never severs the chain.
+            await using (var relinkParentCmd = conn.CreateCommand())
+            {
+                relinkParentCmd.Transaction = tx;
+                relinkParentCmd.CommandText = """
+                    UPDATE save_snapshots
+                    SET parent_snapshot_id = $relink_parent_id
+                    WHERE parent_snapshot_id = $snapshot_id;
+                    """;
+                relinkParentCmd.Parameters.AddWithValue("$relink_parent_id", (object?)relinkParentSnapshotId ?? DBNull.Value);
+                relinkParentCmd.Parameters.AddWithValue("$snapshot_id", snapshotId);
+                await relinkParentCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            await using (var relinkMergeCmd = conn.CreateCommand())
+            {
+                relinkMergeCmd.Transaction = tx;
+                relinkMergeCmd.CommandText = """
+                    UPDATE save_snapshots
+                    SET merge_parent_snapshot_id = CASE
+                        WHEN parent_snapshot_id = $relink_parent_id THEN NULL
+                        ELSE $relink_parent_id
+                    END
+                    WHERE merge_parent_snapshot_id = $snapshot_id;
+                    """;
+                relinkMergeCmd.Parameters.AddWithValue("$relink_parent_id", (object?)relinkParentSnapshotId ?? DBNull.Value);
+                relinkMergeCmd.Parameters.AddWithValue("$snapshot_id", snapshotId);
+                await relinkMergeCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            await using (var relinkBaseCmd = conn.CreateCommand())
+            {
+                relinkBaseCmd.Transaction = tx;
+                relinkBaseCmd.CommandText = """
+                    UPDATE save_branches
+                    SET base_snapshot_id = $relink_parent_id
+                    WHERE base_snapshot_id = $snapshot_id;
+                    """;
+                relinkBaseCmd.Parameters.AddWithValue("$relink_parent_id", (object?)relinkParentSnapshotId ?? DBNull.Value);
+                relinkBaseCmd.Parameters.AddWithValue("$snapshot_id", snapshotId);
+                await relinkBaseCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            int affected;
+            await using (var delCmd = conn.CreateCommand())
+            {
+                delCmd.Transaction = tx;
+                delCmd.CommandText = "DELETE FROM save_snapshots WHERE snapshot_id = $snapshot_id;";
+                delCmd.Parameters.AddWithValue("$snapshot_id", snapshotId);
+                affected = await delCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            if (affected == 0)
+            {
+                await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                return (false, 0);
+            }
+
+            int newlyUnreferenced = await DecrementChunkRefCountsCoreAsync(conn, tx, chunkCounts, timestamp, cancellationToken)
+                .ConfigureAwait(false);
+
+            await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return (true, newlyUnreferenced);
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    public async Task<int> GetUnimportedLegacyPreTrainerCountForGameAsync(
+        string gameId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(gameId))
+        {
+            return 0;
+        }
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        await using var conn = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT COUNT(*) FROM pre_trainer_snapshots p
+            WHERE p.game_id = $game_id
+              AND p.status = 'Completed'
+              AND NOT EXISTS (
+                  SELECT 1 FROM save_snapshots s WHERE s.legacy_pre_trainer_snapshot_id = p.snapshot_id
+              );
+            """;
+        cmd.Parameters.AddWithValue("$game_id", gameId);
+        object? scalar = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        return scalar is long v ? (int)v : Convert.ToInt32(scalar ?? 0, CultureInfo.InvariantCulture);
     }
 
     public async Task<IReadOnlyDictionary<string, SaveGameAggregateStats>> GetSaveGameAggregateStatsAsync(
@@ -1865,6 +2280,61 @@ public sealed partial class SpawnDatabase
         }
     }
 
+    public async Task<bool> SetDefaultCloudSyncEndpointAsync(
+        string endpointId,
+        DateTimeOffset? updatedAtUtc = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(endpointId))
+        {
+            return false;
+        }
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var conn = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+
+            int updated;
+            await using (var setCmd = conn.CreateCommand())
+            {
+                setCmd.Transaction = tx;
+                setCmd.CommandText = """
+                    UPDATE cloud_sync_endpoints
+                    SET is_default = 1,
+                        updated_at_utc = $updated_at_utc
+                    WHERE endpoint_id = $endpoint_id;
+                    """;
+                setCmd.Parameters.AddWithValue("$endpoint_id", endpointId);
+                setCmd.Parameters.AddWithValue("$updated_at_utc", FormatUtc(updatedAtUtc ?? DateTimeOffset.UtcNow));
+                updated = await setCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            if (updated == 0)
+            {
+                await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                return false;
+            }
+
+            await using (var clearCmd = conn.CreateCommand())
+            {
+                clearCmd.Transaction = tx;
+                clearCmd.CommandText = "UPDATE cloud_sync_endpoints SET is_default = 0 WHERE endpoint_id <> $endpoint_id;";
+                clearCmd.Parameters.AddWithValue("$endpoint_id", endpointId);
+                await clearCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Global SaveSettingsDto Persistence (app_settings)
     // -------------------------------------------------------------------------
@@ -1935,10 +2405,20 @@ public sealed partial class SpawnDatabase
             ? Math.Clamp(parsedGc, 0, 720)
             : SaveSettingsDto.DefaultGcGracePeriodHours;
 
+        bool autoCloudPush = map.TryGetValue(SaveAutoCloudPushOnGameExitSettingKey, out string? rawAutoPush)
+                             && bool.TryParse(rawAutoPush, out bool parsedAutoPush)
+                             && parsedAutoPush;
+
+        bool checkRemoteBeforeLaunch = map.TryGetValue(SaveCheckRemoteUpdatesBeforeLaunchSettingKey, out string? rawCheckRemote)
+                                       && bool.TryParse(rawCheckRemote, out bool parsedCheckRemote)
+                                       && parsedCheckRemote;
+
         return new SaveSettingsDto
         {
             AutoWatchByDefault = autoWatch,
             PostExitSnapshotByDefault = postExit,
+            AutoCloudPushOnGameExit = autoCloudPush,
+            CheckRemoteUpdatesBeforeLaunch = checkRemoteBeforeLaunch,
             QuiescentDebounceMs = debounceMs,
             DefaultMaxRollingSnapshots = maxRolling,
             DefaultMaxSnapshotSizeMb = maxSizeMb,
@@ -1965,6 +2445,8 @@ public sealed partial class SpawnDatabase
 
         await SetSettingAsync(AppSettingKeys.SaveAutoWatchByDefault, settings.AutoWatchByDefault ? "true" : "false", cancellationToken).ConfigureAwait(false);
         await SetSettingAsync(AppSettingKeys.SavePostExitSnapshotByDefault, settings.PostExitSnapshotByDefault ? "true" : "false", cancellationToken).ConfigureAwait(false);
+        await SetSettingAsync(SaveAutoCloudPushOnGameExitSettingKey, settings.AutoCloudPushOnGameExit ? "true" : "false", cancellationToken).ConfigureAwait(false);
+        await SetSettingAsync(SaveCheckRemoteUpdatesBeforeLaunchSettingKey, settings.CheckRemoteUpdatesBeforeLaunch ? "true" : "false", cancellationToken).ConfigureAwait(false);
         await SetSettingAsync(
             AppSettingKeys.SaveQuiescentDebounceMs,
             Math.Clamp(settings.QuiescentDebounceMs, SaveSettingsDto.MinQuiescentDebounceMs, SaveSettingsDto.MaxQuiescentDebounceMs)
@@ -2119,9 +2601,23 @@ public sealed partial class SpawnDatabase
             IncludeConfigFiles = reader.GetInt32(reader.GetOrdinal("include_config_files")) != 0,
             MaxRollingSnapshots = reader.GetInt32(reader.GetOrdinal("max_rolling_snapshots")),
             CloudEndpointId = GetNullableString(reader, "cloud_endpoint_id"),
+            CloudGameKey = TryGetStringColumn(reader, "cloud_game_key"),
+            SyncAllBranchesToCloud = TryGetInt32Column(reader, "sync_all_branches") != 0,
             LastSyncedAtUtc = ParseNullableUtc(reader, "last_synced_at_utc"),
             HasUnresolvedCloudConflict = reader.GetInt32(reader.GetOrdinal("has_unresolved_cloud_conflict")) != 0,
             UpdatedAtUtc = ParseUtc(reader.GetString(reader.GetOrdinal("updated_at_utc"))),
+        };
+
+    private static SaveCustomLocationRecord MapSaveCustomLocationRecord(SqliteDataReader reader) =>
+        new()
+        {
+            LocationId = reader.GetString(reader.GetOrdinal("location_id")),
+            GameId = reader.GetString(reader.GetOrdinal("game_id")),
+            PathOrRegistryKey = reader.GetString(reader.GetOrdinal("path_or_registry_key")),
+            LocationKind = ParseEnumOrDefault(reader.GetString(reader.GetOrdinal("location_kind")), SaveCustomLocationKind.Directory),
+            Category = ParseEnumOrDefault(reader.GetString(reader.GetOrdinal("category")), SaveFileCategory.Save),
+            Label = GetNullableString(reader, "label"),
+            CreatedAtUtc = ParseUtc(reader.GetString(reader.GetOrdinal("created_at_utc"))),
         };
 
     private static SaveSnapshotRecord MapSaveSnapshotRecord(SqliteDataReader reader) =>
@@ -2233,5 +2729,18 @@ public sealed partial class SpawnDatabase
         }
 
         return 0;
+    }
+
+    private static string? TryGetStringColumn(SqliteDataReader reader, string columnName)
+    {
+        for (int i = 0; i < reader.FieldCount; i++)
+        {
+            if (string.Equals(reader.GetName(i), columnName, StringComparison.OrdinalIgnoreCase))
+            {
+                return reader.IsDBNull(i) ? null : reader.GetString(i);
+            }
+        }
+
+        return null;
     }
 }

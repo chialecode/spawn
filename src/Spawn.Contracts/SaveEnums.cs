@@ -107,3 +107,22 @@ public enum SaveSnapshotSkipReason
     ConcurrentModificationDetected = 5,
     DisabledBySettings = 6,
 }
+
+/// <summary>
+/// Target kind for a user-configured per-game custom save location (<c>save_custom_locations</c>).
+/// </summary>
+public enum SaveCustomLocationKind
+{
+    Directory = 0,
+    File = 1,
+    RegistryKey = 2,
+}
+
+/// <summary>
+/// Branch scope used when pushing local save branches to a cloud sync endpoint.
+/// </summary>
+public enum SaveCloudSyncScope
+{
+    ActiveBranchOnly = 0,
+    AllBranches = 1,
+}
